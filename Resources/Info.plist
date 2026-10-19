@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>local.focusdesk.app</string>
+<key>CFBundleExecutable</key><string>FocusDesk</string>
+<key>CFBundleName</key><string>FocusDesk</string>
+<key>CFBundleDisplayName</key><string>FocusDesk</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>LSUIElement</key><true/>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSCalendarsFullAccessUsageDescription</key><string>FocusDesk crea y actualiza sus propios bloques en un calendario dedicado para mostrar la cuenta atrás en Vorssaint.</string>
+<key>NSAppleEventsUsageDescription</key><string>Si lo activas, FocusDesk consulta el dominio de la pestaña activa de Brave durante una sesión. No guarda rutas ni parámetros.</string>
+<key>NSDocumentsFolderUsageDescription</key><string>FocusDesk compara metadatos en la carpeta de resultados que elijas para ayudarte a confirmar una tarea.</string>
+<key>NSDownloadsFolderUsageDescription</key><string>FocusDesk compara metadatos en la carpeta de resultados que elijas.</string>
+<key>NSDesktopFolderUsageDescription</key><string>FocusDesk compara metadatos en la carpeta de resultados que elijas.</string>
+</dict></plist>
