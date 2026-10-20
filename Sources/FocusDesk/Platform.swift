@@ -36,76 +36,48 @@ actor EvidenceScanner {
 }
 
 @MainActor
-final class CalendarBridge: ObservableObject {
-    let store = EKEventStore()
-    @Published var sources: [EKSource] = []
-    @Published var message = "Sin conectar"
-    var authorized: Bool { EKEventStore.authorizationStatus(for: .event) == .fullAccess }
-    func request() async {
-        do {
-            guard try await store.requestFullAccessToEvents() else { message = "Permiso de calendario denegado"; return }
-            sources = store.sources.filter { $0.sourceType == .local || $0.sourceType == .calDAV || $0.sourceType == .exchange }
-            message = "Elige dónde crear el calendario FocusDesk"
-        } catch { message = error.localizedDescription }
-    }
-    func create(in source: EKSource) throws -> String {
-        let calendar = EKCalendar(for: .event, eventStore: store)
-        calendar.title = "FocusDesk"; calendar.cgColor = NSColor.systemMint.cgColor; calendar.source = source
-        try store.saveCalendar(calendar, commit: true)
-        message = "Calendario conectado"
-        return calendar.calendarIdentifier
-    }
-    func project(_ task: FocusTask, calendarID: String, start: Date, end: Date) throws -> String {
-        guard authorized, let calendar = store.calendar(withIdentifier: calendarID), calendar.allowsContentModifications else { throw BridgeError.calendarUnavailable }
-        let marker = "focusdesk://task/" + task.id.uuidString
-        let event: EKEvent
-        if let id = task.calendarEventID, let old = store.event(withIdentifier: id) {
-            guard old.calendar.calendarIdentifier == calendarID, old.url?.absoluteString == marker else { throw BridgeError.ownership }
-            event = old
-        } else { event = EKEvent(eventStore: store); event.calendar = calendar }
-        event.title = task.title; event.startDate = start; event.endDate = max(end, start.addingTimeInterval(1))
-        event.url = URL(string: marker); event.notes = "Bloque gestionado por FocusDesk. Edita sus horarios desde FocusDesk."
-        try store.save(event, span: .thisEvent, commit: true)
-        return event.eventIdentifier
-    }
-    func remove(_ task: FocusTask, calendarID: String) throws {
-        guard authorized else { throw BridgeError.calendarUnavailable }
-        guard let id = task.calendarEventID, let event = store.event(withIdentifier: id) else { return }
-        guard event.calendar.calendarIdentifier == calendarID, event.url?.absoluteString == "focusdesk://task/" + task.id.uuidString else { throw BridgeError.ownership }
-        try store.remove(event, span: .thisEvent, commit: true)
-    }
-    enum BridgeError: LocalizedError {
-        case calendarUnavailable, ownership
-        var errorDescription: String? { self == .calendarUnavailable ? "Calendario no disponible o sin permiso de escritura." : "El evento no pertenece a FocusDesk. No se ha modificado." }
-    }
-}
-
-@MainActor
 final class ReminderService: ObservableObject {
-    @Published var message = "Activar avisos"
+    @Published var message = "Comprobando notificaciones…"
     let center = UNUserNotificationCenter.current()
+    private var pending: Task<Void, Never>?
+    init() { Task { await refresh() } }
+    func refresh() async {
+        let status = await center.notificationSettings().authorizationStatus
+        switch status {
+        case .authorized, .provisional: message = "Notificaciones autorizadas"
+        case .denied: message = "Notificaciones denegadas en Ajustes del Sistema"
+        default: message = "Activa las notificaciones para recibir avisos"
+        }
+    }
     func request() async {
-        do { message = try await center.requestAuthorization(options: [.alert, .sound]) ? "Avisos activados" : "Avisos desactivados en macOS" }
+        do { _ = try await center.requestAuthorization(options: [.alert, .sound]); await refresh() }
         catch { message = error.localizedDescription }
     }
     func schedule(_ tasks: [FocusTask], sessionTaskID: UUID?) {
-        center.removeAllPendingNotificationRequests()
-        for task in tasks.filter({ !$0.completed && $0.id != sessionTaskID }).sorted(by: { $0.scheduledAt < $1.scheduledAt }).prefix(30) {
-            for (suffix, date, title, body) in [
-                ("before", task.scheduledAt.addingTimeInterval(-Double(task.leadMinutes) * 60), "En \(task.leadMinutes) min · \(task.title)", "Prepara tu espacio. Tendrás \(task.minutes) minutos."),
-                ("start", task.scheduledAt, "Es el momento · \(task.title)", "Abre FocusDesk desde la barra para empezar.")
-            ] {
-                let delay = date.timeIntervalSinceNow
-                guard delay > 1 else { continue }
-                let content = UNMutableNotificationContent(); content.title = title; content.body = body; content.sound = .default
-                let request = UNNotificationRequest(identifier: task.id.uuidString + suffix, content: content, trigger: UNTimeIntervalNotificationTrigger(timeInterval: delay, repeats: false))
-                center.add(request) { _ in }
+        let previous = pending
+        pending?.cancel()
+        pending = Task {
+            // Wait for a previous add to finish before removing its requests.
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            center.removeAllPendingNotificationRequests()
+            let status = await center.notificationSettings().authorizationStatus
+            guard !Task.isCancelled, [.authorized, .provisional].contains(status) else { return }
+            for reminder in ReminderPlan.make(tasks: tasks, sessionTaskID: sessionTaskID, now: Date()) {
+                guard !Task.isCancelled else { return }
+                let content = UNMutableNotificationContent(); content.title = reminder.title; content.body = reminder.body; content.sound = .default
+                let delay = max(1, reminder.at.timeIntervalSinceNow)
+                do { try await center.add(UNNotificationRequest(identifier: reminder.id, content: content, trigger: UNTimeIntervalNotificationTrigger(timeInterval: delay, repeats: false))) }
+                catch { message = "No se pudo programar un aviso: \(error.localizedDescription)" }
             }
         }
     }
     func notify(_ title: String, body: String) {
         let content = UNMutableNotificationContent(); content.title = title; content.body = body; content.sound = .default
-        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) { _ in }
+        Task {
+            do { try await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) }
+            catch { message = "No se pudo mostrar el aviso: \(error.localizedDescription)" }
+        }
     }
 }
 

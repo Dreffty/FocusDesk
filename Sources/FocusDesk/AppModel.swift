@@ -25,6 +25,8 @@ final class AppModel: ObservableObject {
     let preview: Bool
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
+    private var subscriptions = Set<AnyCancellable>()
+    private var lastPrunedDay = Calendar.current.startOfDay(for: Date())
     private var writable = true
     private var lastAllowed: NSRunningApplication?
     private var lastSignature = ""
@@ -64,12 +66,19 @@ final class AppModel: ObservableObject {
             })
         }
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(screenLocked), name: NSNotification.Name("com.apple.screenIsLocked"), object: nil)
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        let heartbeat = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
-        if writable { persist() }
-        // A recovered paused session must not leave a running calendar countdown.
-        if workspace.session?.paused == true { syncCalendar() }
+        timer = heartbeat; RunLoop.main.add(heartbeat, forMode: .common)
+        NotificationCenter.default.publisher(for: .EKEventStoreChanged)
+            .debounce(for: .milliseconds(700), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.checkCalendar() }.store(in: &subscriptions)
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in
+                self?.checkCalendar()
+                Task { await self?.reminders.refresh() }
+            }.store(in: &subscriptions)
+        if writable { persist(); syncCalendar() }
         schedule()
     }
     var session: WorkSession? { workspace.session }
@@ -78,23 +87,29 @@ final class AppModel: ObservableObject {
     var readOnly: Bool { !writable }
     var menuTitle: String {
         if let s = session { return (s.endedAt != nil ? "Confirmar" : s.paused ? "Pausa" : FocusRules.clock(s.remaining(at: now))) }
-        if let next, next.scheduledAt > now, next.scheduledAt.timeIntervalSince(now) <= Double(next.leadMinutes) * 60 { return "En " + FocusRules.clock(next.scheduledAt.timeIntervalSince(now)) }
+        if let upcoming = tasks.first(where: { $0.scheduledAt > now }), upcoming.scheduledAt.timeIntervalSince(now) <= Double(upcoming.leadMinutes) * 60 { return "En " + FocusRules.clock(upcoming.scheduledAt.timeIntervalSince(now)) }
         return "FocusDesk"
     }
-    func persist() {
-        guard writable else { return }
-        do { try store.save(workspace) } catch { self.error = "No se pudo guardar: \(error.localizedDescription)" }
+    @discardableResult func persist() -> Bool {
+        guard writable else { return false }
+        do { try store.save(workspace); return true }
+        catch {
+            workspace.session?.pause(at: Date())
+            writable = false
+            self.error = "No se pudo guardar. La sesión se ha pausado; conserva esta ventana abierta y exporta una copia. \(error.localizedDescription)"
+            return false
+        }
     }
-    func updateSettings(_ mutate: (inout Settings) -> Void) { mutate(&workspace.settings); persist() }
+    func updateSettings(_ mutate: (inout Settings) -> Void) { guard writable else { return }; mutate(&workspace.settings); persist() }
     func saveTask(_ input: FocusTask) {
-        guard writable, input.valid, input.id != session?.task.id else { return }
+        guard writable, !busy, input.valid, input.id != session?.task.id else { return }
         var task = input; task.title = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
         if let index = workspace.tasks.firstIndex(where: { $0.id == task.id }) { workspace.tasks[index] = task }
         else { workspace.tasks.append(task) }
-        editingTask = nil; persist(); schedule(); syncCalendar()
+        guard persist() else { return }; editingTask = nil; schedule(); syncCalendar()
     }
     func deleteTask(_ task: FocusTask) {
-        guard task.id != session?.task.id else { return }
+        guard writable, !busy, task.id != session?.task.id else { return }
         if let id = workspace.settings.calendarID {
             do { try calendar.remove(task, calendarID: id) } catch { self.error = error.localizedDescription; return }
         }
@@ -108,13 +123,13 @@ final class AppModel: ObservableObject {
         busy = true; changedFiles = []; evidenceMessage = nil
         Task {
             let snapshot = await scanner.scan(task.folder)
-            guard session == nil else { busy = false; return }
+            guard session == nil, writable, workspace.tasks.contains(where: { $0 == task }) else { busy = false; notice = "La tarea cambió antes de empezar. Revisa su configuración."; return }
             var s = WorkSession(task: task)
             s.baseline = snapshot.files; s.baselineValid = snapshot.valid
             hasInitialBaseline = snapshot.valid; workspace.session = s
             evidenceMessage = snapshot.message; now = Date(); overtimeNotified = false
             lastSignature = ""; lastAllowed = nil; lastInterruption = .distantPast
-            busy = false; persist(); schedule(); syncCalendar()
+            busy = false; guard persist() else { return }; schedule(); syncCalendar()
             if let allowed = task.apps.first, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: allowed.id) {
                 let config = NSWorkspace.OpenConfiguration(); config.activates = true
                 do { _ = try await NSWorkspace.shared.openApplication(at: url, configuration: config) }
@@ -123,21 +138,22 @@ final class AppModel: ObservableObject {
         }
     }
     func pause() {
-        guard workspace.session?.endedAt == nil else { return }
+        guard writable, workspace.session != nil, workspace.session?.endedAt == nil else { return }
         workspace.session?.pause(at: Date()); persist(); syncCalendar()
     }
     func resume() {
+        guard writable, workspace.session != nil else { return }
         guard workspace.session?.endedAt == nil else { showCompletion = true; return }
-        workspace.session?.resume(at: Date()); lastSignature = ""; persist(); syncCalendar()
+        now = Date(); workspace.session?.resume(at: now); lastSignature = ""; lastInterruption = .distantPast; persist(); syncCalendar(); observe()
     }
-    func addTime() { workspace.session?.add(minutes: 10); overtimeNotified = false; persist(); syncCalendar() }
+    func addTime() { guard writable, workspace.session?.endedAt == nil else { return }; workspace.session?.add(minutes: 10); overtimeNotified = false; persist(); syncCalendar() }
     @objc private func screenLocked() { pauseForSystem() }
     private func pauseForSystem() {
         guard let s = session, !s.paused, s.endedAt == nil else { return }
         pause(); notice = "Sesión en pausa por reposo o bloqueo del Mac."
     }
     func finish() {
-        guard var s = session, !busy else { return }
+        guard writable, var s = session, !busy else { return }
         if s.endedAt != nil { showCompletion = true; showWindow?(); return }
         s.finish(at: Date()); workspace.session = s; persist(); syncCalendar()
         busy = true
@@ -153,50 +169,99 @@ final class AppModel: ObservableObject {
         }
     }
     func confirm(completed: Bool, note: String) {
-        guard let s = session, s.endedAt != nil else { return }
+        guard writable, !busy, let s = session, s.endedAt != nil else { return }
         var recordSession = s; recordSession.baseline = [:]
         workspace.history.insert(SessionRecord(session: recordSession, completed: completed, note: note, changedFiles: changedFiles), at: 0)
         if let index = workspace.tasks.firstIndex(where: { $0.id == s.task.id }) {
             workspace.tasks[index].completed = completed
-            if completed, let next = workspace.tasks[index].nextOccurrence() { workspace.tasks.append(next) }
+            if completed, let next = workspace.tasks[index].nextOccurrence(after: Date()) { workspace.tasks.append(next) }
         }
         workspace.session = nil; showCompletion = false; changedFiles = []; persist(); schedule(); syncCalendar()
         notice = completed ? "Tarea terminada. La siguiente conserva su horario." : "Sesión guardada. La tarea sigue pendiente."
     }
     func setCheck(_ key: String, value: Bool) {
+        guard writable, session?.endedAt == nil else { return }
         if value { workspace.session?.checked.insert(key) } else { workspace.session?.checked.remove(key) }; persist()
     }
     func chooseCalendarSource(_ source: EKSource) {
-        do { workspace.settings.calendarID = try calendar.create(in: source); persist(); syncCalendar() }
+        guard writable, !preview, workspace.settings.calendarID == nil else { return }
+        do { connectCalendar(try calendar.create(in: source)) }
         catch { self.error = error.localizedDescription }
     }
-    func syncCalendar() {
-        guard let calendarID = workspace.settings.calendarID else { return }
-        guard calendar.authorized else { calendar.message = "Sin permiso de calendario. Sesiones disponibles en FocusDesk."; return }
-        do {
-            for index in workspace.tasks.indices {
-                var task = workspace.tasks[index]
-                if let s = session, s.task.id == task.id {
-                    if let end = s.endedAt {
-                        task.calendarEventID = try calendar.project(task, calendarID: calendarID, start: s.startedAt, end: end)
-                    } else if s.paused {
-                        try calendar.remove(task, calendarID: calendarID); task.calendarEventID = nil
-                    } else {
-                        // An overdue session cannot be represented by a future deadline without lying.
-                        let end = now.addingTimeInterval(s.remaining(at: now))
-                        task.calendarEventID = try calendar.project(task, calendarID: calendarID, start: s.startedAt, end: max(end, s.startedAt.addingTimeInterval(1)))
-                    }
-                } else if !task.completed && task.end > now {
-                    task.calendarEventID = try calendar.project(task, calendarID: calendarID, start: task.scheduledAt, end: task.end)
-                }
-                workspace.tasks[index] = task
+    func connectCalendar(_ id: String) {
+        guard writable, !preview, workspace.settings.calendarID == nil, let chosen = calendar.connected(id), chosen.title == "FocusDesk", chosen.allowsContentModifications else { return }
+        workspace.settings.calendarID = id
+        guard persist() else { return }
+        syncCalendar()
+    }
+    func disconnectCalendar() {
+        guard writable else { return }
+        // Leave external events intact. This is an explicit disconnect, never silent cleanup.
+        workspace.settings.calendarID = nil
+        for index in workspace.tasks.indices { workspace.tasks[index].calendarEventID = nil; workspace.tasks[index].calendarSnapshot = nil }
+        calendar.issues = [:]; calendar.lastSync = nil; calendar.message = "Desconectado. Los eventos existentes se conservan en Calendar."
+        persist()
+    }
+    func checkCalendar() {
+        guard !preview else { return }
+        calendar.refresh()
+        guard let id = workspace.settings.calendarID else { return }
+        guard let connected = calendar.connected(id), connected.allowsContentModifications else {
+            calendar.message = "Conexión pendiente: falta permiso o el calendario ya no está disponible."; return
+        }
+        var issues: [UUID: String] = [:]
+        for task in workspace.tasks where task.calendarEventID != nil && !task.completed {
+            do { try calendar.validate(task, calendarID: id) } catch { issues[task.id] = error.localizedDescription }
+        }
+        calendar.issues = issues
+        calendar.message = issues.isEmpty ? "Conectado a \(connected.title) · \(connected.source.title)" : "\(issues.count) evento(s) requieren revisión. No se han sobrescrito."
+    }
+    func syncCalendar(forceTaskID: UUID? = nil) {
+        guard writable, !preview, let calendarID = workspace.settings.calendarID else { return }
+        guard calendar.authorized, let connected = calendar.connected(calendarID), connected.allowsContentModifications else { calendar.message = "Sin permiso o calendario disponible. Revisa la conexión; tus sesiones siguen disponibles."; return }
+        let instant = Date()
+        var issues: [UUID: String] = [:]
+        for index in workspace.tasks.indices {
+            var task = workspace.tasks[index]
+            let force = forceTaskID == task.id
+            if force, let eventID = task.calendarEventID, calendar.store.event(withIdentifier: eventID) == nil {
+                task.calendarEventID = nil; task.calendarSnapshot = nil
             }
-            calendar.message = "Eventos enviados a Calendar · activa FocusDesk en Vorssaint"
-            persist()
-        } catch { calendar.message = "Sin sincronizar: \(error.localizedDescription)"; persist() }
+            do {
+                let projection: CalendarProjection = force && session?.task.id != task.id && !task.completed ? .event(CalendarSnapshot(title: task.title, start: task.scheduledAt, end: task.end)) : CalendarProjection.make(task: task, session: session, now: instant)
+                switch projection {
+                case .event(let value):
+                    let saved = try calendar.project(task, calendarID: calendarID, value: value, force: force)
+                    task.calendarEventID = saved.0; task.calendarSnapshot = saved.1
+                case .remove:
+                    try calendar.remove(task, calendarID: calendarID, force: force)
+                    task.calendarEventID = nil; task.calendarSnapshot = nil
+                case .unchanged:
+                    if !task.completed { try calendar.validate(task, calendarID: calendarID) }
+                }
+                if workspace.tasks[index] != task {
+                    workspace.tasks[index] = task
+                    // Persist each returned ID before advancing to another external write.
+                    guard persist() else { return }
+                }
+            } catch { issues[task.id] = error.localizedDescription }
+        }
+        calendar.issues = issues
+        if issues.isEmpty {
+            calendar.lastSync = instant
+            calendar.message = "Eventos actualizados · selecciona FocusDesk en Vorssaint"
+        } else { calendar.message = "\(issues.count) evento(s) sin sincronizar; revisa los avisos." }
+    }
+    func createIntegrationTest() {
+        guard !preview, writable, !busy else { return }
+        let task = FocusTask(title: "Prueba de conexión · FocusDesk", scheduledAt: Date().addingTimeInterval(120), minutes: 5, leadMinutes: 1)
+        saveTask(task)
+        notice = "Prueba creada: empieza en 2 minutos y dura 5. Puedes iniciarla, terminarla y eliminarla desde Hoy."
     }
     private func tick() {
         now = Date(); ticks += 1
+        let today = Calendar.current.startOfDay(for: now)
+        if today != lastPrunedDay { lastPrunedDay = today; workspace.prune(at: now); persist(); schedule() }
         if ticks.isMultiple(of: 5) { accessible = MacActivity.accessibility; observe() }
         if let s = session, !s.paused, s.endedAt == nil, s.remaining(at: now) <= 0, !overtimeNotified {
             overtimeNotified = true
@@ -207,8 +272,8 @@ final class AppModel: ObservableObject {
         }
     }
     func observe() {
-        guard let s = session, !s.paused, s.endedAt == nil, let fg = MacActivity.foreground(readTitle: workspace.settings.observeTitles), let id = fg.app.bundleIdentifier else { return }
-        let exemptions: Set<String> = [Bundle.main.bundleIdentifier ?? "local.focusdesk.app", "com.apple.finder", "com.apple.systempreferences", "com.apple.loginwindow", "com.apple.SecurityAgent", "com.apple.notificationcenterui", "com.vorssaint.utils"]
+        guard writable, let s = session, !s.paused, s.endedAt == nil, let fg = MacActivity.foreground(readTitle: workspace.settings.observeTitles), let id = fg.app.bundleIdentifier else { return }
+        let exemptions: Set<String> = [Bundle.main.bundleIdentifier ?? "local.focusdesk.app", "com.apple.finder", "com.apple.systempreferences", "com.apple.loginwindow", "com.apple.SecurityAgent", "com.apple.notificationcenterui", "com.apple.dock", "com.vorssaint.utils"]
         guard !exemptions.contains(id) else { return }
         let allowed = s.task.apps.isEmpty || s.task.apps.contains { $0.id == id }
         let at = Date()
@@ -227,12 +292,12 @@ final class AppModel: ObservableObject {
             lastRedirect = at
             let target = lastAllowed.flatMap { $0.isTerminated ? nil : $0 } ?? NSWorkspace.shared.runningApplications.first { app in s.task.apps.contains { $0.id == app.bundleIdentifier } }
             if let target { if !target.activate(options: []) { notice = "No se pudo volver a \(target.localizedName ?? "la app permitida"). Puedes pausar." } }
-            else { showWindow?(); notice = "Abre una aplicación permitida o pausa la sesión." }
+            else { pause(); showWindow?(); notice = "Sesión pausada: no hay ninguna app permitida abierta. Abre una y reanuda." }
         }
         if id == "com.brave.Browser", workspace.settings.observeBrave {
             let sessionID = s.id
             brave.read { [weak self] host in
-                guard let self, let current = self.session, current.id == sessionID, !current.paused, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == id else { return }
+                guard let self, let current = self.session, current.id == sessionID, !current.paused, current.endedAt == nil, self.workspace.settings.observeBrave, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == id else { return }
                 guard let host else { return }
                 if self.workspace.session?.activities.last?.domain != host {
                     let outside = !FocusRules.domainAllowed(host, list: current.task.domains)
@@ -248,6 +313,7 @@ final class AppModel: ObservableObject {
         do { try WorkspaceStore(url: url).save(workspace) } catch { self.error = error.localizedDescription }
     }
     func removeDetailedHistory() {
+        guard writable else { return }
         for index in workspace.history.indices { workspace.history[index].session.activities = []; workspace.history[index].session.baseline = [:] }
         persist()
     }

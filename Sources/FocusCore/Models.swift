@@ -27,6 +27,7 @@ public struct FocusTask: Codable, Equatable, Identifiable {
     public var repeatRule: RepeatRule
     public var completed = false
     public var calendarEventID: String?
+    public var calendarSnapshot: CalendarSnapshot?
     public init(title: String = "", category: String = "Personal", scheduledAt: Date = Date().addingTimeInterval(600), minutes: Int = 60, leadMinutes: Int = 10, strict: Bool = false, apps: [AllowedApp] = [], domains: String = "", folder: String? = nil, checklist: String = "", repeatRule: RepeatRule = .never) {
         self.title = title; self.category = category; self.scheduledAt = scheduledAt; self.minutes = minutes
         self.leadMinutes = leadMinutes; self.strict = strict; self.apps = apps; self.domains = domains
@@ -34,9 +35,16 @@ public struct FocusTask: Codable, Equatable, Identifiable {
     }
     public var end: Date { scheduledAt.addingTimeInterval(Double(minutes) * 60) }
     public var valid: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (1...720).contains(minutes) && (0...60).contains(leadMinutes) && (!strict || !apps.isEmpty) }
-    public func nextOccurrence(calendar: Calendar = .current) -> FocusTask? {
-        guard repeatRule != .never, let date = calendar.date(byAdding: repeatRule == .daily ? .day : .weekOfYear, value: 1, to: scheduledAt) else { return nil }
-        var next = self; next.id = UUID(); next.scheduledAt = date; next.completed = false; next.calendarEventID = nil
+    public func nextOccurrence(after: Date? = nil, calendar: Calendar = .current) -> FocusTask? {
+        guard repeatRule != .never else { return nil }
+        let unit: Calendar.Component = repeatRule == .daily ? .day : .weekOfYear
+        let steps = after.map { max(1, calendar.dateComponents([unit], from: scheduledAt, to: $0).value(for: unit) ?? 1) } ?? 1
+        guard var date = calendar.date(byAdding: unit, value: steps, to: scheduledAt) else { return nil }
+        if let after, date <= after {
+            guard let following = calendar.date(byAdding: unit, value: 1, to: date) else { return nil }
+            date = following
+        }
+        var next = self; next.id = UUID(); next.scheduledAt = date; next.completed = false; next.calendarEventID = nil; next.calendarSnapshot = nil
         return next
     }
 }

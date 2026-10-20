@@ -169,15 +169,22 @@ struct MainView: View {
                                         Text(task.title).font(.system(size: 13, weight: .semibold)).lineLimit(4).strikethrough(task.completed)
                                         Text("\(task.minutes) min").font(.caption2).foregroundStyle(Palette.category(task.category))
                                     }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Palette.category(task.category).opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                                }.buttonStyle(.plain)
+                                }.buttonStyle(.plain).draggable(task.id.uuidString)
                             }
                             Button { model.editingTask = FocusTask(scheduledAt: Calendar.current.date(bySettingHour: 10, minute: 0, second: 0, of: date)!) } label: { Image(systemName: "plus").frame(maxWidth: .infinity).padding(10) }.buttonStyle(.borderless)
                             Spacer()
                         }.padding(14).frame(width: 144, alignment: .topLeading).frame(minHeight: 400).background(Palette.surface, in: RoundedRectangle(cornerRadius: 16))
+                        .dropDestination(for: String.self) { values, _ in
+                            guard !model.readOnly, !model.busy, let raw = values.first, let id = UUID(uuidString: raw),
+                                  let task = model.workspace.tasks.first(where: { $0.id == id && !$0.completed }), task.id != model.session?.task.id else { return false }
+                            let parts = Calendar.current.dateComponents([.hour, .minute], from: task.scheduledAt)
+                            guard let moved = Calendar.current.date(bySettingHour: parts.hour ?? 10, minute: parts.minute ?? 0, second: 0, of: date) else { return false }
+                            model.shift(task, to: moved); return true
+                        }
                     }
                 }
             }
-            Text("Pulsa un bloque para cambiar su hora, duración o perfil. Los solapamientos se señalan al editar.").font(.caption).foregroundStyle(Palette.muted)
+            Text("Arrastra un bloque a otro día o púlsalo para cambiar hora, duración y perfil. Las tareas activas no se pueden mover.").font(.caption).foregroundStyle(Palette.muted)
         }
     }
     private var history: some View {

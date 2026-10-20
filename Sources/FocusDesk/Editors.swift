@@ -49,8 +49,8 @@ struct TaskEditor: View {
                     if let folderWarning { Text(folderWarning).font(.caption).foregroundStyle(Palette.coral) }
                 }.padding(.trailing, 8)
             }
-            HStack { Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction); Spacer(); Button("Guardar tarea") { model.saveTask(draft); dismiss() }.buttonStyle(FocusPrimaryButton()).foregroundStyle(Palette.background).keyboardShortcut(.defaultAction).disabled(!draft.valid || model.readOnly) }
-        }.padding(28).frame(width: 650, height: 780).background(Palette.background).preferredColorScheme(.dark).tint(Palette.mint)
+            HStack { Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction); Spacer(); Button("Guardar tarea") { model.saveTask(draft); if model.error == nil { dismiss() } }.buttonStyle(FocusPrimaryButton()).foregroundStyle(Palette.background).keyboardShortcut(.defaultAction).disabled(!draft.valid || model.readOnly || model.busy) }
+        }.padding(28).frame(width: 650, height: min(740, (NSScreen.main?.visibleFrame.height ?? 800) - 100)).background(Palette.background).preferredColorScheme(.dark).tint(Palette.mint)
     }
     private func fieldLabel(_ text: String) -> some View { Text(text).font(.system(size: 10, weight: .semibold)).tracking(1.2).foregroundStyle(Palette.muted) }
     private func chooseApps() {
@@ -111,23 +111,8 @@ struct SettingsView: View {
     @State private var eraseDetails = false
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Card {
-                VStack(alignment: .leading, spacing: 16) {
-                    Label("Vorssaint · tu tiempo a la vista", systemImage: "calendar.badge.clock").font(.title3.weight(.semibold))
-                    Text("Conecta un calendario dedicado. En Vorssaint activa Dynamic Island → Calendar, las cuentas atrás y el tiempo restante; selecciona el calendario FocusDesk.").foregroundStyle(Palette.muted)
-                    Text(bridge.message).font(.caption).foregroundStyle(Palette.mint)
-                    if model.workspace.settings.calendarID == nil {
-                        Button("Dar acceso a Calendar") { Task { await bridge.request() } }
-                        ForEach(bridge.sources, id: \.sourceIdentifier) { source in
-                            Button("Crear FocusDesk en \(source.title)\(source.sourceType == .local ? " · solo este Mac" : " · puede sincronizar")") { model.chooseCalendarSource(source) }
-                        }
-                        if bridge.authorized && bridge.sources.isEmpty { Text("No hay fuentes de calendario disponibles. Añade una en Calendar; FocusDesk seguirá funcionando sin el puente.").font(.caption).foregroundStyle(Palette.coral) }
-                    } else {
-                        Button("Actualizar eventos en Calendar") { model.syncCalendar() }
-                    }
-                    Text("Límite de Vorssaint: solo la última hora; no muestra tiempo extra. Este puente no controla su Pomodoro. Mantén el contador de FocusDesk como respaldo.").font(.caption).foregroundStyle(Palette.muted)
-                }
-            }
+            if model.preview { Text("Modo de prueba: las conexiones y permisos están desactivados.").foregroundStyle(Palette.coral) }
+            IntegrationView(model: model, bridge: bridge)
             Card {
                 VStack(alignment: .leading, spacing: 15) {
                     Label("Recordatorios y acceso rápido", systemImage: "bell").font(.title3.weight(.semibold))
@@ -135,7 +120,7 @@ struct SettingsView: View {
                     Toggle("Abrir FocusDesk al iniciar sesión", isOn: $launchAtLogin).onChange(of: launchAtLogin) { _, value in
                         do { if value { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } } catch { model.error = error.localizedDescription; launchAtLogin = SMAppService.mainApp.status == .enabled }
                     }
-                    Text("Atajo global: Control + Opción + Comando + F. Cerrar la ventana mantiene la app en la barra. Salir pausa la sesión.").font(.caption).foregroundStyle(Palette.muted)
+                    Text("Abre FocusDesk desde Aplicaciones, Spotlight o el Dock. Atajo: Control + Opción + Comando + F. Cerrar la ventana mantiene el contador; Salir pausa la sesión.").font(.caption).foregroundStyle(Palette.muted)
                 }
             }
             Card {
@@ -154,9 +139,9 @@ struct SettingsView: View {
                     Label("Tus datos, en tu Mac", systemImage: "internaldrive").font(.title3.weight(.semibold))
                     Text("El detalle de actividad se conserva 30 días. Después queda el resumen. Las evidencias de archivos y las notas permanecen en tu historial.").foregroundStyle(Palette.muted)
                     HStack { Button("Exportar copia") { model.export() }; Button("Abrir carpeta de datos") { NSWorkspace.shared.open(model.store.url.deletingLastPathComponent()) }; Button("Borrar detalle de actividad", role: .destructive) { eraseDetails = true } }
-                    Text("Versión 0.1 · calendario editable por formulario · las repeticiones generan el siguiente bloque al completar la tarea.").font(.caption).foregroundStyle(Palette.muted)
+                    Text("Versión 0.2 · calendario editable por formulario · las repeticiones generan el siguiente bloque al completar la tarea.").font(.caption).foregroundStyle(Palette.muted)
                 }
             }
-        }.confirmationDialog("¿Borrar el detalle de aplicaciones, títulos y dominios de las sesiones anteriores? Los resúmenes se conservan.", isPresented: $eraseDetails, titleVisibility: .visible) { Button("Borrar detalle", role: .destructive) { model.removeDetailedHistory() } }
+        }.disabled(model.preview).confirmationDialog("¿Borrar el detalle de aplicaciones, títulos y dominios de las sesiones anteriores? Los resúmenes se conservan.", isPresented: $eraseDetails, titleVisibility: .visible) { Button("Borrar detalle", role: .destructive) { model.removeDetailedHistory() } }
     }
 }
