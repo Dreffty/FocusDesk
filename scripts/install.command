@@ -1,24 +1,70 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}/.."
-if [[ ! -d dist/FocusDesk.app ]]; then ./build.command; fi
+
+# 1. Avoid installing a stale dist/FocusDesk.app by checking source modification times.
+binary="dist/FocusDesk.app/Contents/MacOS/FocusDesk"
+if [[ ! -x "$binary" ]] || [[ -n "$(find Sources Package.swift Resources -newer "$binary" 2>/dev/null)" ]]; then
+  echo "Compilando versión actualizada antes de instalar…"
+  ./build.command
+fi
+
+# 2. Verify candidate bundle before touching ~/Applications/FocusDesk.app
+echo "Verificando firma, plist y prueba integrada del nuevo bundle…"
+plutil -lint dist/FocusDesk.app/Contents/Info.plist >/dev/null
+codesign --verify --deep --strict dist/FocusDesk.app
+if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' dist/FocusDesk.app/Contents/Info.plist)" != 'local.focusdesk.app' ]]; then
+  echo "Error: CFBundleIdentifier inesperado en dist/FocusDesk.app."
+  exit 1
+fi
+
+smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/focusdesk-install-verify.XXXXXX")"
+trap 'rm -rf "$smoke_dir"' EXIT
+smoke_out="$("$binary" --preview --preview-directory "$smoke_dir" --smoke-test)"
+if [[ "$smoke_out" != PASS* ]]; then
+  echo "Error: la verificación previa falló ($smoke_out). No se ha modificado la instalación actual."
+  exit 1
+fi
+
 if pgrep -x FocusDesk >/dev/null; then
   echo 'Cierra FocusDesk con Comando+Q antes de instalar la nueva versión.'
   exit 1
 fi
+
 install_root="$HOME/Applications"
 mkdir -p "$install_root"
 target="$install_root/FocusDesk.app"
+backup=""
+
 if [[ -d "$target" ]]; then
-  if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$target/Contents/Info.plist")" != 'local.focusdesk.app' ]]; then
+  if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$target/Contents/Info.plist" 2>/dev/null || true)" != 'local.focusdesk.app' ]]; then
     echo 'La aplicación existente no es FocusDesk; no se ha modificado.'
     exit 1
+  fi
+  if codesign -dvvv "$target" 2>&1 | grep -q "Signature=adhoc"; then
+    tccutil reset Calendar local.focusdesk.app 2>/dev/null || true
   fi
   mkdir -p "$PWD/.build/installed-backups"
   backup="$PWD/.build/installed-backups/FocusDesk-previous-$(date +%Y%m%d-%H%M%S).app"
   mv "$target" "$backup"
 fi
-ditto dist/FocusDesk.app "$target"
-codesign --verify --deep --strict "$target"
-open "$target" --args "$@"
-echo "Instalada: $target"
+
+# 3. Install and verify target; roll back automatically to previous backup if anything fails.
+rollback() {
+  echo "Error durante la instalación; restaurando la versión anterior…"
+  rm -rf "$target"
+  if [[ -n "$backup" && -d "$backup" ]]; then
+    mv "$backup" "$target"
+    echo "Versión anterior restaurada en $target"
+  fi
+}
+
+if ! (ditto dist/FocusDesk.app "$target" && codesign --verify --deep --strict "$target"); then
+  rollback
+  exit 1
+fi
+
+if [[ "${1:-}" != "--no-open" ]]; then
+  open "$target" --args "$@"
+fi
+echo "Instalada y verificada: $target"

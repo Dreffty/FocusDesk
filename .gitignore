@@ -4,3 +4,4 @@ dist/
 .gentlemerge/
 .agent-inbox/
 .gentlemerge/env.sh
+.freebuff/

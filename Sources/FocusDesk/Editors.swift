@@ -8,73 +8,383 @@ struct TaskEditor: View {
     @State var draft: FocusTask
     @Environment(\.dismiss) private var dismiss
     @State private var folderWarning: String?
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack { VStack(alignment: .leading, spacing: 5) { Text("Dale un espacio.").font(.system(size: 28, weight: .semibold, design: .rounded)); Text("Un objetivo claro. Un tiempo concreto.").foregroundStyle(Palette.muted) }; Spacer(); Button { dismiss() } label: { Image(systemName: "xmark") }.buttonStyle(.plain) }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    HStack { ForEach(["Vídeo", "Estudiar", "Tienda"], id: \.self) { template in Button(template) { applyTemplate(template) }.buttonStyle(.bordered) }; Spacer(); Text("PLANTILLAS").font(.caption2).foregroundStyle(Palette.muted) }
-                    VStack(alignment: .leading, spacing: 8) { fieldLabel("¿QUÉ VAS A HACER?"); TextField("Ej. Grabar el vídeo de mañana", text: $draft.title).font(.title3).textFieldStyle(.roundedBorder) }
-                    HStack(alignment: .top, spacing: 20) {
-                        VStack(alignment: .leading, spacing: 9) { fieldLabel("CUÁNDO"); DatePicker("Inicio", selection: $draft.scheduledAt).labelsHidden(); Button("En diez minutos") { draft.scheduledAt = Date().addingTimeInterval(600) }.buttonStyle(.borderless).font(.caption) }
-                        Spacer()
-                        VStack(alignment: .leading, spacing: 9) { fieldLabel("DURACIÓN OBLIGATORIA"); Stepper("\(draft.minutes) min", value: $draft.minutes, in: 1...720, step: 5); HStack { ForEach([15, 30, 60, 90], id: \.self) { minutes in Button("\(minutes)") { draft.minutes = minutes }.buttonStyle(.bordered).tint(draft.minutes == minutes ? Palette.mint : .gray) } } }
-                    }
-                    HStack(spacing: 20) {
-                        Picker("Área", selection: $draft.category) { ForEach(["Personal", "Contenido", "Estudio", "Tienda"], id: \.self) { Text($0) } }
-                        Picker("Repetición", selection: $draft.repeatRule) { ForEach(RepeatRule.allCases, id: \.self) { Text($0.label).tag($0) } }
-                    }
-                    Stepper("Avisar \(draft.leadMinutes) minutos antes", value: $draft.leadMinutes, in: 0...60, step: 5)
-                    if model.workspace.tasks.contains(where: { FocusRules.overlaps(draft, $0) }) { Label("Este bloque coincide con otra tarea. Solo puede haber una sesión activa.", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Palette.coral) }
-                    if draft.minutes > 60 { Text("Vorssaint mostrará el final solo durante los últimos 60 minutos. El contador de FocusDesk seguirá visible.").font(.caption).foregroundStyle(Palette.muted) }
-                    Divider()
-                    HStack { fieldLabel("TU ESPACIO DE TRABAJO"); Spacer(); Button { chooseApps() } label: { Label("Elegir apps", systemImage: "plus") } }
-                    if draft.apps.isEmpty { Text("Sin selección: se admiten todas las apps. Añade las necesarias para distinguir distracciones.").font(.callout).foregroundStyle(Palette.muted) }
-                    ForEach(draft.apps) { app in
-                        HStack { Image(nsImage: NSWorkspace.shared.icon(forFile: app.path)).resizable().frame(width: 25, height: 25); Text(app.name); Spacer(); Button { draft.apps.removeAll { $0.id == app.id } } label: { Image(systemName: "minus.circle") }.buttonStyle(.plain) }
-                    }
-                    Toggle("Volver a una app permitida cuando me distraiga", isOn: $draft.strict).toggleStyle(.switch)
-                    Text("Puedes pausar en cualquier momento. Finder, Ajustes, FocusDesk y Vorssaint siguen accesibles. No se cierran aplicaciones.").font(.caption).foregroundStyle(Palette.muted)
-                    if draft.strict && draft.apps.isEmpty { Text("Selecciona al menos una aplicación para usar el modo estricto.").font(.caption).foregroundStyle(Palette.coral) }
-                    VStack(alignment: .leading, spacing: 8) {
-                        fieldLabel("DOMINIOS PARA ESTA TAREA · OPCIONAL")
-                        TextField("chatgpt.com, claude.ai", text: $draft.domains).textFieldStyle(.roundedBorder)
-                        Text("Sirven para avisar y registrar en Brave. No bloquean páginas. Activa su lectura en Ajustes.").font(.caption).foregroundStyle(Palette.muted)
-                    }
-                    Divider()
-                    fieldLabel("CÓMO SABRÁS QUE HAS TERMINADO")
-                    Text("Checklist: un paso por línea").font(.caption).foregroundStyle(Palette.muted)
-                    TextEditor(text: $draft.checklist).font(.body).frame(height: 80).padding(6).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8)).overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.12)))
-                    HStack { VStack(alignment: .leading, spacing: 4) { Text("Carpeta de resultados"); Text(draft.folder ?? "Opcional. Solo se comparan metadatos.").font(.caption).foregroundStyle(Palette.muted).lineLimit(2) }; Spacer(); Button("Elegir") { chooseFolder() }; if draft.folder != nil { Button("Quitar") { draft.folder = nil }.buttonStyle(.borderless) } }
-                    if let folderWarning { Text(folderWarning).font(.caption).foregroundStyle(Palette.coral) }
-                }.padding(.trailing, 8)
-            }
-            HStack { Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction); Spacer(); Button("Guardar tarea") { model.saveTask(draft); if model.error == nil { dismiss() } }.buttonStyle(FocusPrimaryButton()).foregroundStyle(Palette.background).keyboardShortcut(.defaultAction).disabled(!draft.valid || model.readOnly || model.busy) }
-        }.padding(28).frame(width: 650, height: min(740, (NSScreen.main?.visibleFrame.height ?? 800) - 100)).background(Palette.background).preferredColorScheme(.dark).tint(Palette.mint)
+    @State private var saveProfileName = ""
+    @State private var showSaveProfile = false
+    @State private var editSingleOccurrenceOnly = false
+
+    private var parentSeriesID: UUID? {
+        if let seriesID = draft.seriesID, model.workspace.tasks.contains(where: { $0.id == seriesID }) {
+            return seriesID
+        }
+        if let existing = model.workspace.tasks.first(where: { $0.id == draft.id }), existing.repeatRule != .never {
+            return existing.id
+        }
+        return nil
     }
-    private func fieldLabel(_ text: String) -> some View { Text(text).font(.system(size: 10, weight: .semibold)).tracking(1.2).foregroundStyle(Palette.muted) }
+
+    private var domainParse: (valid: [String], invalid: [String]) {
+        FocusRules.parseDomains(draft.domains)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Dale un espacio.").font(.system(size: 26, weight: .semibold, design: .rounded))
+                    Text("Un objetivo claro. Un tiempo concreto.").font(.callout).foregroundStyle(Palette.muted)
+                }
+                Spacer()
+                Button { dismiss() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(FocusIconButtonStyle(size: 30))
+                    .help("Cerrar")
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    // Reusable Profiles (Item 9)
+                    Card(padding: 16) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            SectionHeader("Perfiles y plantillas reutilizables", icon: "bookmark.fill") {
+                                Button {
+                                    saveProfileName = draft.title.isEmpty ? "Nuevo perfil" : draft.title
+                                    showSaveProfile.toggle()
+                                } label: {
+                                    Label(showSaveProfile ? "Ocultar" : "Guardar como perfil", systemImage: "bookmark.badge.plus")
+                                }
+                                .buttonStyle(.focus(.ghost, compact: true))
+                            }
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(model.workspace.profiles) { profile in
+                                        Button {
+                                            applyProfile(profile)
+                                        } label: {
+                                            HStack(spacing: 5) {
+                                                Circle()
+                                                    .fill(Palette.category(profile.category, in: model.workspace.settings.categories))
+                                                    .frame(width: 6, height: 6)
+                                                Text(profile.name)
+                                                Text("\(profile.minutes)m").opacity(0.75)
+                                            }
+                                        }
+                                        .buttonStyle(SelectableChipStyle(selected: draft.profileID == profile.id))
+                                    }
+                                }
+                            }
+                            if showSaveProfile {
+                                HStack(spacing: 8) {
+                                    TextField("Nombre del perfil (ej. Grabar vídeo)", text: $saveProfileName)
+                                        .textFieldStyle(.roundedBorder)
+                                    Button("Guardar perfil") {
+                                        let profile = FocusProfile(
+                                            id: model.workspace.profiles.first(where: { $0.name.lowercased() == saveProfileName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })?.id ?? UUID(),
+                                            name: saveProfileName,
+                                            category: draft.category,
+                                            minutes: draft.minutes,
+                                            leadMinutes: draft.leadMinutes,
+                                            strict: draft.strict,
+                                            apps: draft.apps,
+                                            domains: draft.domains,
+                                            folder: draft.folder,
+                                            checklist: draft.checklist
+                                        )
+                                        model.saveProfile(profile)
+                                        draft.profileID = profile.id
+                                        showSaveProfile = false
+                                    }
+                                    .buttonStyle(FocusPrimaryButton(compact: true))
+                                }
+                            }
+                        }
+                    }
+
+                    if parentSeriesID != nil {
+                        HStack(spacing: 12) {
+                            Image(systemName: "repeat.circle").foregroundStyle(Palette.mint)
+                            Picker("Cambio en tarea repetitiva", selection: $editSingleOccurrenceOnly) {
+                                Text("Editar toda la serie").tag(false)
+                                Text("Editar solo esta ocurrencia (\(draft.scheduledAt.formatted(date: .abbreviated, time: .omitted)))").tag(true)
+                            }.pickerStyle(.segmented)
+                        }.padding(12).background(Palette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+
+                    // Objective & Schedule (Items 10, 11, 12)
+                    Card(padding: 18) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("¿QUÉ VAS A HACER?").fieldLabelStyle()
+                                TextField("Ej. Grabar el vídeo de mañana", text: $draft.title)
+                                    .font(.title3)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+
+                            HStack {
+                                Toggle("Reservar horario en la agenda", isOn: $draft.isScheduled).toggleStyle(.switch)
+                                Spacer()
+                                if draft.isScheduled {
+                                    Toggle("Cita fija (no desplazar)", isOn: $draft.isFixedAppointment)
+                                        .toggleStyle(.checkbox)
+                                        .font(.caption)
+                                        .foregroundStyle(Palette.muted)
+                                } else {
+                                    Chip("Bandeja de pendientes sin hora", icon: "tray", color: Palette.mint)
+                                }
+                            }
+
+                            HStack(alignment: .top, spacing: 18) {
+                                if draft.isScheduled {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("CUÁNDO EMPIEZA").fieldLabelStyle()
+                                        DatePicker("Inicio", selection: $draft.scheduledAt).labelsHidden()
+                                        HStack(spacing: 6) {
+                                            Button("Ahora +10m") { draft.scheduledAt = Date().addingTimeInterval(600) }
+                                                .buttonStyle(.focus(.secondary, compact: true))
+                                            Button("+1h") { draft.scheduledAt = Date().addingTimeInterval(3600) }
+                                                .buttonStyle(.focus(.ghost, compact: true))
+                                        }
+                                    }
+                                }
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("FECHA LÍMITE · OPCIONAL").fieldLabelStyle()
+                                    HStack {
+                                        Toggle("Antes de", isOn: Binding(
+                                            get: { draft.dueDate != nil },
+                                            set: { enabled in
+                                                draft.dueDate = enabled ? (Calendar.current.date(byAdding: .day, value: 2, to: Date()) ?? Date().addingTimeInterval(86400)) : nil
+                                            }
+                                        )).labelsHidden()
+                                        if let due = draft.dueDate {
+                                            DatePicker("Fecha límite", selection: Binding(
+                                                get: { due },
+                                                set: { draft.dueDate = $0 }
+                                            ), displayedComponents: [.date, .hourAndMinute]).labelsHidden()
+                                        } else {
+                                            Text("Sin fecha límite").font(.caption).foregroundStyle(Palette.muted)
+                                        }
+                                    }
+                                }
+                                Spacer()
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("DURACIÓN").fieldLabelStyle()
+                                    Stepper("\(draft.minutes) min", value: $draft.minutes, in: 1...720, step: 5)
+                                    HStack(spacing: 6) {
+                                        ForEach([15, 30, 60, 90], id: \.self) { minutes in
+                                            Button("\(minutes)m") { draft.minutes = minutes }
+                                                .buttonStyle(SelectableChipStyle(selected: draft.minutes == minutes))
+                                        }
+                                    }
+                                }
+                            }
+
+                            Divider().overlay(Palette.stroke)
+
+                            HStack(spacing: 20) {
+                                Picker("Área", selection: $draft.category) {
+                                    let names = model.workspace.settings.categories.map(\.name)
+                                    ForEach(names.contains(draft.category) ? names : names + [draft.category], id: \.self) { Text($0) }
+                                }
+                                if draft.isScheduled {
+                                    Picker("Repetición", selection: $draft.repeatRule) {
+                                        ForEach(RepeatRule.allCases, id: \.self) { Text($0.label).tag($0) }
+                                    }
+                                }
+                            }
+
+                            if draft.isScheduled && draft.repeatRule == .customDays {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("DÍAS DE LA SEMANA").fieldLabelStyle()
+                                    HStack(spacing: 6) {
+                                        ForEach([(2, "Lun"), (3, "Mar"), (4, "Mié"), (5, "Jue"), (6, "Vie"), (7, "Sáb"), (1, "Dom")], id: \.0) { day, label in
+                                            let active = draft.repeatDays.contains(day)
+                                            Button(label) {
+                                                if active { draft.repeatDays.remove(day) } else { draft.repeatDays.insert(day) }
+                                            }
+                                            .buttonStyle(SelectableChipStyle(selected: active))
+                                        }
+                                    }
+                                    if draft.repeatDays.isEmpty {
+                                        Text("Selecciona al menos un día para la repetición.").font(.caption).foregroundStyle(Palette.coral)
+                                    }
+                                }
+                            }
+
+                            if draft.isScheduled {
+                                HStack {
+                                    Stepper("Avisar \(draft.leadMinutes) minutos antes", value: $draft.leadMinutes, in: 0...60, step: 5)
+                                    Spacer()
+                                    if model.workspace.tasks.contains(where: { FocusRules.overlaps(draft, $0) }) {
+                                        Chip("Coincide con otra tarea", icon: "exclamationmark.triangle", color: Palette.coral)
+                                    }
+                                }
+                            }
+
+                            if draft.minutes > 60 {
+                                Text("Vorssaint mostrará el final solo durante los últimos 60 minutos. El contador de FocusDesk seguirá visible.").font(.caption).foregroundStyle(Palette.muted)
+                            }
+                        }
+                    }
+
+                    // Workspace Apps & Domains
+                    Card(padding: 18) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            SectionHeader("Tu espacio de trabajo", icon: "macwindow") {
+                                Button { chooseApps() } label: { Label("Elegir apps", systemImage: "plus") }
+                                    .buttonStyle(.focus(.secondary, compact: true))
+                            }
+                            if draft.apps.isEmpty {
+                                Text("Sin selección: se admiten todas las apps. Añade las necesarias para distinguir distracciones.").font(.callout).foregroundStyle(Palette.muted)
+                            } else {
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 8)], spacing: 8) {
+                                    ForEach(draft.apps) { app in
+                                        HStack(spacing: 8) {
+                                            Image(nsImage: NSWorkspace.shared.icon(forFile: app.path)).resizable().frame(width: 20, height: 20)
+                                            Text(app.name).font(.caption.weight(.medium)).lineLimit(1)
+                                            Spacer(minLength: 4)
+                                            Button {
+                                                draft.apps.removeAll { $0.id == app.id }
+                                            } label: {
+                                                Image(systemName: "xmark")
+                                            }
+                                            .buttonStyle(FocusIconButtonStyle(size: 20))
+                                        }
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(Palette.elevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                                    }
+                                }
+                            }
+                            Toggle("Volver a una app permitida cuando me distraiga", isOn: $draft.strict).toggleStyle(.switch)
+                            Text("Puedes pausar en cualquier momento. Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.caption).foregroundStyle(Palette.muted)
+                            if draft.strict && draft.apps.isEmpty {
+                                Text("Selecciona al menos una aplicación para usar el modo estricto.").font(.caption).foregroundStyle(Palette.coral)
+                            }
+
+                            Divider().overlay(Palette.stroke)
+
+                            // Domain Validation & Normalization (Item 15)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text("DOMINIOS PARA ESTA TAREA · OPCIONAL").fieldLabelStyle()
+                                    Spacer()
+                                    if !draft.domains.isEmpty && FocusRules.normalizeDomains(draft.domains) != draft.domains {
+                                        Button("Normalizar URLs") {
+                                            draft.domains = FocusRules.normalizeDomains(draft.domains)
+                                        }.buttonStyle(.focus(.ghost, compact: true))
+                                    }
+                                }
+                                TextField("chatgpt.com, claude.ai (se aceptan URLs como https://claude.ai/)", text: $draft.domains)
+                                    .textFieldStyle(.roundedBorder)
+                                if !domainParse.invalid.isEmpty {
+                                    Text("Entradas no reconocidas como dominio (se ignorarán): \(domainParse.invalid.joined(separator: ", "))")
+                                        .font(.caption)
+                                        .foregroundStyle(Palette.coral)
+                                } else if !domainParse.valid.isEmpty {
+                                    Text("Dominios activos: \(domainParse.valid.joined(separator: ", "))")
+                                        .font(.caption)
+                                        .foregroundStyle(Palette.mint)
+                                }
+                                Text("Sirven para avisar y registrar en Brave. No bloquean páginas. Activa su lectura en Ajustes.").font(.caption).foregroundStyle(Palette.muted)
+                            }
+                        }
+                    }
+
+                    // Checklist & Output Folder
+                    Card(padding: 18) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            SectionHeader("Cómo sabrás que has terminado", icon: "checkmark.circle")
+                            Text("Checklist: un paso por línea").font(.caption).foregroundStyle(Palette.muted)
+                            TextEditor(text: $draft.checklist)
+                                .font(.body)
+                                .frame(height: 76)
+                                .padding(6)
+                                .background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.stroke))
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Carpeta de resultados").font(.callout.weight(.medium))
+                                    Text(draft.folder ?? "Opcional. Solo se comparan metadatos; también podrás adjuntar un archivo al terminar.")
+                                        .font(.caption)
+                                        .foregroundStyle(Palette.muted)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                Button("Elegir carpeta…") { chooseFolder() }
+                                    .buttonStyle(.focus(.secondary, compact: true))
+                                if draft.folder != nil {
+                                    Button("Quitar") { draft.folder = nil }
+                                        .buttonStyle(.focus(.ghost, compact: true))
+                                }
+                            }
+                            if let folderWarning { Text(folderWarning).font(.caption).foregroundStyle(Palette.coral) }
+                        }
+                    }
+                }.padding(.trailing, 6)
+            }
+
+            HStack {
+                Button("Cancelar") { dismiss() }
+                    .buttonStyle(.focusSecondary)
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Guardar tarea") {
+                    if editSingleOccurrenceOnly, let seriesID = parentSeriesID {
+                        model.saveTask(draft, detachFromSeriesID: seriesID, occurrenceDate: draft.scheduledAt)
+                    } else if let seriesID = draft.seriesID, !editSingleOccurrenceOnly,
+                              let seriesTask = model.workspace.tasks.first(where: { $0.id == seriesID }) {
+                        var updatedSeries = draft
+                        updatedSeries.id = seriesTask.id
+                        updatedSeries.seriesID = nil
+                        updatedSeries.calendarEventID = seriesTask.calendarEventID
+                        updatedSeries.calendarSnapshot = seriesTask.calendarSnapshot
+                        model.saveTask(updatedSeries)
+                    } else {
+                        model.saveTask(draft)
+                    }
+                    if model.error == nil { dismiss() }
+                }
+                .buttonStyle(FocusPrimaryButton())
+                .keyboardShortcut(.defaultAction)
+                .disabled(!draft.valid || model.readOnly || model.busy)
+            }
+        }
+        .padding(24)
+        .frame(width: 700, height: min(780, (NSScreen.main?.visibleFrame.height ?? 820) - 70))
+        .background(Palette.background)
+        .preferredColorScheme(.dark)
+        .tint(Palette.mint)
+    }
+
     private func chooseApps() {
-        let panel = NSOpenPanel(); panel.directoryURL = URL(fileURLWithPath: "/Applications"); panel.allowedContentTypes = [.application]; panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
         for url in panel.urls {
             guard let bundle = Bundle(url: url), let id = bundle.bundleIdentifier, !draft.apps.contains(where: { $0.id == id }) else { continue }
             draft.apps.append(AllowedApp(id: id, name: url.deletingPathExtension().lastPathComponent, path: url.path))
         }
     }
+
     private func chooseFolder() {
-        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        draft.folder = url.path; folderWarning = "Elige una carpeta concreta del proyecto; se revisan como máximo 5.000 entradas."
+        draft.folder = url.path
+        folderWarning = "Elige una carpeta concreta del proyecto; se revisan como máximo 5.000 entradas ignorando temporales."
     }
-    private func applyTemplate(_ name: String) {
-        switch name {
-        case "Vídeo": draft.title = "Grabar un vídeo"; draft.category = "Contenido"; draft.minutes = 60; draft.checklist = "Preparar el guion\nGrabar las tomas\nGuardar el material"; draft.domains = "chatgpt.com, claude.ai"
-        case "Estudiar": draft.title = "Estudiar un tema"; draft.category = "Estudio"; draft.minutes = 45; draft.checklist = "Repasar el tema\nResolver ejercicios\nAnotar las dudas"; draft.domains = ""
-        default: draft.title = "Gestionar la tienda"; draft.category = "Tienda"; draft.minutes = 30; draft.checklist = "Revisar pedidos\nResponder mensajes\nActualizar stock"; draft.domains = ""
-        }
+
+    private func applyProfile(_ profile: FocusProfile) {
+        draft.apply(profile)
         if draft.apps.isEmpty {
-            let ids = name == "Vídeo" ? ["com.lemon.lvoverseas", "com.brave.Browser", "com.anthropic.claudefordesktop", "com.openai.chat"] : ["com.brave.Browser"]
-            draft.apps = ids.compactMap { id in guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return nil }; return AllowedApp(id: id, name: url.deletingPathExtension().lastPathComponent, path: url.path) }
+            let isVideo = profile.name.lowercased().contains("vídeo") || profile.name.lowercased().contains("video")
+            let ids = isVideo ? ["com.lemon.lvoverseas", "com.brave.Browser", "com.anthropic.claudefordesktop", "com.openai.chat"] : ["com.brave.Browser"]
+            draft.apps = ids.compactMap { id in
+                guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return nil }
+                return AllowedApp(id: id, name: url.deletingPathExtension().lastPathComponent, path: url.path)
+            }
         }
     }
 }
@@ -82,24 +392,205 @@ struct TaskEditor: View {
 struct CompletionView: View {
     @ObservedObject var model: AppModel
     @State private var note = ""
+    @State private var transition: NextTransitionAction = .keepSchedule
+
+    private var allEvidenceFiles: [String] {
+        var combined = model.changedFiles
+        for manual in model.manualAttachments where !combined.contains(manual) {
+            combined.append(manual)
+        }
+        return combined
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            Image(systemName: "checkmark.seal").font(.system(size: 38, weight: .light)).foregroundStyle(Palette.mint)
-            Text("¿Qué has conseguido?").font(.system(size: 29, weight: .semibold, design: .rounded))
-            Text("La sesión ha terminado y las restricciones están desactivadas. Tú confirmas el resultado.").foregroundStyle(Palette.muted)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 14) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 32, weight: .regular))
+                    .foregroundStyle(Palette.mint)
+                    .frame(width: 52, height: 52)
+                    .background(Palette.mint.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("¿Qué has conseguido?").font(.system(size: 24, weight: .semibold, design: .rounded))
+                    Text("La sesión ha terminado y las restricciones están desactivadas. Tú confirmas el resultado.")
+                        .font(.callout)
+                        .foregroundStyle(Palette.muted)
+                }
+            }
+            if let error = model.error {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text(error).font(.caption)
+                    Spacer()
+                    Button("Reintentar guardado") { _ = model.retrySave() }
+                        .buttonStyle(.focus(.warning, compact: true))
+                }.padding(10).foregroundStyle(Palette.danger).background(Palette.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            }
             if let s = model.session {
-                Text(s.task.title).font(.title3.weight(.medium))
-                HStack { Label("\(Int(s.accumulated / 60)) min de sesión", systemImage: "clock"); Spacer(); Text("\(s.interruptionCount) interrupciones") }.foregroundStyle(Palette.muted)
-                Text("\(s.checked.count) pasos marcados · \(model.changedFiles.count) archivos cambiados").font(.callout).foregroundStyle(Palette.mint)
+                Card(padding: 14) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(s.task.title).font(.title3.weight(.semibold))
+                        HStack(spacing: 10) {
+                            Chip("\(Int(s.accumulated / 60)) min de sesión", icon: "clock", color: Palette.mint)
+                            Chip("\(s.interruptionCount) interrupciones", icon: "exclamationmark.bubble", color: s.interruptionCount == 0 ? Palette.mint : Palette.coral)
+                            Chip("\(s.checked.count) pasos", icon: "checklist")
+                            Chip("\(model.selectedDeliverables.count)/\(allEvidenceFiles.count) entregables", icon: "doc.badge.checkmark", color: Palette.mint)
+                        }
+                    }
+                }
             }
-            if let message = model.evidenceMessage { Text(message).font(.caption).foregroundStyle(Palette.coral) }
-            if !model.changedFiles.isEmpty {
-                ScrollView { VStack(alignment: .leading, spacing: 6) { ForEach(model.changedFiles.prefix(50), id: \.self) { path in Label(URL(fileURLWithPath: path).lastPathComponent, systemImage: "doc").font(.caption).lineLimit(1) } } }.frame(maxHeight: 100)
+            if let message = model.evidenceMessage {
+                Text(message).font(.caption).foregroundStyle(Palette.coral)
             }
-            Text("Estos datos son señales de actividad, no una prueba de calidad o autoría.").font(.caption).foregroundStyle(Palette.muted)
-            TextField("Resultado o próximo paso (opcional)", text: $note, axis: .vertical).lineLimit(3...5).textFieldStyle(.roundedBorder)
-            HStack { Button("Sigue pendiente") { model.confirm(completed: false, note: note) }; Spacer(); Button("Sí, he terminado") { model.confirm(completed: true, note: note) }.buttonStyle(FocusPrimaryButton()).foregroundStyle(Palette.background).keyboardShortcut(.defaultAction) }
-        }.padding(30).frame(width: 540).background(Palette.background).preferredColorScheme(.dark).tint(Palette.mint).interactiveDismissDisabled()
+
+            // Evidence selection & manual attachment (Item 16)
+            VStack(alignment: .leading, spacing: 8) {
+                SectionHeader("Evidencias y entregables", icon: "folder.badge.gearshape") {
+                    Button { attachFileManually() } label: {
+                        Label("Adjuntar archivo manualmente…", systemImage: "paperclip")
+                    }
+                    .buttonStyle(.focus(.secondary, compact: true))
+                }
+                if allEvidenceFiles.isEmpty {
+                    Text("No se han detectado archivos nuevos en la carpeta. Puedes adjuntar el resultado manualmente o confirmar con una nota.")
+                        .font(.caption)
+                        .foregroundStyle(Palette.muted)
+                        .padding(.vertical, 6)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(allEvidenceFiles.prefix(50), id: \.self) { path in
+                                let isSelected = model.selectedDeliverables.contains(path)
+                                let isManual = model.manualAttachments.contains(path)
+                                let isWriting = model.writingFiles.contains(path)
+                                HStack(spacing: 10) {
+                                    Button {
+                                        model.toggleDeliverable(path)
+                                    } label: {
+                                        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                                            .font(.system(size: 15))
+                                            .foregroundStyle(isSelected ? Palette.mint : Palette.muted)
+                                    }.buttonStyle(.plain)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 6) {
+                                            Text(URL(fileURLWithPath: path).lastPathComponent).font(.caption.weight(.medium)).lineLimit(1)
+                                            Chip(isManual ? "Adjunto manual" : "Señal automática", color: isManual ? Palette.mint : Palette.muted)
+                                            if isSelected {
+                                                Chip("Resultado elegido", icon: "checkmark", color: Palette.mint)
+                                            }
+                                            if isWriting {
+                                                Chip("Recién escrito (<2 s)", icon: "clock", color: Palette.coral)
+                                            }
+                                        }
+                                        Text(path).font(.caption2).foregroundStyle(Palette.muted).lineLimit(1)
+                                    }
+                                    Spacer()
+                                    Button("Mostrar") {
+                                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                                    }.buttonStyle(.focus(.ghost, compact: true))
+                                    Button("Abrir") {
+                                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                                    }.buttonStyle(.focus(.secondary, compact: true))
+                                }
+                                .padding(8)
+                                .background(Palette.surface.opacity(isSelected ? 1 : 0.6), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(isSelected ? Palette.mint.opacity(0.35) : Palette.stroke, lineWidth: 1))
+                            }
+                        }
+                    }.frame(maxHeight: 145)
+                }
+                Text("Señal automática ≠ trabajo demostrado: marca cuál corresponde al entregable real.").font(.caption2).foregroundStyle(Palette.muted)
+            }
+
+            TextField("Resultado o próximo paso (opcional)", text: $note, axis: .vertical)
+                .lineLimit(2...4)
+                .textFieldStyle(.roundedBorder)
+
+            // Next Task Transition (Item 13). A task queued by an accepted hand-off is what the user asked for,
+            // so it takes the slot and the picker already points at starting it.
+            if let nextTask = model.queuedStartTask ?? model.next {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label(
+                            model.queuedStartTask != nil
+                                ? "ESPERANDO PARA EMPEZAR: \(nextTask.title)"
+                                : "SIGUIENTE TAREA SUGERIDA: \(nextTask.title)",
+                            systemImage: "arrow.right.circle"
+                        )
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Palette.mint)
+                        Spacer()
+                        if nextTask.isScheduled {
+                            Text(nextTask.scheduledAt.formatted(date: .omitted, time: .shortened) + (nextTask.isFixedAppointment ? " · Cita fija" : ""))
+                                .font(.caption2)
+                                .foregroundStyle(Palette.muted)
+                        } else {
+                            Text("Bandeja de pendientes").font(.caption2).foregroundStyle(Palette.muted)
+                        }
+                    }
+                    Picker("Al confirmar", selection: $transition) {
+                        Text("Mantener su horario").tag(NextTransitionAction.keepSchedule)
+                        Text("Empezar la siguiente").tag(NextTransitionAction.startNextNow)
+                        Text("Descansar 10 min").tag(NextTransitionAction.rest10Min)
+                    }.pickerStyle(.segmented)
+                }
+                .padding(12)
+                .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .onAppear { if model.queuedStartTask != nil { transition = .startNextNow } }
+            }
+
+            HStack(spacing: 10) {
+                Button("Cancelar sesión") {
+                    model.cancelSession(note: note.isEmpty ? "Sesión cancelada al confirmar" : note)
+                }.buttonStyle(.focusDestructive)
+                Spacer()
+                Button("Sigue pendiente") {
+                    model.confirm(completed: false, note: note, transition: transition)
+                }.buttonStyle(.focusSecondary)
+                Button("Sí, he terminado") {
+                    model.confirm(completed: true, note: note, transition: transition)
+                }
+                .buttonStyle(FocusPrimaryButton())
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(26)
+        .frame(width: 620)
+        .background(Palette.background)
+        .preferredColorScheme(.dark)
+        .tint(Palette.mint)
+        .interactiveDismissDisabled()
+    }
+
+    private func attachFileManually() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            model.attachManualFile(url.path)
+        }
+    }
+}
+
+enum SettingsSectionTab: String, CaseIterable, Identifiable {
+    case connections = "Conexiones y avisos"
+    case schedule = "Agenda y perfiles"
+    case privacy = "Privacidad"
+    case data = "Datos y copias"
+    case all = "Ver todo"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .connections: return "calendar.badge.clock"
+        case .schedule: return "bookmark.square"
+        case .privacy: return "hand.raised"
+        case .data: return "internaldrive"
+        case .all: return "rectangle.grid.1x2"
+        }
     }
 }
 
@@ -107,41 +598,498 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var bridge: CalendarBridge
     @ObservedObject var reminders: ReminderService
+    @State private var selectedSection: SettingsSectionTab = .connections
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var eraseDetails = false
+    @State private var newCategoryName = ""
+    @State private var newCategoryColor = Color(red: 0.64, green: 0.89, blue: 0.73)
+    @State private var newBreakTitle = "Descanso"
+    @State private var newBreakHour = 14
+    @State private var newBreakDuration = 30
+    @State private var pendingImportURL: URL?
+    @State private var pendingImportSummary = ""
+    @State private var editingProfile: FocusProfile?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            if model.preview { Text("Modo de prueba: las conexiones y permisos están desactivados.").foregroundStyle(Palette.coral) }
-            IntegrationView(model: model, bridge: bridge)
-            Card {
-                VStack(alignment: .leading, spacing: 15) {
-                    Label("Recordatorios y acceso rápido", systemImage: "bell").font(.title3.weight(.semibold))
-                    HStack { Text(reminders.message); Spacer(); Button("Activar notificaciones") { Task { await reminders.request(); model.schedule() } } }
-                    Toggle("Abrir FocusDesk al iniciar sesión", isOn: $launchAtLogin).onChange(of: launchAtLogin) { _, value in
-                        do { if value { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } } catch { model.error = error.localizedDescription; launchAtLogin = SMAppService.mainApp.status == .enabled }
+            if model.preview {
+                Text("Modo de prueba: las conexiones y permisos están desactivados.").foregroundStyle(Palette.coral)
+            }
+
+            // Quick section navigation bar so the user can move between settings without scrolling
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(SettingsSectionTab.allCases) { tab in
+                        Button {
+                            withAnimation(.easeOut(duration: 0.14)) { selectedSection = tab }
+                        } label: {
+                            Label(tab.rawValue, systemImage: tab.icon)
+                        }
+                        .buttonStyle(SelectableChipStyle(selected: selectedSection == tab))
                     }
-                    Text("Abre FocusDesk desde Aplicaciones, Spotlight o el Dock. Atajo: Control + Opción + Comando + F. Cerrar la ventana mantiene el contador; Salir pausa la sesión.").font(.caption).foregroundStyle(Palette.muted)
                 }
             }
-            Card {
-                VStack(alignment: .leading, spacing: 16) {
-                    Label("Qué puede observar", systemImage: "hand.raised").font(.title3.weight(.semibold))
-                    Text("Solo durante una sesión activa. No se registran teclas ni se capturan pantallas.").foregroundStyle(Palette.muted)
-                    Toggle("Leer títulos de ventana", isOn: Binding(get: { model.workspace.settings.observeTitles }, set: { value in model.updateSettings { $0.observeTitles = value } }))
-                    HStack { Label(model.accessible ? "Accesibilidad concedida" : "Accesibilidad pendiente para los títulos", systemImage: model.accessible ? "checkmark.circle" : "circle").font(.caption).foregroundStyle(Palette.muted); Spacer(); Button("Conceder Accesibilidad") { MacActivity.requestAccessibility() } }
-                    Toggle("Observar el dominio de la pestaña activa en Brave", isOn: Binding(get: { model.workspace.settings.observeBrave }, set: { value in model.updateSettings { $0.observeBrave = value } }))
-                    Text("macOS puede pedir permiso de Automatización al usar Brave en una sesión. Solo se guarda el dominio, sin rutas ni parámetros. Si no se obtiene, queda desconocido. Las webs se señalan; no se bloquean.").font(.caption).foregroundStyle(Palette.muted)
-                    Text("Los títulos pueden incluir nombres de documentos o datos personales. Puedes desactivar su lectura cuando quieras.").font(.caption).foregroundStyle(Palette.muted)
+
+            if selectedSection == .connections || selectedSection == .all {
+                IntegrationView(model: model, bridge: bridge)
+
+                // Notifications & Configurable Global Shortcut (Items 1 & 14)
+                Card {
+                    VStack(alignment: .leading, spacing: 15) {
+                        SectionHeader("Recordatorios y acceso rápido", icon: "bell")
+                        HStack {
+                            Text(reminders.message).font(.callout)
+                            Spacer()
+                            Button("Activar notificaciones") {
+                                Task { await reminders.request(); model.schedule() }
+                            }.buttonStyle(.focusSecondary)
+                            if reminders.status == .denied {
+                                Button("Abrir Ajustes de Notificaciones") {
+                                    reminders.openSystemSettings()
+                                }.buttonStyle(.focus(.warning))
+                            }
+                        }
+                        Divider().overlay(Palette.stroke)
+                        HStack {
+                            Toggle("Atajo global para abrir FocusDesk", isOn: Binding(
+                                get: { model.workspace.settings.hotKeyEnabled },
+                                set: { v in model.updateSettings { $0.hotKeyEnabled = v } }
+                            ))
+                            Spacer()
+                            Picker("Atajo", selection: Binding(
+                                get: { model.workspace.settings.hotKeyLabel },
+                                set: { label in
+                                    if let preset = HotKeyPreset.presets.first(where: { $0.label == label }) {
+                                        model.updateSettings {
+                                            $0.hotKeyLabel = preset.label
+                                            $0.hotKeyCode = preset.keyCode
+                                            $0.hotKeyModifiers = preset.modifiers
+                                        }
+                                    }
+                                }
+                            )) {
+                                ForEach(HotKeyPreset.presets) { preset in
+                                    Text(preset.label).tag(preset.label)
+                                }
+                            }.frame(width: 200)
+                        }
+                        Picker("Al usar el atajo global", selection: Binding(
+                            get: { model.workspace.settings.hotKeyTarget },
+                            set: { target in model.updateSettings { $0.hotKeyTarget = target } }
+                        )) {
+                            ForEach(HotKeyTarget.allCases, id: \.self) { target in
+                                Text(target.label).tag(target)
+                            }
+                        }.pickerStyle(.segmented)
+                        Text("Atajos de teclado en la app: ⌘1–⌘4 Secciones · ⌘[ / ⌘] Cambiar día · ⌘N Nueva tarea · ⌃⌥⌘S Empezar siguiente · ⌃⌥⌘P Pausar/Reanudar · ⌃⌥⌘T He terminado.")
+                            .font(.caption)
+                            .foregroundStyle(Palette.muted)
+                        Toggle("Abrir FocusDesk al iniciar sesión", isOn: $launchAtLogin).onChange(of: launchAtLogin) { _, value in
+                            do {
+                                if value { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+                            } catch {
+                                model.error = error.localizedDescription
+                                launchAtLogin = SMAppService.mainApp.status == .enabled
+                            }
+                        }
+                    }
                 }
             }
-            Card {
-                VStack(alignment: .leading, spacing: 16) {
-                    Label("Tus datos, en tu Mac", systemImage: "internaldrive").font(.title3.weight(.semibold))
-                    Text("El detalle de actividad se conserva 30 días. Después queda el resumen. Las evidencias de archivos y las notas permanecen en tu historial.").foregroundStyle(Palette.muted)
-                    HStack { Button("Exportar copia") { model.export() }; Button("Abrir carpeta de datos") { NSWorkspace.shared.open(model.store.url.deletingLastPathComponent()) }; Button("Borrar detalle de actividad", role: .destructive) { eraseDetails = true } }
-                    Text("Versión 0.2 · calendario editable por formulario · las repeticiones generan el siguiente bloque al completar la tarea.").font(.caption).foregroundStyle(Palette.muted)
+
+            if selectedSection == .schedule || selectedSection == .all {
+                // Reusable Profiles Management (Item 9)
+                Card {
+                    VStack(alignment: .leading, spacing: 14) {
+                        SectionHeader("Perfiles de trabajo reutilizables", icon: "bookmark.square") {
+                            Button {
+                                editingProfile = FocusProfile(name: "Nuevo perfil")
+                            } label: {
+                                Label("Nuevo perfil", systemImage: "plus")
+                            }
+                            .buttonStyle(FocusPrimaryButton(compact: true))
+                        }
+                        Text("Guarda las apps permitidas, dominios, modo estricto, duración habitual, checklist y carpeta para aplicarlos en un clic.")
+                            .font(.callout)
+                            .foregroundStyle(Palette.muted)
+                        ForEach(model.workspace.profiles) { profile in
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(Palette.category(profile.category, in: model.workspace.settings.categories))
+                                    .frame(width: 10, height: 10)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(profile.name).fontWeight(.semibold)
+                                    Text("\(profile.category) · \(profile.minutes) min · \(profile.strict ? "Modo estricto" : "Modo aviso") · \(profile.apps.count) app(s)")
+                                        .font(.caption)
+                                        .foregroundStyle(Palette.muted)
+                                }
+                                Spacer()
+                                Button("Editar") { editingProfile = profile }
+                                    .buttonStyle(.focus(.secondary, compact: true))
+                                if model.workspace.profiles.count > 1 {
+                                    Button {
+                                        model.deleteProfile(profile.id)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .buttonStyle(FocusIconButtonStyle(size: 26, tint: Palette.danger))
+                                }
+                            }
+                            .padding(12)
+                            .background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                    }
+                }
+
+                // Calendar Personalization: Categories, Workdays, Breaks (Item 10)
+                Card {
+                    VStack(alignment: .leading, spacing: 15) {
+                        SectionHeader("Personalización de agenda y horario", icon: "calendar.day.timeline.left")
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Días laborables").font(.callout.weight(.medium))
+                            HStack(spacing: 8) {
+                                ForEach([(2, "Lun"), (3, "Mar"), (4, "Mié"), (5, "Jue"), (6, "Vie"), (7, "Sáb"), (1, "Dom")], id: \.0) { day, label in
+                                    let active = model.workspace.settings.workdays.contains(day)
+                                    Button(label) {
+                                        model.updateSettings {
+                                            if active { $0.workdays.remove(day) } else { $0.workdays.insert(day) }
+                                        }
+                                    }
+                                    .buttonStyle(SelectableChipStyle(selected: active))
+                                }
+                            }
+                        }
+                        HStack(spacing: 20) {
+                            Stepper("Inicio jornada: \(model.workspace.settings.workStartHour):00", value: Binding(
+                                get: { model.workspace.settings.workStartHour },
+                                set: { v in model.updateSettings { $0.workStartHour = min(v, $0.workEndHour - 1) } }
+                            ), in: 5...20)
+                            Stepper("Fin jornada: \(model.workspace.settings.workEndHour):00", value: Binding(
+                                get: { model.workspace.settings.workEndHour },
+                                set: { v in model.updateSettings { $0.workEndHour = max(v, $0.workStartHour + 1) } }
+                            ), in: 8...23)
+                        }
+                        Divider().overlay(Palette.stroke)
+                        Text("Descansos habituales").font(.callout.weight(.medium))
+                        ForEach(model.workspace.settings.breaks) { brk in
+                            HStack {
+                                Chip("\(String(format: "%02d:%02d", brk.startHour, brk.startMinute)) · \(brk.durationMinutes) min", icon: "cup.and.saucer")
+                                Text(brk.title).font(.callout)
+                                Spacer()
+                                Button {
+                                    model.updateSettings { $0.breaks.removeAll { b in b.id == brk.id } }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(FocusIconButtonStyle(size: 24, tint: Palette.danger))
+                            }
+                        }
+                        HStack {
+                            TextField("Descanso", text: $newBreakTitle).textFieldStyle(.roundedBorder).frame(width: 150)
+                            Stepper("Hora: \(newBreakHour):00", value: $newBreakHour, in: 6...22)
+                            Stepper("\(newBreakDuration) min", value: $newBreakDuration, in: 10...180, step: 10)
+                            Button("Añadir descanso") {
+                                let clean = newBreakTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                                guard !clean.isEmpty else { return }
+                                model.updateSettings {
+                                    $0.breaks.append(BreakPeriod(title: clean, startHour: newBreakHour, startMinute: 0, durationMinutes: newBreakDuration))
+                                }
+                            }.buttonStyle(.focus(.secondary, compact: true))
+                        }
+                        Divider().overlay(Palette.stroke)
+                        Text("Categorías y colores").font(.callout.weight(.medium))
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 8) {
+                            ForEach(model.workspace.settings.categories) { cat in
+                                HStack(spacing: 8) {
+                                    Circle().fill(Color(red: cat.red, green: cat.green, blue: cat.blue)).frame(width: 12, height: 12)
+                                    Text(cat.name).font(.caption.weight(.medium))
+                                    Spacer()
+                                    if !["Personal", "Contenido", "Estudio", "Tienda"].contains(cat.name) {
+                                        Button {
+                                            model.updateSettings { $0.categories.removeAll { $0.name == cat.name } }
+                                        } label: { Image(systemName: "xmark") }
+                                        .buttonStyle(FocusIconButtonStyle(size: 20))
+                                    }
+                                }.padding(8).background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+                            }
+                        }
+                        HStack {
+                            TextField("Nueva categoría", text: $newCategoryName).textFieldStyle(.roundedBorder).frame(width: 180)
+                            ColorPicker("", selection: $newCategoryColor, supportsOpacity: false).labelsHidden()
+                            Button("Añadir categoría") {
+                                let name = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+                                guard !name.isEmpty else { return }
+                                let nsColor = NSColor(newCategoryColor).usingColorSpace(.sRGB) ?? NSColor.systemMint
+                                let item = CategoryItem(
+                                    name: name,
+                                    red: Double(nsColor.redComponent),
+                                    green: Double(nsColor.greenComponent),
+                                    blue: Double(nsColor.blueComponent)
+                                )
+                                model.updateSettings {
+                                    if let idx = $0.categories.firstIndex(where: { $0.name.lowercased() == name.lowercased() }) {
+                                        $0.categories[idx] = item
+                                    } else {
+                                        $0.categories.append(item)
+                                    }
+                                }
+                                newCategoryName = ""
+                            }.buttonStyle(.focus(.secondary, compact: true))
+                        }
+                    }
                 }
             }
-        }.disabled(model.preview).confirmationDialog("¿Borrar el detalle de aplicaciones, títulos y dominios de las sesiones anteriores? Los resúmenes se conservan.", isPresented: $eraseDetails, titleVisibility: .visible) { Button("Borrar detalle", role: .destructive) { model.removeDetailedHistory() } }
+
+            if selectedSection == .privacy || selectedSection == .all {
+                // Privacy & Observation Controls (Items 15 & 17)
+                Card {
+                    VStack(alignment: .leading, spacing: 15) {
+                        SectionHeader("Qué puede observar y controles de privacidad", icon: "hand.raised")
+                        Text("Solo durante una sesión activa. No se registran teclas ni se capturan pantallas.").foregroundStyle(Palette.muted)
+                        Toggle("Leer títulos de ventana", isOn: Binding(
+                            get: { model.workspace.settings.observeTitles },
+                            set: { value in model.updateSettings { $0.observeTitles = value } }
+                        ))
+                        HStack {
+                            Chip(model.accessible ? "Accesibilidad concedida" : "Accesibilidad pendiente", icon: model.accessible ? "checkmark.circle.fill" : "circle", color: model.accessible ? Palette.mint : Palette.coral)
+                            Spacer()
+                            Button("Conceder Accesibilidad") { MacActivity.requestAccessibility() }
+                                .buttonStyle(.focus(.secondary, compact: true))
+                            Button("Ajustes de Accesibilidad") { MacActivity.openAccessibilitySettings() }
+                                .buttonStyle(.focus(.ghost, compact: true))
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Excluir aplicaciones de la lectura de títulos").font(.callout.weight(.medium))
+                                Spacer()
+                                Button("Añadir app excluida…") { addExcludedTitleApp() }
+                                    .buttonStyle(.focus(.secondary, compact: true))
+                            }
+                            if model.workspace.settings.excludedTitleApps.isEmpty {
+                                Text("Ninguna app excluida. Añade gestores de contraseñas o mensajería si no quieres guardar sus títulos de ventana.")
+                                    .font(.caption)
+                                    .foregroundStyle(Palette.muted)
+                            } else {
+                                ForEach(model.workspace.settings.excludedTitleApps) { app in
+                                    HStack {
+                                        Text(app.name).font(.caption.weight(.medium))
+                                        Spacer()
+                                        Button {
+                                            model.updateSettings { $0.excludedTitleApps.removeAll { a in a.id == app.id } }
+                                        } label: { Image(systemName: "xmark") }
+                                        .buttonStyle(FocusIconButtonStyle(size: 22))
+                                    }
+                                }
+                            }
+                        }
+                        Divider().overlay(Palette.stroke)
+                        Toggle("Observar el dominio de la pestaña activa en Brave", isOn: Binding(
+                            get: { model.workspace.settings.observeBrave },
+                            set: { value in model.updateSettings { $0.observeBrave = value } }
+                        ))
+                        HStack {
+                            Text("Estado Brave: \(model.braveStatus)").font(.caption).foregroundStyle(Palette.muted)
+                            Spacer()
+                            Button("Ajustes de Automatización") { MacActivity.openAutomationSettings() }
+                                .buttonStyle(.focus(.ghost, compact: true))
+                        }
+                        Text("Solo se guarda el dominio (sin rutas ni parámetros). Si el navegador está cerrado, no tiene pestaña o falta permiso, se indica como desconocido.")
+                            .font(.caption)
+                            .foregroundStyle(Palette.muted)
+                    }
+                }
+            }
+
+            if selectedSection == .data || selectedSection == .all {
+                // Data Retention, Backups & Recovery (Items 6, 17, 18)
+                Card {
+                    VStack(alignment: .leading, spacing: 15) {
+                        SectionHeader("Tus datos, copias y recuperación", icon: "internaldrive")
+                        HStack {
+                            Text("Conservar detalle de actividad durante:")
+                            Picker("Días", selection: Binding(
+                                get: { model.workspace.settings.detailDays },
+                                set: { days in
+                                    model.updateSettings { $0.detailDays = days }
+                                    model.workspace.prune(at: Date())
+                                    _ = model.persist()
+                                }
+                            )) {
+                                ForEach([7, 14, 30, 60, 90], id: \.self) { d in
+                                    Text("\(d) días").tag(d)
+                                }
+                            }.frame(width: 130)
+                            Spacer()
+                        }
+                        Text("Pasado ese plazo se limpia el detalle de actividad puntual y se conservan los resúmenes, notas y archivos confirmados.")
+                            .font(.caption)
+                            .foregroundStyle(Palette.muted)
+                        if model.hasUnsavedChanges {
+                            HStack {
+                                Label("Hay cambios pendientes de guardar en disco.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(Palette.coral)
+                                Spacer()
+                                Button("Reintentar guardado ahora") { _ = model.retrySave() }.buttonStyle(FocusPrimaryButton(compact: true))
+                            }
+                        }
+                        if model.corruptFileDetected {
+                            HStack {
+                                Label("El archivo principal está dañado y protegido contra escritura accidental.", systemImage: "shield.lefthalf.filled").foregroundStyle(Palette.coral)
+                                Spacer()
+                                Button("Recuperar última copia automática") { model.recoverFromAutoBackup() }.buttonStyle(FocusPrimaryButton(compact: true))
+                                Button("Iniciar agenda limpia (conservando dañado)") { model.resetCorruptWorkspacePreservingFile() }
+                                    .buttonStyle(.focusSecondary)
+                            }
+                        }
+                        HStack(spacing: 10) {
+                            Button("Exportar copia JSON") { model.export() }
+                                .buttonStyle(.focusSecondary)
+                            Button("Importar / Restaurar copia…") { chooseBackupToImport() }
+                                .buttonStyle(.focusSecondary)
+                            Button("Recuperar copia automática") { model.recoverFromAutoBackup() }
+                                .buttonStyle(.focusSecondary)
+                            Button("Abrir carpeta de datos") { NSWorkspace.shared.open(model.store.url.deletingLastPathComponent()) }
+                                .buttonStyle(.focusGhost)
+                            Spacer()
+                            Button("Borrar detalle de actividad") { eraseDetails = true }
+                                .buttonStyle(.focusDestructive)
+                        }
+                    }
+                }
+            }
+        }
+        .disabled(model.preview)
+        .sheet(item: $editingProfile) { profile in
+            ProfileEditorSheet(model: model, draft: profile)
+        }
+        .confirmationDialog(
+            "¿Borrar el detalle de aplicaciones, títulos y dominios de las sesiones anteriores? Los resúmenes se conservan.",
+            isPresented: $eraseDetails,
+            titleVisibility: .visible
+        ) {
+            Button("Borrar detalle", role: .destructive) { model.removeDetailedHistory() }
+        }
+        .confirmationDialog(
+            "¿Restaurar esta copia de seguridad? \(pendingImportSummary) Se guardará primero un respaldo automático de tus datos actuales en la carpeta backups.",
+            isPresented: Binding(get: { pendingImportURL != nil }, set: { if !$0 { pendingImportURL = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Restaurar copia y respaldar actual") {
+                if let url = pendingImportURL {
+                    do { try model.restoreBackup(from: url) }
+                    catch { model.error = error.localizedDescription }
+                }
+                pendingImportURL = nil
+            }
+        }
+    }
+
+    private func addExcludedTitleApp() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        model.updateSettings { settings in
+            for url in panel.urls {
+                guard let bundle = Bundle(url: url), let id = bundle.bundleIdentifier,
+                      !settings.excludedTitleApps.contains(where: { $0.id == id }) else { continue }
+                settings.excludedTitleApps.append(AllowedApp(id: id, name: url.deletingPathExtension().lastPathComponent, path: url.path))
+            }
+        }
+    }
+
+    private func chooseBackupToImport() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let previewWorkspace = try model.store.validateBackup(at: url)
+            let currentTasks = model.workspace.tasks.count
+            let currentHistory = model.workspace.history.count
+            pendingImportSummary = "La copia contiene \(previewWorkspace.tasks.count) tareas y \(previewWorkspace.history.count) sesiones (actualmente tienes \(currentTasks) tareas y \(currentHistory) sesiones)."
+            pendingImportURL = url
+        } catch {
+            model.error = "Archivo de copia no válido: \(error.localizedDescription)"
+        }
+    }
+}
+
+struct ProfileEditorSheet: View {
+    @ObservedObject var model: AppModel
+    @State var draft: FocusProfile
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Editar perfil reutilizable").font(.title2.weight(.semibold))
+                Spacer()
+                Button { dismiss() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(FocusIconButtonStyle(size: 28))
+            }
+            TextField("Nombre del perfil", text: $draft.name).textFieldStyle(.roundedBorder)
+            HStack {
+                Picker("Categoría", selection: $draft.category) {
+                    ForEach(model.workspace.settings.categories.map(\.name), id: \.self) { Text($0) }
+                }
+                Stepper("Duración: \(draft.minutes) min", value: $draft.minutes, in: 5...720, step: 5)
+            }
+            Toggle("Modo estricto (volver a una app permitida)", isOn: $draft.strict)
+            HStack {
+                Text("Aplicaciones (\(draft.apps.count))").font(.callout.weight(.medium))
+                Spacer()
+                Button("Añadir apps…") {
+                    let panel = NSOpenPanel()
+                    panel.directoryURL = URL(fileURLWithPath: "/Applications")
+                    panel.allowedContentTypes = [.application]
+                    panel.allowsMultipleSelection = true
+                    if panel.runModal() == .OK {
+                        for url in panel.urls {
+                            if let bundle = Bundle(url: url), let id = bundle.bundleIdentifier, !draft.apps.contains(where: { $0.id == id }) {
+                                draft.apps.append(AllowedApp(id: id, name: url.deletingPathExtension().lastPathComponent, path: url.path))
+                            }
+                        }
+                    }
+                }.buttonStyle(.focus(.secondary, compact: true))
+            }
+            ForEach(draft.apps) { app in
+                HStack {
+                    Text(app.name).font(.caption)
+                    Spacer()
+                    Button { draft.apps.removeAll { $0.id == app.id } } label: { Image(systemName: "xmark") }
+                        .buttonStyle(FocusIconButtonStyle(size: 20))
+                }
+            }
+            TextField("Dominios (ej. chatgpt.com, claude.ai)", text: $draft.domains).textFieldStyle(.roundedBorder)
+            Text("Checklist (un paso por línea)").font(.caption).foregroundStyle(Palette.muted)
+            TextEditor(text: $draft.checklist).frame(height: 70).overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.stroke))
+            HStack {
+                Text(draft.folder ?? "Sin carpeta predeterminada").font(.caption).foregroundStyle(Palette.muted).lineLimit(1)
+                Spacer()
+                Button("Carpeta…") {
+                    let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
+                    if panel.runModal() == .OK, let url = panel.url { draft.folder = url.path }
+                }.buttonStyle(.focus(.secondary, compact: true))
+                if draft.folder != nil {
+                    Button("Quitar") { draft.folder = nil }.buttonStyle(.focus(.ghost, compact: true))
+                }
+            }
+            HStack {
+                Button("Cancelar") { dismiss() }.buttonStyle(.focusSecondary)
+                Spacer()
+                Button("Guardar perfil") {
+                    model.saveProfile(draft)
+                    dismiss()
+                }
+                .buttonStyle(FocusPrimaryButton())
+                .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 540)
+        .background(Palette.background)
+        .preferredColorScheme(.dark)
     }
 }

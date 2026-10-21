@@ -1,78 +1,69 @@
 # FocusDesk
 
-Tu plan del día y el tiempo de cada tarea, accesibles desde la barra de menús de macOS.
+Tu plan del día y el tiempo de cada tarea, accesibles desde la barra de menús de macOS y el Dock.
 
 ## Abrir
 
-Abre `~/Applications/FocusDesk.app` con doble clic, búscala en Spotlight o usa su icono del Dock. La copia compilada también está en `dist/FocusDesk.app`. Cerrar su ventana deja la app funcionando en la barra. El atajo **Control + Opción + Comando + F** vuelve a abrirla. Para cerrarla completamente, usa **Salir** en su menú.
+Abre `~/Applications/FocusDesk.app` con doble clic, búscala en Spotlight o usa su icono del Dock. La copia compilada también está en `dist/FocusDesk.app`. Cerrar su ventana deja la app funcionando en la barra. El atajo global (**Control + Opción + Comando + F** por defecto, configurable en **Ajustes**) vuelve a abrir el planificador o el panel compacto. Para cerrarla completamente, usa **Salir** en su menú.
 
-Requiere macOS 14 o posterior. La compilación incluida es para Apple Silicon, firmada localmente; no es una distribución notarizada.
+Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma estable local (`Apple Development`) cuando está disponible en el llavero (con respaldo ad-hoc `-`), conservando los permisos de macOS entre recompilaciones.
 
 ## Primer uso
 
-1. Pulsa **Nueva tarea**. Pon un objetivo, inicio y duración. Las plantillas Vídeo, Estudiar y Tienda son editables.
-2. Elige las aplicaciones necesarias. Activa «Volver a una app permitida» si quieres redirección al distraerte. Puedes pausar desde la barra en cualquier momento.
-3. Opcionalmente añade una checklist y una carpeta concreta de resultados. Se comparan fechas y tamaños de archivos, sin leer su contenido.
-4. En **Ajustes**, activa las notificaciones. Cuando llegue el aviso, inicia la sesión desde la barra o el planificador.
-5. Pulsa **He terminado**, aunque sobre tiempo. Revisa las señales de actividad y confirma si la tarea quedó terminada o pendiente.
+1. Pulsa **Nueva tarea** (`⌘N`). Pon un objetivo, elige si tiene horario reservado o va a la **bandeja de pendientes sin hora**, añade opcionalmente una **fecha límite** independiente y define su duración.
+2. Aplica uno de los **perfiles reutilizables** (*Grabar vídeo*, *Estudiar*, *Tienda*) o guarda tus propios perfiles con aplicaciones, dominios, modo estricto, duración habitual, checklist y carpeta de resultados.
+3. Activa «Volver a una app permitida» si quieres redirección automática al distraerte. Puedes pausar o cancelar en cualquier momento desde la barra, la ventana o por atajo (`⌃⌥⌘P`).
 
-El modo estricto devuelve el foco a una app permitida y registra la interrupción. Finder, Ajustes del Sistema, FocusDesk, Vorssaint y diálogos esenciales siguen accesibles. No suspende procesos ni cierra documentos. Un navegador permitido puede abrir cualquier web: los dominios se señalan, no se bloquean.
+**Un solo temporizador, siempre.** Si empiezas otra tarea mientras hay una en marcha, FocusDesk pregunta: «Tienes «A» en marcha. ¿La terminas y empiezas «B»?». Al aceptar, detiene la actual, te pide su resultado y arranca la nueva al confirmarlo, así nunca pierdes el tiempo ya trabajado. Empezar la tarea que ya está en marcha simplemente la reanuda si estaba en pausa.
+
+**Si el Mac se duerme o se bloquea**, la sesión se pausa y al volver aparece un aviso que espera respuesta («¿Reanudamos?») y una notificación con acción **Reanudar**; el tiempo que el Mac estuvo bloqueado no cuenta como trabajado. Que solo se apague la pantalla no pausa nada: grabar, leer o estudiar ocurre sin tocar el teclado.
+4. En **Ajustes**, activa las notificaciones. Cuando llegue el aviso previo o de inicio, puedes pulsar **Empezar ahora** o **Posponer 10 min** directamente desde la notificación sin buscar la tarea en la ventana. Si el permiso está denegado, Ajustes ofrece un botón directo a la configuración de Notificaciones de macOS.
+5. Pulsa **He terminado** (`⌃⌥⌘T`), aunque sobre tiempo. Revisa los archivos detectados, marca cuáles corresponden al resultado real, adjunta archivos manualmente si lo necesitas y elige cómo pasar a la siguiente tarea (**Mantener su horario**, **Empezar la siguiente** o **Descansar 10 min**).
+
+Cerrar la pantalla o el bloqueo del Mac pausan la observación; el reposo de la pantalla por sí solo, no.
+
+El modo estricto devuelve el foco a una app permitida y registra una sola interrupción por cada episodio continuo fuera del entorno de trabajo (volver a trabajar y salir de nuevo cuenta como otra). Finder, Ajustes del Sistema, FocusDesk, Vorssaint y diálogos del sistema siguen accesibles. Si una app permitida se cierra o falla su activación tras varios intentos, la sesión se pausa automáticamente para evitar bucles y conservar el control. Un navegador permitido puede abrir cualquier web: los dominios se normalizan (aceptando URLs como `https://claude.ai/`), se señalan y registran, pero no se bloquean.
 
 ## Vorssaint y Apple Calendar
 
-En Ajustes, concede acceso a Calendario y selecciona dónde crear el calendario **FocusDesk**. Una fuente de iCloud, Exchange u otra cuenta puede sincronizar sus eventos fuera del Mac; el resto de datos de FocusDesk permanece local.
+En Ajustes, concede acceso a Calendario y selecciona dónde crear o conectar el calendario **FocusDesk**.
 
 En Vorssaint, activa su integración Calendar de Dynamic Island, las cuentas atrás y el tiempo restante, y selecciona FocusDesk. FocusDesk proyecta el inicio y el final previsto; al pausar elimina la proyección activa y al reanudar la recalcula. Al terminar antes, actualiza el final real.
 
-**Límite conocido de Vorssaint 3.4.1:** la cuenta atrás aparece durante los últimos 60 minutos antes del inicio/final y desaparece al vencer. Otros eventos pueden competir por ese espacio. Este puente no controla su Pomodoro. El contador de FocusDesk sigue disponible, también durante el tiempo extra.
-
-Edita los bloques desde FocusDesk. Si se cambia el título, horario o tipo de un evento en Calendar, FocusDesk lo conserva y muestra un conflicto en Ajustes. Puedes aplicar explícitamente el horario de FocusDesk. Un evento borrado no se recrea automáticamente; los eventos trasladados a otro calendario o convertidos en serie no se modifican. El botón «Crear tarea de prueba · 2 min» permite comprobar la isla. La pantalla de conexión distingue permiso, calendario y configuración de Vorssaint. Su presentación real requiere validar estos pasos en tu Mac.
+- **Cola persistente de sincronización**: si Calendar falla temporalmente al pausar, terminar, posponer o eliminar una tarea, la operación se guarda en `pendingCalendarOps` con reintentos automáticos limitados y estado visible en la barra lateral y Ajustes hasta verificar que el evento en EventKit refleja el estado real, sin dejar contadores antiguos ni duplicar eventos.
+- **Una sola cuenta atrás en la isla**: mientras una sesión está en marcha, FocusDesk retira de Calendar los bloques de las tareas que empezarían antes de que esa sesión termine. Vorssaint muestra el momento elegible más próximo, así que esas tareas le robarían el contador a lo que estás haciendo. Siguen en tu agenda de FocusDesk y vuelven a Calendar en cuanto la sesión acaba o se pausa.
+- **Límite conocido de Vorssaint 3.4.1**: la cuenta atrás aparece durante los últimos 60 minutos antes del inicio/final y desaparece al vencer. Este puente no controla su Pomodoro. El contador de FocusDesk sigue disponible en el Dock y la barra, también durante sesiones de 90 minutos y tiempo extra.
 
 ## Qué incluye la versión 0.2 beta
 
-- Agenda diaria y semanal, arrastre entre días, edición de hora/duración por formulario y avisos de solapamiento al editar.
-- Sesión única con cuenta atrás, pausa, reanudación, ampliación y tiempo extra. Agotar el reloj nunca completa una tarea.
-- Pausa al bloquear o suspender el Mac. Tras reiniciar, una sesión se recupera en pausa; el cierre inesperado puede perder hasta 15 segundos desde el último guardado.
-- Repetición diaria/semanal: se crea la siguiente ocurrencia al completar la actual, conservando su hora local. Si completas una tarea atrasada, la siguiente se programa en la próxima fecha futura, conservando su hora.
-- Observación de aplicaciones durante sesiones activas. Títulos opcionales con Accesibilidad y dominio de Brave mediante Automatización. Los permisos se activan desde Ajustes.
-- Historial con confirmación personal, interrupciones y señales de archivos creados/modificados. Sin garantía de autoría, calidad o tarea realmente completada.
-- Exportación JSON e inicio al iniciar sesión, opcional.
-
-Esta beta no incluye importar ediciones de Calendar, entrada por voz, bloqueo de webs, sincronización móvil ni reconocimiento automático del resultado de un vídeo. La siguiente tarea mantiene su horario y empieza cuando la inicias.
+- **Agenda personalizable y vista por horas**: categorías y colores propios, días laborables, horario de jornada y bloques de descanso. Vista de día por horas donde puedes arrastrar bloques verticalmente para cambiar su hora, arrastrar su borde inferior para ajustar la duración y ver solapamientos en vivo.
+- **Tareas sin horario y fecha límite**: bandeja de pendientes sin hora independiente de la fecha límite (*«Preparar guion, antes del viernes»*), arrastrables al calendario cuando decidas programarlos.
+- **Postergación inteligente**: posponer una tarea atrasada o sin hora calcula la nueva hora desde el momento actual (`ahora + 10 min`); posponer una tarea futura desplaza su horario previsto, actualizando su aviso y su evento en Calendar.
+- **Repeticiones ampliadas y vista previa**: repetición diaria, semanal, días laborables (L–V) y días concretos (ej. L, X, V). Muestra las próximas ocurrencias en la agenda antes de completar la actual y permite elegir entre editar toda la serie o separar una única ocurrencia.
+- **Reloj monotónico de sesión**: la duración trabajada se mide con el reloj monotónico del sistema (`systemUptime`), por lo que cambiar la hora del Mac no añade ni quita minutos de trabajo. Incluye cancelación de sesión diferenciada de tarea completada e incompleta.
+- **Reposición automática de avisos**: si un día supera el límite del sistema de 60 avisos pendientes, FocusDesk repone automáticamente los siguientes conforme se consumen los primeros o al despertar del reposo.
+- **Evidencias y privacidad**: distinción entre señal automática de carpeta (ignorando temporales y avisando si un archivo se modificó hace menos de 2 s) y archivos confirmados o adjuntados manualmente, con botones para abrir o mostrar en Finder. Historial con búsqueda, filtros por área/estado/fecha, desglose de tiempo de sesión frente a actividad observada por app, borrado de sesiones individuales y lista de aplicaciones excluidas de la lectura de títulos.
+- **Respaldo y recuperación de extremo a extremo**: ninguna operación muestra «terminada» o «guardada» si falla la escritura en disco; ofrece reintento en memoria, copia rodante automática (`workspace.backup.json`), importación/restauración validada con respaldo previo automático y recuperación sin editar archivos manualmente.
 
 ## Datos
 
-Se guardan en `~/Library/Application Support/FocusDesk/workspace.json`, con escritura atómica y permisos de archivo privados. No se lee ni migra ForgeDesk. La aplicación no incorpora un servicio de IA ni envía tu actividad a un servidor.
+Se guardan en `~/Library/Application Support/FocusDesk/workspace.json`, con escritura atómica y copia automática `workspace.backup.json`.
 
-Los títulos y dominios pueden contener información personal. El detalle de actividad se limpia al abrir la app y al cambiar de día si supera 30 días; los resúmenes, notas y nombres de archivos permanecen. Puedes borrar el detalle y exportar una copia desde Ajustes. Si el documento no se puede leer, se conserva intacto y la app impide sobrescribirlo.
+En `backups/` hay además **una copia con fecha por cada día de uso** (`daily-AAAA-MM-DD.json`, se conservan las 14 últimas), más los respaldos previos a cada restauración. La copia automática refleja lo que se está guardando, así que te protege de un archivo dañado; las copias diarias son a las que puedes volver si un día guardas algo que no querías. Se restauran desde **Ajustes → Restaurar copia**.
 
 ## Desarrollo y comprobación
 
 ```sh
 swift test
 ./build.command
-# Con la app cerrada: instalar y abrir en ~/Applications
+# Con la app cerrada: verifica el nuevo bundle, respalda la versión previa e instala en ~/Applications
 ./scripts/install.command
 ```
 
-Para explorar con datos separados, cierra primero la app normal y ejecuta:
+Para explorar con datos separados:
 
 ```sh
 ./dist/FocusDesk.app/Contents/MacOS/FocusDesk --preview
 ```
 
-Cada demostración usa una carpeta temporal nueva. No programa notificaciones ni permite habilitar integraciones. Cierra la app normal antes de ejecutar una demostración. Puedes añadir `--preview-directory /ruta/temporal` para conservar datos de prueba entre arranques.
-
-El chequeo completo del flujo se ejecuta con `--preview --smoke-test`; imprime PASS o FAIL y deja `smoke-report.txt` en su carpeta temporal. Usa una carpeta nueva para cada ejecución.
-
-Estructura: `Sources/FocusCore` contiene las reglas y almacenamiento; `Sources/FocusDesk`, la interfaz e integraciones. El diseño previsto está en `docs/superpowers/specs` y el alcance inicial en `docs/plans`.
-
-### Validación
-
-Quince pruebas automatizadas cubren temporizadores, finalización anticipada, recurrencia durante cambio de hora, dominios, evidencias, solapamientos, retención y persistencia. La compilación de producción y firma local están verificadas. También se ha ejecutado el flujo completo en el bundle real con datos aislados. Las comprobaciones manuales y límites concretos se registran en `docs/VALIDACION.md`.
-
-### Actualizaciones de la beta
-
-Esta distribución usa firma local. macOS puede pedir de nuevo Calendario, Accesibilidad o Automatización al cambiar el binario. La app conserva sus tareas e historial al reinstalarse. El instalador guarda el bundle anterior en `.build/installed-backups` y no modifica la carpeta de datos.
-
-El chequeo optativo `--verify-calendar` comprueba únicamente un calendario FocusDesk ya conectado y autorizado. Crea un evento temporal propio, verifica creación, conflicto, pausa, reanudación y final anticipado, y retira ese evento. Guarda el resultado en `~/Library/Application Support/FocusDesk/calendar-check.txt`. No concede permisos ni configura Vorssaint.
+El chequeo integrado del flujo se ejecuta con `--preview --smoke-test`; imprime `PASS` o `FAIL`, guarda `smoke-report.txt` y devuelve código de salida distinto de cero (`1`) si falla. El chequeo optativo de EventKit se ejecuta con `--verify-calendar` (y `--quit-after-verify` para uso automatizado) y también devuelve código de salida `1` si imprime `FAIL` o `BLOCKED`.
