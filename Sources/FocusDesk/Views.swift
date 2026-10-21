@@ -56,7 +56,6 @@ private func dayTitle(for date: Date) -> String {
 
 struct MainView: View {
     @ObservedObject var model: AppModel
-    @State private var deleteTask: FocusTask?
     @State private var deleteRecordID: UUID?
 
     var body: some View {
@@ -82,8 +81,8 @@ struct MainView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         switch model.currentPage {
-                        case .today: TodayPage(model: model, onDelete: { deleteTask = $0 })
-                        case .week: WeekPage(model: model, onDelete: { deleteTask = $0 })
+                        case .today: TodayPage(model: model, onDelete: { model.taskPendingDeletion = $0 })
+                        case .week: WeekPage(model: model, onDelete: { model.taskPendingDeletion = $0 })
                         case .history: HistoryPage(model: model, onDeleteRecord: { deleteRecordID = $0 })
                         case .settings: SettingsView(model: model, bridge: model.calendar, reminders: model.reminders)
                         }
@@ -104,8 +103,8 @@ struct MainView: View {
         .tint(Palette.mint)
         .sheet(item: $model.editingTask) { task in TaskEditor(model: model, draft: task) }
         .sheet(isPresented: $model.showCompletion) { CompletionView(model: model) }
-        .confirmationDialog("¿Eliminar esta tarea y su evento de calendario?", isPresented: Binding(get: { deleteTask != nil }, set: { if !$0 { deleteTask = nil } }), titleVisibility: .visible) {
-            Button("Eliminar tarea", role: .destructive) { if let task = deleteTask { model.deleteTask(task) }; deleteTask = nil }
+        .confirmationDialog("¿Eliminar esta tarea y su evento de calendario?", isPresented: Binding(get: { model.taskPendingDeletion != nil }, set: { if !$0 { model.taskPendingDeletion = nil } }), titleVisibility: .visible) {
+            Button("Eliminar tarea", role: .destructive) { if let task = model.taskPendingDeletion { model.deleteTask(task) }; model.taskPendingDeletion = nil }
         }
         .confirmationDialog("¿Borrar esta sesión del historial?", isPresented: Binding(get: { deleteRecordID != nil }, set: { if !$0 { deleteRecordID = nil } }), titleVisibility: .visible) {
             Button("Borrar sesión", role: .destructive) { if let id = deleteRecordID { model.deleteHistoryRecord(id) }; deleteRecordID = nil }
@@ -487,6 +486,7 @@ private struct TodayPage: View {
     var onDelete: (FocusTask) -> Void
     @AppStorage("FocusDesk.dayLayoutHourly") private var hourly = true
     @State private var overdueExpanded = true
+    @FocusState private var agendaFocused: Bool
 
     var body: some View {
         let bundle = model.tasksForDay(model.selectedDate)
@@ -546,6 +546,44 @@ private struct TodayPage: View {
             }
 
             UnscheduledInbox(model: model, onDelete: onDelete)
+        }
+        // The agenda takes the keyboard: ↑↓ choose a task, ↩ edit, space start, ⌫ delete, ⌥↑↓ move 5 min,
+        // ⌥⇧↑↓ change its length, Esc clear. Without this a specific task could only be reached with the mouse.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($agendaFocused)
+        .onKeyPress(phases: .down) { press in handleKey(press) }
+        .onAppear { agendaFocused = true }
+    }
+
+    private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+        let option = press.modifiers.contains(.option)
+        let shift = press.modifiers.contains(.shift)
+        switch press.key {
+        case .downArrow, .upArrow:
+            let step = press.key == .downArrow ? 1 : -1
+            if option && shift { model.resizeSelected(by: 5 * step) }
+            else if option { model.nudgeSelected(minutes: 5 * step) }
+            else { model.moveSelection(by: step) }
+            return .handled
+        case .return:
+            guard let task = model.selectedTask, task.id != model.session?.task.id else { return .ignored }
+            model.editingTask = task
+            return .handled
+        case .space:
+            guard model.selectedTaskIsActionable, let task = model.selectedTask else { return .ignored }
+            model.start(task)
+            return .handled
+        case .delete, .deleteForward:
+            guard model.selectedTaskIsActionable || model.selectedTask?.completed == true, let task = model.selectedTask else { return .ignored }
+            onDelete(task)
+            return .handled
+        case .escape:
+            guard model.selectedTaskID != nil else { return .ignored }
+            model.selectedTaskID = nil
+            return .handled
+        default:
+            return .ignored
         }
     }
 
@@ -765,10 +803,16 @@ struct TaskRowView: View {
                               style: StrokeStyle(lineWidth: 1, dash: isProjected ? [5, 3] : []))
         )
         .saturation(task.completed ? 0 : 1)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Palette.mint, lineWidth: model.selectedTaskID == task.id ? 2 : 0)
+        )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .onTapGesture(count: 2) { if !isActive { model.editingTask = task } }
+        .simultaneousGesture(TapGesture().onEnded { if !isProjected { model.selectedTaskID = task.id } })
+        .accessibilityAddTraits(model.selectedTaskID == task.id ? .isSelected : [])
         .contextMenu { menuItems }
         .draggable(task.id.uuidString)
         .help(isActive ? "Tarea en sesión" : "Doble clic para editar · arrastra para mover · clic derecho para más acciones")
@@ -900,8 +944,14 @@ private struct InboxRow: View {
         .padding(10)
         .background(Palette.fill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .hoverHighlight()
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Palette.mint, lineWidth: model.selectedTaskID == task.id ? 2 : 0)
+        )
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.editingTask = task }
+        .simultaneousGesture(TapGesture().onEnded { model.selectedTaskID = task.id })
+        .accessibilityAddTraits(model.selectedTaskID == task.id ? .isSelected : [])
         .draggable(task.id.uuidString)
     }
 }
@@ -1664,14 +1714,15 @@ struct HourlyDayTimelineView: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(overlaps ? Palette.warning : (isActive ? Palette.mint : color.opacity(0.45)),
-                              style: StrokeStyle(lineWidth: overlaps || isActive ? 1.5 : 1, dash: isProjected ? [5, 3] : []))
+                .strokeBorder(model.selectedTaskID == task.id ? Palette.text : (overlaps ? Palette.warning : (isActive ? Palette.mint : color.opacity(0.45))),
+                              style: StrokeStyle(lineWidth: model.selectedTaskID == task.id ? 2.5 : (overlaps || isActive ? 1.5 : 1), dash: isProjected ? [5, 3] : []))
         )
         .shadow(color: .black.opacity(dragging ? 0.35 : 0), radius: 8, y: 3)
         .saturation(task.completed ? 0 : 1)
         .offset(x: frame.x, y: topY)
         .zIndex(dragging ? 1 : 0)
         .onTapGesture(count: 2) { if !isActive { model.editingTask = task } }
+        .simultaneousGesture(TapGesture().onEnded { if !isProjected { model.selectedTaskID = task.id } })
         .modifier(BlockAccessibility(model: model, task: task, spoken: spoken, isProjected: isProjected, isActive: isActive, isEditable: isEditable))
         .gesture(
             DragGesture(minimumDistance: 4)

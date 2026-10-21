@@ -963,6 +963,29 @@ public struct PendingCalendarOp: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Decodes an array keeping every element that reads and skipping (and counting) the ones that do not, so one
+/// damaged task does not make the whole agenda unreadable.
+struct LossyArray<Element: Decodable>: Decodable {
+    var elements: [Element] = []
+    var skipped = 0
+
+    private struct Skip: Decodable {
+        init(from decoder: Decoder) throws {}
+    }
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        while !container.isAtEnd {
+            if let element = try? container.decode(Element.self) {
+                elements.append(element)
+            } else {
+                _ = try container.decode(Skip.self)   // advances past the unreadable element
+                skipped += 1
+            }
+        }
+    }
+}
+
 public struct Workspace: Codable, Equatable, Sendable {
     public static let currentSchema = 1
     public var schema: Int
@@ -972,6 +995,9 @@ public struct Workspace: Codable, Equatable, Sendable {
     public var history: [SessionRecord]
     public var settings: Settings
     public var pendingCalendarOps: [PendingCalendarOp]
+    /// Elements that could not be read when this workspace was loaded (not saved). Above zero, the app keeps a copy
+    /// of the original file before writing anything.
+    public var decodingSkipped = 0
 
     public init() {
         self.schema = Self.currentSchema
@@ -990,12 +1016,21 @@ public struct Workspace: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schema = try c.decodeIfPresent(Int.self, forKey: .schema) ?? 1
-        tasks = try c.decodeIfPresent([FocusTask].self, forKey: .tasks) ?? []
-        profiles = try c.decodeIfPresent([FocusProfile].self, forKey: .profiles) ?? FocusProfile.defaults
-        session = try c.decodeIfPresent(WorkSession.self, forKey: .session)
-        history = try c.decodeIfPresent([SessionRecord].self, forKey: .history) ?? []
-        settings = try c.decodeIfPresent(Settings.self, forKey: .settings) ?? Settings()
-        pendingCalendarOps = try c.decodeIfPresent([PendingCalendarOp].self, forKey: .pendingCalendarOps) ?? []
+        let lossyTasks = try c.decodeIfPresent(LossyArray<FocusTask>.self, forKey: .tasks)
+        let lossyProfiles = try c.decodeIfPresent(LossyArray<FocusProfile>.self, forKey: .profiles)
+        let lossyHistory = try c.decodeIfPresent(LossyArray<SessionRecord>.self, forKey: .history)
+        let lossyOps = try c.decodeIfPresent(LossyArray<PendingCalendarOp>.self, forKey: .pendingCalendarOps)
+        tasks = lossyTasks?.elements ?? []
+        profiles = lossyProfiles?.elements ?? FocusProfile.defaults
+        // A damaged running session is dropped rather than blocking everything; it is counted below.
+        let readableSession = try? c.decodeIfPresent(WorkSession.self, forKey: .session)
+        session = readableSession ?? nil
+        history = lossyHistory?.elements ?? []
+        settings = (try? c.decodeIfPresent(Settings.self, forKey: .settings)) ?? Settings()
+        pendingCalendarOps = lossyOps?.elements ?? []
+        let brokenSession = c.contains(.session) && readableSession == nil && (try? c.decodeNil(forKey: .session)) != true ? 1 : 0
+        decodingSkipped = (lossyTasks?.skipped ?? 0) + (lossyProfiles?.skipped ?? 0) + (lossyHistory?.skipped ?? 0)
+            + (lossyOps?.skipped ?? 0) + brokenSession
     }
 
     public mutating func prune(at now: Date) {

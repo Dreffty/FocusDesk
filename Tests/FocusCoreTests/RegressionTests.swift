@@ -397,6 +397,29 @@ final class RegressionTests: XCTestCase {
         XCTAssertFalse(HotKeyPreset.presets.contains { $0.label == "⌃⌥⌘P" || $0.label == "⌃⌥⌘T" }, "no deben chocar con los atajos de sesión")
     }
 
+    /// One unreadable task used to make the whole file unreadable, and the app read-only.
+    func testOneBrokenElementDoesNotLockTheAgenda() throws {
+        var workspace = Workspace()
+        workspace.tasks = [FocusTask(title: "Buena 1", minutes: 30), FocusTask(title: "Buena 2", minutes: 45)]
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(workspace)) as! [String: Any]
+        var tasks = json["tasks"] as! [[String: Any]]
+        tasks.insert(["id": "no-es-un-uuid", "title": 42], at: 1)          // broken: wrong types
+        json["tasks"] = tasks
+        var history = (json["history"] as? [[String: Any]]) ?? []
+        history.append(["session": "rota"])                                  // broken history record
+        json["history"] = history
+
+        let loaded = try JSONDecoder().decode(Workspace.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(loaded.tasks.map(\.title), ["Buena 1", "Buena 2"])
+        XCTAssertEqual(loaded.decodingSkipped, 2)
+        XCTAssertTrue(loaded.history.isEmpty)
+
+        // A clean file reports nothing skipped, and the counter is never written to disk.
+        let clean = try JSONDecoder().decode(Workspace.self, from: JSONEncoder().encode(workspace))
+        XCTAssertEqual(clean.decodingSkipped, 0)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(loaded), as: UTF8.self).contains("decodingSkipped"))
+    }
+
     /// Only one session can exist at a time, so a reminder must never offer to start the task already running.
     func testRunningTaskGetsNoReminderWhileOtherTasksKeepTheirs() {
         let now = Date()

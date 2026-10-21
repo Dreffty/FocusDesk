@@ -52,6 +52,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.toggleCompactPanel = { [weak self] in self?.togglePanel() }
         model.onHotKeySettingsChanged = { [weak self] in self?.applyHotKeySettings() }
         model.showSettings = { [weak self] section in self?.showSettings(section) }
+        model.isInterfaceVisible = { [weak self] in
+            guard let self else { return true }
+            let windowOnScreen = [self.window, self.settingsWindow].contains { window in
+                guard let window else { return false }
+                return window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
+            }
+            return windowOnScreen || self.popover.isShown
+        }
         hotkey.action = { [weak self] id in self?.handleHotKeyTriggered(id) }
         applyHotKeySettings()
 
@@ -323,6 +331,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return !model.readOnly
         case #selector(prevDay), #selector(nextDay):
             return model.currentPage == .today || model.currentPage == .week
+        case #selector(menuEditSelected):
+            return model.selectedTask != nil && model.selectedTask?.id != model.session?.task.id && !model.readOnly
+        case #selector(menuStartSelected), #selector(menuSnoozeSelected), #selector(menuTodaySelected),
+             #selector(menuTomorrowSelected), #selector(menuInboxSelected):
+            return model.selectedTaskIsActionable
+        case #selector(menuDeleteSelected):
+            return model.selectedTask != nil && model.selectedTask?.id != model.session?.task.id && !model.readOnly
         default:
             return true
         }
@@ -343,6 +358,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ⌘[ ⌘]  Día o semana anterior y siguiente · ⌘T  Hoy
         ⌃⌥⌘S  Empezar la siguiente tarea · ⌃⌥⌘A  Ampliar 10 minutos
         ⌘Z ⇧⌘Z  Deshacer y rehacer cambios en la agenda
+
+        En Hoy, con una tarea elegida
+        ↑ ↓  Elegir tarea · ↩  Editar · Espacio  Empezar · ⌫  Borrar
+        ⌥↑ ⌥↓  Mover 5 minutos · ⌥⇧↑ ⌥⇧↓  Más corta o más larga
+        ⌘E  Editar · menú Tarea para el resto
         """
         alert.addButton(withTitle: "Cerrar")
         alert.runModal()
@@ -397,6 +417,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func menuFinishSession() {
         if model.session != nil { model.finish() }
     }
+    @objc private func menuEditSelected() { if let task = model.selectedTask { model.editingTask = task; show() } }
+    @objc private func menuStartSelected() { if let task = model.selectedTask { model.start(task) } }
+    @objc private func menuSnoozeSelected() { if let task = model.selectedTask { model.snoozeTask(task, minutes: 10) } }
+    @objc private func menuTodaySelected() { if let task = model.selectedTask { model.moveToFirstFreeSlotToday(task) } }
+    @objc private func menuTomorrowSelected() { if let task = model.selectedTask { model.moveToTomorrowSameTime(task) } }
+    @objc private func menuInboxSelected() { if let task = model.selectedTask { model.moveToInbox(task) } }
+    @objc private func menuDeleteSelected() { if let task = model.selectedTask { model.taskPendingDeletion = task; show() } }
     @objc private func menuAddTenMinutes() {
         if let s = model.session, s.endedAt == nil { model.addTime(minutes: 10) }
     }
@@ -460,6 +487,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         add(nav, "Anterior", #selector(prevDay), "[", target: self)
         add(nav, "Siguiente", #selector(nextDay), "]", target: self)
         add(nav, "Ir a hoy", #selector(jumpToCurrentDay), "t", target: self)
+
+        // Every command on the selected task also lives in the menu bar (`designing-for-macos.md`).
+        let taskMenu = submenu("Tarea")
+        add(taskMenu, "Editar tarea…", #selector(menuEditSelected), "e", target: self)
+        add(taskMenu, "Empezar tarea", #selector(menuStartSelected), target: self)
+        add(taskMenu, "Posponer 10 minutos", #selector(menuSnoozeSelected), target: self)
+        taskMenu.addItem(.separator())
+        add(taskMenu, "Hoy en el primer hueco", #selector(menuTodaySelected), target: self)
+        add(taskMenu, "Mañana a la misma hora", #selector(menuTomorrowSelected), target: self)
+        add(taskMenu, "Pasar a la bandeja sin hora", #selector(menuInboxSelected), target: self)
+        taskMenu.addItem(.separator())
+        add(taskMenu, "Borrar tarea…", #selector(menuDeleteSelected), target: self)
 
         let session = submenu("Sesión")
         add(session, "Empezar siguiente tarea", #selector(menuStartNext), "s", [.control, .option, .command], target: self)

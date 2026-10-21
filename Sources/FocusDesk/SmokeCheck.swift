@@ -248,8 +248,8 @@ enum SmokeCheck {
             let movedProjectedDate = projected.scheduledAt
             projected.scheduledAt = projected.scheduledAt.addingTimeInterval(3600)
             model.saveEdited(projected, originalOccurrenceDate: movedProjectedDate, onlyThisOccurrence: false)
+            // Exactly one hour later (across midnight too, when the test runs late in the evening).
             guard let shiftedHead = model.workspace.tasks.first(where: { $0.id == series.id }),
-                  cal.isDate(shiftedHead.scheduledAt, inSameDayAs: headDate),
                   abs(shiftedHead.scheduledAt.timeIntervalSince(headDate.addingTimeInterval(3600))) < 1 else {
                 throw Failure.message("Moving the series from an occurrence did not move it consistently")
             }
@@ -463,6 +463,50 @@ enum SmokeCheck {
                 throw Failure.message("Ticked steps were not kept in the history")
             }
 
+            // 4j. Keyboard: ↑↓ walk the tasks in on-screen order, ⌥↑↓ move the chosen one, ⌥⇧↑↓ change its length.
+            let calK = Calendar.current
+            model.selectedDate = Date()
+            let keyA = FocusTask(title: "Teclado A", scheduledAt: Date().addingTimeInterval(3 * 3600), minutes: 30)
+            let keyB = FocusTask(title: "Teclado B", scheduledAt: Date().addingTimeInterval(4 * 3600), minutes: 30)
+            model.saveTask(keyA)
+            model.saveTask(keyB)
+            if calK.isDateInToday(keyA.scheduledAt) && calK.isDateInToday(keyB.scheduledAt) {
+                model.selectedTaskID = nil
+                let order = model.keyboardTasks.map(\.id)
+                guard let indexA = order.firstIndex(of: keyA.id), let indexB = order.firstIndex(of: keyB.id), indexA < indexB else {
+                    throw Failure.message("Keyboard order does not follow the agenda")
+                }
+                model.selectedTaskID = keyA.id
+                model.moveSelection(by: indexB - indexA)
+                guard model.selectedTaskID == keyB.id else { throw Failure.message("Arrow keys did not reach the next task") }
+                model.nudgeSelected(minutes: 5)
+                model.resizeSelected(by: 5)
+                guard let movedB = model.workspace.tasks.first(where: { $0.id == keyB.id }),
+                      abs(movedB.scheduledAt.timeIntervalSince(keyB.scheduledAt) - 300) < 1, movedB.minutes == 35,
+                      model.selectedTaskID == keyB.id else {
+                    throw Failure.message("Option-arrows did not move or resize the selected task")
+                }
+            }
+            model.selectedTaskID = nil
+            model.deleteTask(model.workspace.tasks.first { $0.id == keyA.id }!)
+            model.deleteTask(model.workspace.tasks.first { $0.id == keyB.id }!)
+
+            // 4k. A file with one unreadable task opens anyway, after keeping the original in backups/.
+            let damagedDir = model.store.url.deletingLastPathComponent().appendingPathComponent("damaged")
+            try FileManager.default.createDirectory(at: damagedDir, withIntermediateDirectories: true)
+            var damaged = Workspace()
+            damaged.tasks = [FocusTask(title: "Sana", minutes: 20)]
+            var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(damaged)) as! [String: Any]
+            json["tasks"] = (json["tasks"] as! [[String: Any]]) + [["title": 7]]
+            try JSONSerialization.data(withJSONObject: json).write(to: damagedDir.appendingPathComponent("workspace.json"))
+            let tolerant = AppModel(directory: damagedDir, preview: true)
+            let kept = (try? FileManager.default.contentsOfDirectory(atPath: damagedDir.appendingPathComponent("backups").path)) ?? []
+            guard !tolerant.readOnly, tolerant.workspace.tasks.map(\.title) == ["Sana"],
+                  tolerant.error?.contains("no se podía leer") == true,
+                  kept.contains(where: { $0.hasPrefix("lectura-parcial") }) else {
+                throw Failure.message("One unreadable task locked the agenda or the original was not kept")
+            }
+
             // 5. Session cancellation distinct from completion (Item 13)
             let nextTask = model.workspace.tasks.first(where: { !$0.completed && $0.title == restored.tasks.filter({ !$0.completed }).first!.title })
                 ?? restored.tasks.filter({ !$0.completed }).first!
@@ -521,7 +565,7 @@ enum SmokeCheck {
                 throw Failure.message("Auto-backup recovery after corruption")
             }
 
-            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo and redo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery."
+            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo and redo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; keyboard selection, move and resize; tolerant reading with the original kept; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery."
         } catch {
             return "FAIL: \(error.localizedDescription)"
         }

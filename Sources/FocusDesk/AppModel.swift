@@ -55,6 +55,13 @@ final class AppModel: ObservableObject {
     private var screenIsLocked = false
     /// Tasks already started on their own (or skipped because another session was running), so it happens once.
     private var autoStartHandled: Set<String> = []
+    /// Whether any FocusDesk window or the menu-bar panel is on screen (set by the app delegate).
+    var isInterfaceVisible: (() -> Bool)?
+    private var lastObservedAppID: String?
+    private var lastBraveReadAt = Date.distantPast
+    private var lastTitleAppID: String?
+    private var lastTitleReadAt = Date.distantPast
+    private var lastTitle: (title: String?, status: String?) = (nil, nil)
 
     /// Undo and redo for direct agenda edits (drag, snooze, inbox, delete), in the Edit menu with ⌘Z and ⇧⌘Z
     /// (`undo-and-redo.md › Desktop`). The main window hands this manager to AppKit. Each step only applies while
@@ -111,6 +118,13 @@ final class AppModel: ObservableObject {
         store = WorkspaceStore(url: directory.appendingPathComponent("workspace.json"))
         do {
             workspace = try store.load()
+            // Some elements could not be read: keep the original file untouched in backups/ before anything is
+            // written over it, and say so instead of locking the whole agenda (one bad field used to do that).
+            if workspace.decodingSkipped > 0 {
+                let kept = try? store.createTimestampedBackup(prefix: "lectura-parcial", at: Date())
+                let count = workspace.decodingSkipped
+                error = "\(count == 1 ? "Un elemento" : "\(count) elementos") de tus datos no se \(count == 1 ? "podía" : "podían") leer y se \(count == 1 ? "ha" : "han") dejado fuera. El resto funciona con normalidad; el archivo original está guardado en \(kept?.lastPathComponent ?? "backups")."
+            }
             workspace.prune(at: Date())
             if workspace.session != nil {
                 // Only intervals persisted before termination can count after recovery.
@@ -446,8 +460,10 @@ final class AppModel: ObservableObject {
         syncCalendar()
     }
 
-    func shift(_ task: FocusTask, to date: Date, durationMinutes: Int? = nil) {
-        guard writable, !busy, task.id != session?.task.id else { return }
+    /// Returns the id of the task that moved: a detached copy when `task` was a series occurrence.
+    @discardableResult
+    func shift(_ task: FocusTask, to date: Date, durationMinutes: Int? = nil) -> UUID? {
+        guard writable, !busy, task.id != session?.task.id else { return nil }
         let before = workspace.tasks
         let detached = isSeriesHead(task)
         var updated = occurrenceForDirectEdit(task)
@@ -457,13 +473,62 @@ final class AppModel: ObservableObject {
             updated.minutes = FocusRules.clampedMinutes(durationMinutes)
         }
         saveTask(updated)
-        guard error == nil else { return }
+        guard error == nil else { return nil }
         let when = updated.scheduledAt.formatted(date: Calendar.current.isDateInToday(updated.scheduledAt) ? .omitted : .abbreviated, time: .shortened)
         let what = durationMinutes != nil && Calendar.current.isDate(updated.scheduledAt, equalTo: task.scheduledAt, toGranularity: .minute)
             ? "«\(updated.title)» ahora dura \(updated.minutes) min."
             : "«\(updated.title)» movida a \(when)."
         notice = detached ? what + " Solo esta ocurrencia; la serie sigue a su hora." : what
         rememberUndo("Mover «\(updated.title)»", before: before)
+        if selectedTaskID == task.id { selectedTaskID = updated.id }
+        return updated.id
+    }
+
+    // MARK: Keyboard selection
+
+    /// Task picked with the keyboard (or a click) on Hoy; the Tarea menu and the agenda keys act on it.
+    @Published var selectedTaskID: UUID?
+    /// Task waiting for the delete confirmation, from a row, the keyboard or the Tarea menu.
+    @Published var taskPendingDeletion: FocusTask?
+
+    /// Tasks reachable with ↑↓ on Hoy, in on-screen order: slipped from earlier days, the day's agenda, the inbox.
+    var keyboardTasks: [FocusTask] {
+        let calendar = Calendar.current
+        let startOfToday = calendar.startOfDay(for: Date())
+        let overdue = scheduledTasks.filter { $0.scheduledAt < startOfToday && !calendar.isDate($0.scheduledAt, inSameDayAs: selectedDate) }
+        let day = tasksForDay(selectedDate).real.filter { !$0.completed }
+        return overdue + day + unscheduledTasks
+    }
+
+    var selectedTask: FocusTask? {
+        guard let id = selectedTaskID else { return nil }
+        return workspace.tasks.first { $0.id == id }
+    }
+
+    /// Whether the selected task can be edited, started, moved or deleted right now.
+    var selectedTaskIsActionable: Bool {
+        guard let task = selectedTask else { return false }
+        return !task.completed && task.id != session?.task.id && writable && !busy
+    }
+
+    func moveSelection(by step: Int) {
+        let list = keyboardTasks
+        guard !list.isEmpty else { selectedTaskID = nil; return }
+        if let id = selectedTaskID, let index = list.firstIndex(where: { $0.id == id }) {
+            selectedTaskID = list[max(0, min(list.count - 1, index + step))].id
+        } else {
+            selectedTaskID = (step >= 0 ? list.first : list.last)?.id
+        }
+    }
+
+    func nudgeSelected(minutes delta: Int) {
+        guard selectedTaskIsActionable, let task = selectedTask, task.isScheduled else { return }
+        shift(task, to: task.scheduledAt.addingTimeInterval(Double(delta) * 60))
+    }
+
+    func resizeSelected(by delta: Int) {
+        guard selectedTaskIsActionable, let task = selectedTask, task.isScheduled else { return }
+        shift(task, to: task.scheduledAt, durationMinutes: task.minutes + delta)
     }
 
     private func rememberUndo(_ label: String, before: [FocusTask]) {
@@ -1532,11 +1597,25 @@ final class AppModel: ObservableObject {
         notice = "Prueba creada: empieza en 2 minutos y dura 5. Puedes iniciarla, terminarla y eliminarla desde Hoy."
     }
 
+    /// The visible clock only needs to tick every second when something shows it changing: a session, an imminent
+    /// task's countdown, or a FocusDesk window on screen. Otherwise every view and the Dock were redrawn once a
+    /// second all day for nothing.
+    private func needsLiveClock(at instant: Date) -> Bool {
+        if session != nil { return true }
+        if isInterfaceVisible?() ?? true { return true }
+        return workspace.tasks.contains { task in
+            !task.completed && task.isScheduled && task.scheduledAt > instant &&
+            task.scheduledAt.timeIntervalSince(instant) <= Double(max(task.leadMinutes, 1)) * 60
+        }
+    }
+
     private func tick() {
-        now = Date()
+        let instant = Date()
         ticks += 1
-        let today = Calendar.current.startOfDay(for: now)
+        if needsLiveClock(at: instant) || ticks.isMultiple(of: 30) { now = instant }
+        let today = Calendar.current.startOfDay(for: instant)
         if today != lastPrunedDay {
+            now = instant
             // With the app open overnight, Hoy kept showing yesterday and new tasks were born yesterday, overdue.
             // Follow the day only if the user was on the day that just ended, not on a date chosen on purpose.
             if Calendar.current.isDate(selectedDate, inSameDayAs: lastPrunedDay) { selectedDate = now }
@@ -1621,8 +1700,23 @@ final class AppModel: ObservableObject {
     func observe() {
         guard writable, let s = session, !s.paused, s.endedAt == nil else { return }
         let excludedIDs = Set(workspace.settings.excludedTitleApps.map(\.id))
-        guard let fg = MacActivity.foreground(readTitle: workspace.settings.observeTitles, excludedAppIDs: excludedIDs),
+        // Window titles are read through Accessibility on the main thread (up to 0.15 s each): on a change of app,
+        // or every 15 s for the same app, instead of every 5 s.
+        let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let refreshTitle = workspace.settings.observeTitles && (frontID != lastTitleAppID || Date().timeIntervalSince(lastTitleReadAt) >= 15)
+        guard var fg = MacActivity.foreground(readTitle: refreshTitle, excludedAppIDs: excludedIDs),
               let id = fg.app.bundleIdentifier else { return }
+        if workspace.settings.observeTitles {
+            if refreshTitle {
+                lastTitleAppID = id
+                lastTitleReadAt = Date()
+                lastTitle = (fg.title, fg.titleStatus)
+            } else {
+                fg = Foreground(app: fg.app, title: lastTitle.title, titleStatus: lastTitle.status)
+            }
+        }
+        let appChanged = id != lastObservedAppID
+        lastObservedAppID = id
         var exemptions = FocusRules.systemExemptBundleIDs
         if let ownID = Bundle.main.bundleIdentifier { exemptions.insert(ownID) }
         guard !exemptions.contains(id) else { return }
@@ -1694,7 +1788,10 @@ final class AppModel: ObservableObject {
             }
         }
 
-        if id == "com.brave.Browser", workspace.settings.observeBrave {
+        // One osascript process per read: on switching to Brave, then at most every 20 s (it was every 5 s).
+        if id == "com.brave.Browser", workspace.settings.observeBrave,
+           appChanged || Date().timeIntervalSince(lastBraveReadAt) >= 20 {
+            lastBraveReadAt = Date()
             let sessionID = s.id
             brave.read { [weak self] result in
                 guard let self,

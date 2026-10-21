@@ -14,6 +14,9 @@ struct TaskEditor: View {
     /// The date the editor was opened with. The occurrence to detach is this one even if the user moves it.
     @State private var originalOccurrenceDate: Date?
     @State private var seriesKind: AppModel.SeriesEditKind = .notInSeries
+    /// The title gets the cursor when the editor opens; the checklist hands focus on with Tab.
+    @FocusState private var focusedField: EditorField?
+    private enum EditorField: Hashable { case title, profileName, checklist }
 
     private var belongsToSeries: Bool { seriesKind != .notInSeries }
 
@@ -69,27 +72,13 @@ struct TaskEditor: View {
                             }
                             if showSaveProfile {
                                 HStack(spacing: 8) {
+                                    // Return here saves the profile, not the whole task (it used to close the editor).
                                     TextField("Nombre del perfil (ej. Grabar vídeo)", text: $saveProfileName)
                                         .textFieldStyle(.roundedBorder)
-                                    Button("Guardar perfil") {
-                                        let profile = FocusProfile(
-                                            id: model.workspace.profiles.first(where: { $0.name.lowercased() == saveProfileName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })?.id ?? UUID(),
-                                            name: saveProfileName,
-                                            category: draft.category,
-                                            minutes: draft.minutes,
-                                            leadMinutes: draft.leadMinutes,
-                                            strict: draft.strict,
-                                            apps: draft.apps,
-                                            domains: draft.domains,
-                                            folder: draft.folder,
-                                            checklist: draft.checklist,
-                                            autoStart: draft.autoStart
-                                        )
-                                        model.saveProfile(profile)
-                                        draft.profileID = profile.id
-                                        showSaveProfile = false
-                                    }
-                                    .buttonStyle(FocusPrimaryButton(compact: true))
+                                        .focused($focusedField, equals: .profileName)
+                                        .onSubmit { saveDraftAsProfile() }
+                                    Button("Guardar perfil") { saveDraftAsProfile() }
+                                        .buttonStyle(FocusPrimaryButton(compact: true))
                                 }
                             }
                         }
@@ -116,6 +105,7 @@ struct TaskEditor: View {
                                 TextField("Ej. Grabar el vídeo de mañana", text: $draft.title)
                                     .font(.app(15))
                                     .textFieldStyle(.roundedBorder)
+                                    .focused($focusedField, equals: .title)
                             }
 
                             HStack {
@@ -159,6 +149,9 @@ struct TaskEditor: View {
                                                 get: { due },
                                                 set: { draft.dueDate = $0 }
                                             ), displayedComponents: [.date, .hourAndMinute]).labelsHidden()
+                                            if draft.isScheduled && due < draft.end {
+                                                Chip("Termina después de su límite", icon: "exclamationmark.triangle.fill", color: Palette.warning)
+                                            }
                                         } else {
                                             Text("Sin fecha límite").font(.app(10)).foregroundStyle(Palette.muted)
                                         }
@@ -167,7 +160,8 @@ struct TaskEditor: View {
                                 Spacer()
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("DURACIÓN").fieldLabelStyle()
-                                    Stepper("\(draft.minutes) min", value: $draft.minutes, in: 1...720, step: 5)
+                                    // Same range and steps as every other duration control (it went 5 → 1 → 6 → 11 before).
+                                    Stepper("\(draft.minutes) min", value: $draft.minutes, in: FocusRules.minutesRange, step: 5)
                                     HStack(spacing: 6) {
                                         ForEach([15, 30, 60, 90], id: \.self) { minutes in
                                             Button("\(minutes)m") { draft.minutes = minutes }
@@ -305,6 +299,12 @@ struct TaskEditor: View {
                             SectionHeader("Cómo sabrás que has terminado", icon: "checkmark.circle")
                             Text("Checklist: un paso por línea").font(.app(10)).foregroundStyle(Palette.muted)
                             TextEditor(text: $draft.checklist)
+                                .focused($focusedField, equals: .checklist)
+                                // Tab moves on instead of typing a tab character; ⇧Tab goes back to the title.
+                                .onKeyPress(.tab, phases: .down) { press in
+                                    focusedField = press.modifiers.contains(.shift) ? .title : nil
+                                    return .handled
+                                }
                                 .font(.app(13))
                                 .frame(height: 76)
                                 .accessibilityLabel("Checklist, un paso por línea")
@@ -347,13 +347,14 @@ struct TaskEditor: View {
                     if model.error == nil { dismiss() }
                 }
                 .buttonStyle(FocusPrimaryButton())
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(focusedField == .profileName ? nil : .defaultAction)
                 .disabled(!draft.valid || model.readOnly || model.busy)
             }
         }
         .padding(24)
         .frame(width: 700, height: min(780, (NSScreen.main?.visibleFrame.height ?? 820) - 70))
         .onAppear {
+            focusedField = .title
             guard originalOccurrenceDate == nil else { return }
             originalOccurrenceDate = draft.scheduledAt
             seriesKind = model.seriesEditKind(for: draft)
@@ -388,6 +389,28 @@ struct TaskEditor: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         draft.folder = url.path
         folderWarning = "Elige una carpeta concreta del proyecto; se revisan como máximo 5.000 entradas ignorando temporales."
+    }
+
+    private func saveDraftAsProfile() {
+        let name = saveProfileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let profile = FocusProfile(
+            id: model.workspace.profiles.first(where: { $0.name.lowercased() == name.lowercased() })?.id ?? UUID(),
+            name: name,
+            category: draft.category,
+            minutes: draft.minutes,
+            leadMinutes: draft.leadMinutes,
+            strict: draft.strict,
+            apps: draft.apps,
+            domains: draft.domains,
+            folder: draft.folder,
+            checklist: draft.checklist,
+            autoStart: draft.autoStart
+        )
+        model.saveProfile(profile)
+        draft.profileID = profile.id
+        showSaveProfile = false
+        focusedField = .title
     }
 
     private var seriesHint: String {
