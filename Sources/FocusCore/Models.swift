@@ -877,6 +877,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var textScale: Double
     /// Whether the countdown lives in the menu bar; people decide that, not the app.
     public var showMenuBarItem: Bool
+    /// Turns Do Not Disturb on while a session blocks distracting apps (strict mode), through two shortcuts.
+    public var focusDuringStrict: Bool
 
     public init() {
         self.calendarID = nil
@@ -896,12 +898,13 @@ public struct Settings: Codable, Equatable, Sendable {
         self.breaks = [BreakPeriod(title: "Descanso / Comida", startHour: 14, startMinute: 0, durationMinutes: 60)]
         self.textScale = 1
         self.showMenuBarItem = true
+        self.focusDuringStrict = true
     }
 
     enum CodingKeys: String, CodingKey {
         case calendarID, observeTitles, observeBrave, detailDays, excludedTitleApps
         case hotKeyEnabled, hotKeyCode, hotKeyModifiers, hotKeyLabel, hotKeyTarget
-        case categories, workdays, workStartHour, workEndHour, breaks, textScale, showMenuBarItem
+        case categories, workdays, workStartHour, workEndHour, breaks, textScale, showMenuBarItem, focusDuringStrict
     }
 
     public init(from decoder: Decoder) throws {
@@ -923,6 +926,7 @@ public struct Settings: Codable, Equatable, Sendable {
         breaks = try c.decodeIfPresent([BreakPeriod].self, forKey: .breaks) ?? [BreakPeriod(title: "Descanso / Comida", startHour: 14, startMinute: 0, durationMinutes: 60)]
         textScale = min(1.3, max(1, try c.decodeIfPresent(Double.self, forKey: .textScale) ?? 1))
         showMenuBarItem = try c.decodeIfPresent(Bool.self, forKey: .showMenuBarItem) ?? true
+        focusDuringStrict = try c.decodeIfPresent(Bool.self, forKey: .focusDuringStrict) ?? true
     }
 }
 
@@ -1071,6 +1075,9 @@ public enum FocusRules {
         "com.apple.universalaccessAuthWarn",
         "com.apple.TCC",
         "com.apple.notificationcenterui",
+        // Shows notification alerts and permission prompts; answering one is not leaving the task (it counted as an
+        // interruption in a real strict session).
+        "com.apple.UserNotificationCenter",
         "com.apple.controlcenter",
         "com.apple.dock",
         "com.apple.Spotlight",

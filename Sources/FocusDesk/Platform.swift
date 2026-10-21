@@ -436,3 +436,167 @@ final class GlobalHotKey {
         if let handler { RemoveEventHandler(handler) }
     }
 }
+
+/// Do Not Disturb while a session blocks distracting apps. macOS has no public API to change a Focus; the supported
+/// way is the Shortcuts action "Set Focus", so FocusDesk runs two shortcuts it builds itself (adding them takes one
+/// click each in Shortcuts) through the `shortcuts` command-line tool.
+@MainActor
+final class FocusModeController: ObservableObject {
+    static let onShortcut = "FocusDesk · Activar No molestar"
+    static let offShortcut = "FocusDesk · Quitar No molestar"
+    private static let turnedOnKey = "FocusDesk.doNotDisturbTurnedOn"
+
+    /// Whether both shortcuts exist; nil until checked.
+    @Published private(set) var ready: Bool?
+    @Published private(set) var message = "Comprobando los atajos de No molestar…"
+    @Published private(set) var working = false
+    /// Runs one change after another, so an "off" right after an "on" never overtakes it.
+    private var queue: Task<Void, Never>?
+
+    /// Remembered across launches: FocusDesk only turns off a No molestar it turned on itself, also after a crash.
+    private var turnedOnByFocusDesk: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.turnedOnKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.turnedOnKey) }
+    }
+
+    func refresh() async {
+        let result = await Self.shortcutsTool(["list"])
+        let names = Set(result.output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) })
+        let found = result.status == 0 && names.contains(Self.onShortcut) && names.contains(Self.offShortcut)
+        ready = found
+        message = found
+            ? "Listo: las tareas que bloquean apps ponen No molestar y lo quitan al pausar o terminar."
+            : "Faltan los dos atajos que usa FocusDesk. Créalos con el botón: Atajos te pedirá añadirlos."
+    }
+
+    func turnOn() {
+        enqueue { [self] in
+            guard !turnedOnByFocusDesk else { return }
+            let result = await Self.shortcutsTool(["run", Self.onShortcut])
+            if result.status == 0 {
+                turnedOnByFocusDesk = true
+            } else {
+                ready = false
+                message = "No se pudo poner No molestar: falta el atajo «\(Self.onShortcut)» o falló. Créalo en Ajustes › General."
+            }
+        }
+    }
+
+    func turnOffIfOurs() {
+        enqueue { [self] in
+            guard turnedOnByFocusDesk else { return }
+            let result = await Self.shortcutsTool(["run", Self.offShortcut])
+            if result.status == 0 {
+                turnedOnByFocusDesk = false
+            } else {
+                message = "No se pudo quitar No molestar (atajo «\(Self.offShortcut)»). Quítalo desde el Centro de control."
+            }
+        }
+    }
+
+    /// At quit there is no time for the queue: waits for the shortcut (about a second). If it does not finish, the
+    /// next launch turns it off.
+    func turnOffNowIfOurs() {
+        guard turnedOnByFocusDesk else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+        process.arguments = ["run", Self.offShortcut]
+        guard (try? process.run()) != nil else { return }
+        let deadline = Date().addingTimeInterval(4)
+        while process.isRunning && Date() < deadline { usleep(50_000) }
+        if !process.isRunning && process.terminationStatus == 0 { turnedOnByFocusDesk = false }
+    }
+
+    /// Turns it on for four seconds, so you can see it work from Ajustes.
+    func test() {
+        message = "Probando: No molestar se activa unos segundos…"
+        turnOn()
+        enqueue { [self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            let ok = turnedOnByFocusDesk
+            let result = await Self.shortcutsTool(["run", Self.offShortcut])
+            if result.status == 0 { turnedOnByFocusDesk = false }
+            message = ok && result.status == 0
+                ? "Prueba superada: No molestar se activó y se quitó."
+                : "La prueba falló. Comprueba que los dos atajos existen en la app Atajos."
+        }
+    }
+
+    /// Builds both shortcuts, signs them (Shortcuts only imports signed files) and opens the missing ones, so
+    /// Shortcuts asks to add each.
+    func prepareShortcuts() async {
+        working = true
+        defer { working = false }
+        let listed = await Self.shortcutsTool(["list"]).output
+        let existing = Set(listed.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) })
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FocusDesk-atajos-" + UUID().uuidString)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var toAdd: [URL] = []
+            for (name, enabled) in [(Self.onShortcut, true), (Self.offShortcut, false)] where !existing.contains(name) {
+                let unsigned = folder.appendingPathComponent(name + ".unsigned.shortcut")
+                let signed = folder.appendingPathComponent(name + ".shortcut")
+                try PropertyListSerialization.data(fromPropertyList: Self.definition(enabled: enabled), format: .binary, options: 0)
+                    .write(to: unsigned)
+                let result = await Self.shortcutsTool(["sign", "--mode", "anyone", "--input", unsigned.path, "--output", signed.path])
+                guard result.status == 0, FileManager.default.fileExists(atPath: signed.path) else {
+                    message = "No se pudieron preparar los atajos (firmar requiere iCloud): \(result.output.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    return
+                }
+                toAdd.append(signed)
+            }
+            guard !toAdd.isEmpty else { await refresh(); return }
+            for url in toAdd { NSWorkspace.shared.open(url) }
+            message = "Atajos te pide añadir \(toAdd.count == 1 ? "el atajo" : "los dos atajos"): pulsa «Añadir atajo» y vuelve aquí."
+        } catch {
+            message = "No se pudieron preparar los atajos: \(error.localizedDescription)"
+        }
+    }
+
+    private func enqueue(_ work: @escaping @MainActor () async -> Void) {
+        let previous = queue
+        queue = Task { await previous?.value; await work() }
+    }
+
+    /// One "Set Focus" action: No molestar on or off, until turned off.
+    private static func definition(enabled: Bool) -> [String: Any] {
+        [
+            "WFWorkflowMinimumClientVersion": 900,
+            "WFWorkflowMinimumClientVersionString": "900",
+            "WFWorkflowClientVersion": "2607.0.2",
+            "WFWorkflowIcon": ["WFWorkflowIconStartColor": 1440408063, "WFWorkflowIconGlyphNumber": 61440],
+            "WFWorkflowTypes": [String](),
+            "WFWorkflowInputContentItemClasses": [String](),
+            "WFWorkflowImportQuestions": [String](),
+            "WFWorkflowHasShortcutInputVariables": false,
+            "WFQuickActionSurfaces": [String](),
+            "WFWorkflowActions": [[
+                "WFWorkflowActionIdentifier": "is.workflow.actions.dnd.set",
+                "WFWorkflowActionParameters": [
+                    "Enabled": enabled,
+                    "FocusModes": ["Identifier": "com.apple.donotdisturb.mode.default", "DisplayString": "No molestar"],
+                    "AssertionType": "Turned Off"
+                ] as [String: Any]
+            ]]
+        ]
+    }
+
+    /// Runs `/usr/bin/shortcuts` off the main thread; gives up after 20 s so a stuck shortcut never blocks the queue.
+    nonisolated private static func shortcutsTool(_ arguments: [String]) async -> (status: Int32, output: String) {
+        await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+            process.arguments = arguments
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            do { try process.run() } catch { return (-1, error.localizedDescription) }
+            let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 20, execute: timeout)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            timeout.cancel()
+            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        }.value
+    }
+}

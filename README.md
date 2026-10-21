@@ -12,7 +12,7 @@ Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma 
 
 1. Pulsa **Nueva tarea** (`⌘N`). Pon un objetivo, elige si tiene horario reservado o va a la **bandeja de pendientes sin hora**, añade opcionalmente una **fecha límite** independiente y define su duración.
 2. Aplica uno de los **perfiles reutilizables** (*Grabar vídeo*, *Estudiar*, *Tienda*) o guarda tus propios perfiles con aplicaciones, dominios, modo estricto, duración habitual, checklist y carpeta de resultados.
-3. Activa «Volver a una app permitida» si quieres redirección automática al distraerte. Puedes pausar o cancelar en cualquier momento desde la barra o la ventana. Mientras hay una sesión, **⌃⌥⌘P** (pausar o reanudar) y **⌃⌥⌘T** (He terminado) funcionan desde cualquier app, sin traer FocusDesk delante; sin sesión quedan libres para las demás apps.
+3. Activa «Bloquear las apps que distraen» si quieres que FocusDesk oculte cualquier app que no esté en la lista y te devuelva a una permitida (si no hay ninguna abierta, la abre). Esas tareas pueden poner además **No molestar** mientras dura la sesión: en **Ajustes → General → No molestar al bloquear apps**, pulsa «Crear los atajos…» y añade en Atajos los dos que te propone (solo la primera vez). Puedes pausar o cancelar en cualquier momento desde la barra o la ventana. Mientras hay una sesión, **⌃⌥⌘P** (pausar o reanudar) y **⌃⌥⌘T** (He terminado) funcionan desde cualquier app, sin traer FocusDesk delante; sin sesión quedan libres para las demás apps.
 
 **Un solo temporizador, siempre.** Si empiezas otra tarea mientras hay una en marcha, FocusDesk pregunta: «Tienes «A» en marcha. ¿La terminas y empiezas «B»?». Al aceptar, detiene la actual, te pide su resultado y arranca la nueva al confirmarlo, así nunca pierdes el tiempo ya trabajado. Empezar la tarea que ya está en marcha simplemente la reanuda si estaba en pausa.
 
@@ -22,7 +22,7 @@ Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma 
 
 Cerrar la pantalla o el bloqueo del Mac pausan la observación; el reposo de la pantalla por sí solo, no.
 
-El modo estricto devuelve el foco a una app permitida y registra una sola interrupción por cada episodio continuo fuera del entorno de trabajo (volver a trabajar y salir de nuevo cuenta como otra). Finder, Ajustes del Sistema, FocusDesk, Vorssaint y diálogos del sistema siguen accesibles. Si una app permitida se cierra o falla su activación tras varios intentos, la sesión se pausa automáticamente para evitar bucles y conservar el control. Un navegador permitido puede abrir cualquier web: los dominios se normalizan (aceptando URLs como `https://claude.ai/`), se señalan y registran, pero no se bloquean.
+Bloquear las apps que distraen oculta la app que no toca, devuelve el foco a una app permitida, vuelve a mirar al momento (los lanzadores y juegos que se ponen delante otra vez se ocultan de nuevo) y registra una sola interrupción por cada episodio continuo fuera del entorno de trabajo (volver a trabajar y salir de nuevo cuenta como otra). Finder, Ajustes del Sistema, FocusDesk, Vorssaint, los avisos y diálogos del sistema y las herramientas de accesibilidad siguen accesibles. Si una app permitida se cierra o falla su activación tras varios intentos, la sesión se pausa automáticamente para evitar bucles y conservar el control. Un navegador permitido puede abrir cualquier web: los dominios se normalizan (aceptando URLs como `https://claude.ai/`), se señalan y registran, pero no se bloquean.
 
 ## Teclado, deshacer y apariencia
 

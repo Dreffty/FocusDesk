@@ -259,10 +259,10 @@ struct TaskEditor: View {
                                     }
                                 }
                             }
-                            Toggle("Volver a una app permitida cuando me distraiga", isOn: $draft.strict).toggleStyle(.switch)
-                            Text("Puedes pausar en cualquier momento. Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
+                            Toggle("Bloquear las apps que distraen", isOn: $draft.strict).toggleStyle(.switch)
+                            Text("Si abres una app que no está en la lista, FocusDesk la oculta y te devuelve a una permitida\(model.workspace.settings.focusDuringStrict ? "; además pone No molestar mientras dura la sesión" : ""). Puedes pausar en cualquier momento. Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
                             if draft.strict && draft.apps.isEmpty {
-                                Text("Selecciona al menos una aplicación para usar el modo estricto.").font(.app(10)).foregroundStyle(Palette.warning)
+                                Text("Elige al menos una app permitida para poder bloquear las demás.").font(.app(10)).foregroundStyle(Palette.warning)
                             }
 
                             Divider().overlay(Palette.stroke)
@@ -686,6 +686,63 @@ enum SettingsSectionTab: String, CaseIterable, Identifiable {
     }
 }
 
+/// No molestar during the sessions that block apps, with the one-time setup of its two shortcuts.
+private struct DoNotDisturbSettings: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var focusMode: FocusModeController
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("No molestar al bloquear apps", icon: "moon.fill")
+                Toggle("Poner No molestar en las tareas que bloquean apps", isOn: Binding(
+                    get: { model.workspace.settings.focusDuringStrict },
+                    set: { value in model.updateSettings { $0.focusDuringStrict = value } }
+                ))
+                .toggleStyle(.switch)
+                Text("Se activa al empezar una tarea con «Bloquear las apps que distraen» y se quita al pausarla o terminarla. macOS no deja saber si ya lo tenías puesto: en ese caso también se quitará.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Chip(focusMode.ready == true ? "Atajos listos" : (focusMode.ready == false ? "Faltan los atajos" : "Comprobando…"),
+                         icon: focusMode.ready == true ? "checkmark.circle.fill" : "exclamationmark.circle",
+                         color: focusMode.ready == true ? Palette.mint : Palette.warning)
+                    Spacer()
+                    if focusMode.ready != true {
+                        Button(focusMode.working ? "Preparando…" : "Crear los atajos…") { Task { await focusMode.prepareShortcuts() } }
+                            .buttonStyle(FocusPrimaryButton(compact: true))
+                            .disabled(focusMode.working || model.preview)
+                    } else {
+                        Button("Probar") { focusMode.test() }
+                            .buttonStyle(.focus(.secondary, compact: true))
+                            .disabled(model.session != nil || model.preview)
+                            .help("Activa No molestar unos segundos y lo quita (sin una sesión en marcha)")
+                    }
+                    Button("Comprobar") { Task { await focusMode.refresh() } }
+                        .buttonStyle(.focus(.ghost, compact: true))
+                        .disabled(model.preview)
+                }
+                Text(focusMode.message)
+                    .font(.app(10))
+                    .foregroundStyle(focusMode.ready == true ? Palette.muted : Palette.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Text("Con No molestar, los avisos de FocusDesk (como «Tiempo previsto agotado») solo te llegan si la permites en No molestar.")
+                        .font(.app(10))
+                        .foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Abrir Concentración") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.Focus-Settings.extension") { NSWorkspace.shared.open(url) }
+                    }
+                    .buttonStyle(.focus(.ghost, compact: true))
+                }
+            }
+        }
+    }
+}
+
 /// Full weekday names for VoiceOver ("Lun" is otherwise read letter by letter).
 private func fullDayNameFor(_ weekday: Int) -> String {
     ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"][max(0, min(6, weekday - 1))]
@@ -779,6 +836,7 @@ struct SettingsView: View {
                             .foregroundStyle(Palette.muted)
                     }
                 }
+                DoNotDisturbSettings(model: model, focusMode: model.focusMode)
             }
 
             if section == .connections || section == .all {
@@ -869,7 +927,7 @@ struct SettingsView: View {
                                     .frame(width: 10, height: 10)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(profile.name).fontWeight(.semibold)
-                                    Text("\(profile.category) · \(profile.minutes) min · \(profile.strict ? "Modo estricto" : "Modo aviso") · \(profile.apps.count) app(s)")
+                                    Text("\(profile.category) · \(profile.minutes) min · \(profile.strict ? "Bloquea apps" : "Solo avisa") · \(profile.apps.count) app(s)")
                                         .font(.app(10))
                                         .foregroundStyle(Palette.muted)
                                 }
@@ -1212,7 +1270,7 @@ struct ProfileEditorSheet: View {
                 }
                 Stepper("Duración: \(draft.minutes) min", value: $draft.minutes, in: 5...720, step: 5)
             }
-            Toggle("Modo estricto (volver a una app permitida)", isOn: $draft.strict)
+            Toggle("Bloquear las apps que distraen", isOn: $draft.strict)
             Toggle("Empezar sola a su hora", isOn: $draft.autoStart)
             HStack {
                 Text("Aplicaciones (\(draft.apps.count))").font(.app(12, weight: .medium))

@@ -76,6 +76,8 @@ final class AppModel: ObservableObject {
 
     let calendar = CalendarBridge()
     let reminders = ReminderService()
+    let focusMode = FocusModeController()
+    private var warnedMissingFocusShortcuts = false
     let scanner = EvidenceScanner()
     let brave = BraveReader()
     let store: WorkspaceStore
@@ -88,6 +90,9 @@ final class AppModel: ObservableObject {
     private var writable = true
     private var lastAllowed: NSRunningApplication?
     private var strictTracker = StrictRedirectTracker()
+    /// Times an allowed app was opened because none was running; reset when one is seen in front.
+    private var strictLaunchAttempts = 0
+    private var strictRecheck: DispatchWorkItem?
     private var ticks = 0
     private var overtimeNotified = false
     private var hasInitialBaseline = false
@@ -199,6 +204,19 @@ final class AppModel: ObservableObject {
         $workspace
             .sink { [weak self] _ in self?.dayCache.removeAll() }
             .store(in: &subscriptions)
+        // No molestar follows the sessions that block apps: on while one runs, off when it pauses or ends. Also on
+        // launch, so one left on by a crash is turned off.
+        if !preview {
+            Task { await focusMode.refresh() }
+            $workspace
+                .map { workspace in
+                    workspace.settings.focusDuringStrict &&
+                    workspace.session.map { $0.task.strict && !$0.paused && $0.endedAt == nil } == true
+                }
+                .removeDuplicates()
+                .sink { [weak self] wanted in self?.applyDoNotDisturb(wanted) }
+                .store(in: &subscriptions)
+        }
         NotificationCenter.default.publisher(for: .EKEventStoreChanged)
             .debounce(for: .milliseconds(700), scheduler: RunLoop.main)
             .sink { [weak self] _ in
@@ -214,6 +232,8 @@ final class AppModel: ObservableObject {
                     self?.syncCalendar()
                 }
                 Task { await self?.reminders.refresh() }
+                // Back from Atajos after adding the No molestar shortcuts.
+                if self?.preview == false, self?.focusMode.ready != true { Task { await self?.focusMode.refresh() } }
             }.store(in: &subscriptions)
         if writable {
             // One dated snapshot per day, taken at the first launch of the day too, not only if the app
@@ -988,7 +1008,7 @@ final class AppModel: ObservableObject {
             now = currentNow
             overtimeNotified = false
             lastAllowed = nil
-            strictTracker = StrictRedirectTracker()
+            strictTracker = StrictRedirectTracker(); strictLaunchAttempts = 0
             busy = false
             let saved = persist()
             schedule()
@@ -1054,7 +1074,7 @@ final class AppModel: ObservableObject {
         if let s = workspace.session { reminders.removeDelivered(identifiers: ["paused-" + s.id.uuidString]) }
         now = Date()
         workspace.session?.resume(at: now, uptime: uptime)
-        strictTracker = StrictRedirectTracker()
+        strictTracker = StrictRedirectTracker(); strictLaunchAttempts = 0
         if let s = workspace.session {
             enqueueProjectionForTask(s.task, session: s, now: now)
         }
@@ -1128,9 +1148,7 @@ final class AppModel: ObservableObject {
 
     /// Opens an allowed app from the strict-pause prompt and resumes the session once it is up.
     func openAllowedAppAndResume(_ app: AllowedApp) {
-        let installed = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.id)
-            ?? (FileManager.default.fileExists(atPath: app.path) ? URL(fileURLWithPath: app.path) : nil)
-        guard let url = installed else {
+        guard let url = Self.installedURL(of: app) else {
             notice = "No encuentro \(app.name) en este Mac. Ábrela a mano o quítala del perfil."
             return
         }
@@ -1158,7 +1176,7 @@ final class AppModel: ObservableObject {
         manualAttachments = []
         evidenceMessage = nil
         overtimeNotified = s.remaining(at: Date(), uptime: uptime) <= 0
-        strictTracker = StrictRedirectTracker()
+        strictTracker = StrictRedirectTracker(); strictLaunchAttempts = 0
         if let queued = queuedStartTask {
             notice = "«\(queued.title)» ya no empezará a continuación: sigues con «\(s.task.title)»."
         } else {
@@ -1767,6 +1785,7 @@ final class AppModel: ObservableObject {
         if allowed {
             lastAllowed = fg.app
             strictTracker.registerAllowedAppObserved()
+            strictLaunchAttempts = 0
         }
 
         let isNewInterruption = workspace.session?.observeForeground(
@@ -1787,22 +1806,47 @@ final class AppModel: ObservableObject {
         }
 
         if !allowed && s.task.strict {
+            // Blocking used to mean only "bring an allowed app to the front": the distracting app stayed open right
+            // behind it, and launchers or games (Riot Client stayed 11 s) took the front back as soon as they opened
+            // another window, while the next check waited for the 5-second tick. Now the distracting app is hidden,
+            // the allowed one comes forward, and the front is checked again moments later.
+            let distracting = fg.app
+            let distractingName = distracting.localizedName ?? id
             let runningTarget = lastAllowed.flatMap { candidate in
                 (candidate.isTerminated || !s.task.apps.contains(where: { a in a.id == candidate.bundleIdentifier })) ? nil : candidate
             } ?? NSWorkspace.shared.runningApplications.first { app in
                 !app.isTerminated && s.task.apps.contains { $0.id == app.bundleIdentifier }
             }
+            // No allowed app open: open one instead of pausing straight away (twice at most, then the pause below).
+            if runningTarget == nil, strictLaunchAttempts < 2,
+               let (allowedApp, url) = s.task.apps.lazy.compactMap({ app in Self.installedURL(of: app).map { (app, $0) } }).first {
+                strictLaunchAttempts += 1
+                distracting.hide()
+                notice = "\(distractingName) no está entre las apps de esta tarea: la he ocultado y abro \(allowedApp.name)."
+                let config = NSWorkspace.OpenConfiguration()
+                config.activates = true
+                NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in }
+                scheduleStrictRecheck(after: 1.5)
+                return
+            }
             let decision = strictTracker.evaluateUnallowed(hasRunningAllowedApp: runningTarget != nil, at: at)
             switch decision {
-            case .none, .cooldown:
+            case .none:
                 break
+            case .cooldown:
+                // Taken back during the cooldown after a redirect: caught again as soon as it ends.
+                scheduleStrictRecheck(after: strictTracker.cooldown)
             case .redirect:
                 if let target = runningTarget {
+                    // `hide()` answers false even when it works; whether the redirect held is checked below.
+                    distracting.hide()
                     let ok = target.activate(options: [])
                     strictTracker.recordRedirectAttempt(succeeded: ok)
-                    if !ok {
-                        notice = "No se pudo volver a \(target.localizedName ?? "la app permitida"). Puedes pausar en cualquier momento."
-                    }
+                    notice = ok
+                        ? "\(distractingName) no está entre las apps de esta tarea: la he ocultado y vuelves a \(target.localizedName ?? "la app permitida")."
+                        : "No se pudo volver a \(target.localizedName ?? "la app permitida"). Puedes pausar en cualquier momento."
+                    if isNewInterruption, !preview { notifyDistraction(notice ?? "", session: s) }
+                    scheduleStrictRecheck(after: 0.8)
                 }
             case .pauseSession(let reason):
                 pause()
@@ -1877,6 +1921,33 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func applyDoNotDisturb(_ wanted: Bool) {
+        guard wanted else { focusMode.turnOffIfOurs(); return }
+        if focusMode.ready == false, !warnedMissingFocusShortcuts {
+            warnedMissingFocusShortcuts = true
+            notice = "Para que esta tarea ponga No molestar sola, crea sus dos atajos en Ajustes › General."
+            return
+        }
+        focusMode.turnOn()
+    }
+
+    /// Where an allowed app lives on this Mac, by bundle id first (it may have moved) and then by its saved path.
+    private static func installedURL(of app: AllowedApp) -> URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.id)
+            ?? (FileManager.default.fileExists(atPath: app.path) ? URL(fileURLWithPath: app.path) : nil)
+    }
+
+    /// Looks at the front app again shortly: an app that grabs the focus back right after being hidden is caught
+    /// then, not up to five seconds later on the next tick.
+    private func scheduleStrictRecheck(after delay: TimeInterval) {
+        strictRecheck?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.observe() }
+        }
+        strictRecheck = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay + 0.05, execute: item)
     }
 
     /// "Vuelve a tu tarea" replaces the previous one instead of piling up, and sounds at most every 3 minutes.
@@ -1975,5 +2046,6 @@ final class AppModel: ObservableObject {
         }
         _ = persist()
         syncCalendar()
+        if !preview { focusMode.turnOffNowIfOurs() }
     }
 }
