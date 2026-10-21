@@ -35,12 +35,6 @@ extension AppModel {
         }
     }
 
-    func moveToInbox(_ task: FocusTask) {
-        var unscheduled = task
-        unscheduled.isScheduled = false
-        saveTask(unscheduled)
-    }
-
     func color(for task: FocusTask) -> Color {
         Palette.category(task.category, in: workspace.settings.categories)
     }
@@ -450,6 +444,8 @@ private struct TodayPage: View {
         }
 
         VStack(alignment: .leading, spacing: 22) {
+            NotificationPermissionBanner(model: model, reminders: model.reminders)
+
             if let session = model.session {
                 SessionHero(model: model, session: session)
             } else {
@@ -526,6 +522,49 @@ private struct TodayPage: View {
             .labelsHidden()
             .frame(width: 180)
             .help("Vista por horas (arrastrar y redimensionar) o lista")
+        }
+    }
+}
+
+/// Says so when reminders cannot reach the user, instead of failing silently. Observes the reminder service itself so
+/// it disappears the moment permission is granted.
+private struct NotificationPermissionBanner: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var reminders: ReminderService
+
+    var body: some View {
+        if !model.preview, model.notificationsNeedAttention {
+            let denied = reminders.status == .denied
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "bell.slash.fill").padding(.top, 1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Los avisos están desactivados").font(.callout.weight(.semibold))
+                    Text(denied
+                         ? "macOS no deja a FocusDesk avisarte: no sabrás que una tarea empieza ni tendrás «Empezar ahora» en el aviso. Actívalos en Ajustes del Sistema → Notificaciones → FocusDesk."
+                         : "Sin permiso no te avisaré antes de tus tareas ni cuando llegue su hora.")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                if denied {
+                    Button("Abrir Ajustes") { reminders.openSystemSettings() }
+                        .buttonStyle(FocusPrimaryButton(compact: true))
+                } else {
+                    Button("Activar avisos") {
+                        Task { await reminders.request(); model.schedule() }
+                    }
+                    .buttonStyle(FocusPrimaryButton(compact: true))
+                }
+                Button { model.notificationBannerDismissed = true } label: { Image(systemName: "xmark") }
+                    .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.coral))
+                    .help("Ocultar hasta la próxima vez que abras FocusDesk")
+                    .accessibilityLabel("Ocultar aviso de notificaciones")
+            }
+            .padding(12)
+            .foregroundStyle(Palette.coral)
+            .background(Palette.coral.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.coral.opacity(0.28), lineWidth: 1))
+            .task { await reminders.refresh() }
         }
     }
 }

@@ -33,6 +33,11 @@ final class AppModel: ObservableObject {
     @Published var handoffRequest: FocusTask?
     /// Stays on screen until acted upon, unlike `notice`, so a session paused by the Mac is never missed.
     @Published var resumePrompt: String?
+    /// True while ⌃⌥⌘P and ⌃⌥⌘T are registered system-wide for the running session (set by the app delegate).
+    var sessionHotKeysActive = false
+    /// The Hoy banner about disabled reminders can be hidden for this launch.
+    @Published var notificationBannerDismissed = false
+    private var askedForNotifications = false
 
     let calendar = CalendarBridge()
     let reminders = ReminderService()
@@ -150,6 +155,9 @@ final class AppModel: ObservableObject {
             // One dated snapshot per day, taken at the first launch of the day too, not only if the app
             // happens to be running at midnight.
             if !preview { try? store.createDailySnapshotIfNeeded() }
+            // After the snapshot, so the copy keeps the state as it was; series skipped while the app was closed
+            // get their next occurrence back before reminders are planned below.
+            rollMissedSeries()
             _ = persist()
             if !preview, workspace.settings.calendarID != nil, EKEventStore.authorizationStatus(for: .event) == .notDetermined {
                 Task {
@@ -301,6 +309,8 @@ final class AppModel: ObservableObject {
             enqueueProjectionForTask(updatedSeries)
             task.id = UUID()
             task.repeatRule = .never
+            task.repeatDays = []
+            task.skippedDates = []
             task.seriesID = seriesID
             task.calendarEventID = nil
             task.calendarSnapshot = nil
@@ -316,6 +326,28 @@ final class AppModel: ObservableObject {
         _ = persist()
         schedule()
         syncCalendar()
+        askForNotificationsIfNeeded(after: task)
+    }
+
+    /// Reminders are the core promise ("antes de la tarea llega un aviso"), but permission was only requested from
+    /// Ajustes: whoever never opened Ajustes got no reminder at all, silently. Ask the first time a task with a time
+    /// is saved — the moment the reminder starts to matter. macOS shows its prompt only once; later calls just answer.
+    private func askForNotificationsIfNeeded(after task: FocusTask) {
+        guard !preview, !askedForNotifications, task.isScheduled, task.scheduledAt > Date(),
+              reminders.status == .notDetermined else { return }
+        askedForNotifications = true
+        Task {
+            await reminders.request()
+            schedule()
+        }
+    }
+
+    /// True when there is something to be reminded of and reminders cannot reach the user.
+    var notificationsNeedAttention: Bool {
+        guard !notificationBannerDismissed,
+              reminders.status == .notDetermined || reminders.status == .denied else { return false }
+        let reference = Date()
+        return workspace.tasks.contains { !$0.completed && $0.isScheduled && $0.scheduledAt > reference }
     }
 
     func deleteTask(_ task: FocusTask) {
@@ -343,13 +375,119 @@ final class AppModel: ObservableObject {
     }
 
     func shift(_ task: FocusTask, to date: Date, durationMinutes: Int? = nil) {
-        var updated = task
+        guard writable, !busy, task.id != session?.task.id else { return }
+        let detached = isSeriesHead(task)
+        var updated = occurrenceForDirectEdit(task)
         updated.scheduledAt = date
         updated.isScheduled = true
         if let durationMinutes {
             updated.minutes = max(5, min(720, durationMinutes))
         }
         saveTask(updated)
+        if detached, error == nil {
+            notice = "Solo se ha cambiado esta ocurrencia de «\(updated.title)». La serie sigue a su hora; para cambiarla entera, edítala."
+        }
+    }
+
+    /// What the editor is looking at when the task belongs to a recurring series.
+    enum SeriesEditKind: Equatable {
+        case notInSeries
+        /// The series itself (its current occurrence).
+        case head(UUID)
+        /// A future occurrence drawn from the series; it does not exist as a task of its own yet.
+        case projected(seriesID: UUID)
+        /// An occurrence already detached into its own task.
+        case detached(seriesID: UUID)
+    }
+
+    func seriesEditKind(for draft: FocusTask) -> SeriesEditKind {
+        let stored = workspace.tasks.first { $0.id == draft.id }
+        if let stored, stored.repeatRule != .never { return .head(stored.id) }
+        guard let seriesID = draft.seriesID,
+              workspace.tasks.contains(where: { $0.id == seriesID && $0.repeatRule != .never && !$0.completed }) else {
+            return .notInSeries
+        }
+        return stored == nil ? .projected(seriesID: seriesID) : .detached(seriesID: seriesID)
+    }
+
+    /// Saves an edit made in the task editor, applying the "toda la serie / solo esta ocurrencia" choice correctly.
+    /// `originalOccurrenceDate` is the date the editor was opened with: the occurrence to detach is that one, even if
+    /// the user moved it, and a series-wide move is the difference between it and the new date.
+    func saveEdited(_ draft: FocusTask, originalOccurrenceDate: Date, onlyThisOccurrence: Bool, calendar: Calendar = .current) {
+        switch seriesEditKind(for: draft) {
+        case .notInSeries:
+            saveTask(draft)
+        case .head(let headID):
+            if onlyThisOccurrence {
+                saveTask(draft, detachFromSeriesID: headID, occurrenceDate: originalOccurrenceDate)
+            } else {
+                saveTask(draft)
+            }
+        case .projected(let seriesID):
+            if onlyThisOccurrence {
+                saveTask(draft, detachFromSeriesID: seriesID, occurrenceDate: originalOccurrenceDate)
+            } else if var head = workspace.tasks.first(where: { $0.id == seriesID }) {
+                // The series keeps its own current date; only what was edited carries over. Opening Friday and
+                // changing the title must not make the series start on Friday and drop today and tomorrow.
+                Self.copySharedFields(from: draft, to: &head)
+                head.repeatRule = draft.repeatRule
+                head.repeatDays = draft.repeatDays
+                head.scheduledAt = Self.moved(head.scheduledAt, like: originalOccurrenceDate, to: draft.scheduledAt, calendar: calendar)
+                saveTask(head)
+            }
+        case .detached(let seriesID):
+            // Already its own task: "solo esta" is a plain save (detaching again would duplicate it). "Toda la serie"
+            // also carries the edited fields to the series, but never its "No repetir" or its own moved time.
+            saveTask(draft)
+            if !onlyThisOccurrence, error == nil, var head = workspace.tasks.first(where: { $0.id == seriesID }) {
+                Self.copySharedFields(from: draft, to: &head)
+                saveTask(head)
+            }
+        }
+    }
+
+    private static func copySharedFields(from draft: FocusTask, to head: inout FocusTask) {
+        head.title = draft.title
+        head.category = draft.category
+        head.minutes = draft.minutes
+        head.leadMinutes = draft.leadMinutes
+        head.strict = draft.strict
+        head.apps = draft.apps
+        head.domains = draft.domains
+        head.folder = draft.folder
+        head.checklist = draft.checklist
+        head.profileID = draft.profileID
+        head.isFixedAppointment = draft.isFixedAppointment
+    }
+
+    /// Applies to `date` the same move (whole days, then wall-clock time) that took `original` to `edited`.
+    /// Works in calendar days, not seconds, so a change across a DST switch keeps the wall-clock time.
+    private static func moved(_ date: Date, like original: Date, to edited: Date, calendar: Calendar) -> Date {
+        guard abs(edited.timeIntervalSince(original)) >= 1 else { return date }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: original), to: calendar.startOfDay(for: edited)).day ?? 0
+        let time = calendar.dateComponents([.hour, .minute, .second], from: edited)
+        guard let shiftedDay = calendar.date(byAdding: .day, value: days, to: date),
+              let result = calendar.date(bySettingHour: time.hour ?? 9, minute: time.minute ?? 0, second: time.second ?? 0, of: shiftedDay) else { return date }
+        return result
+    }
+
+    /// A recurring series is one task whose `scheduledAt` is its current occurrence, and the time of the whole series
+    /// comes from it. Dragging, snoozing or resizing a block on the agenda means "this one", so those edits act on a
+    /// detached copy of the occurrence instead of moving the series. Series-wide edits go through the editor, which asks.
+    private func isSeriesHead(_ task: FocusTask) -> Bool {
+        task.isScheduled && task.repeatRule != .never && workspace.tasks.contains { $0.id == task.id }
+    }
+
+    /// Detaches `task`'s occurrence when it is a series head and returns the copy to edit; otherwise returns `task`.
+    /// The series advances to its next occurrence and remembers the detached day, exactly as the editor's
+    /// "solo esta ocurrencia" does.
+    private func occurrenceForDirectEdit(_ task: FocusTask) -> FocusTask {
+        guard isSeriesHead(task), let index = workspace.tasks.firstIndex(where: { $0.id == task.id }) else { return task }
+        let (series, single) = workspace.tasks[index].detachOccurrence(at: task.scheduledAt, workdays: workspace.settings.workdays)
+        workspace.tasks[index] = series
+        enqueueProjectionForTask(series)
+        workspace.tasks.append(single)
+        return single
     }
 
     /// First usable slot on `date`: the start of the working day, or the next free moment when that hour already passed today.
@@ -366,10 +504,26 @@ final class AppModel: ObservableObject {
 
     func snoozeTask(_ task: FocusTask, minutes: Int = 10) {
         guard writable, !busy, task.id != session?.task.id else { return }
-        let updated = task.snoozed(minutes: minutes, now: Date())
+        let detached = isSeriesHead(task)
+        let updated = occurrenceForDirectEdit(task).snoozed(minutes: minutes, now: Date())
         saveTask(updated)
         if error == nil {
-            notice = "«\(updated.title)» pospuesta a las \(updated.scheduledAt.formatted(date: .omitted, time: .shortened))."
+            let time = updated.scheduledAt.formatted(date: .omitted, time: .shortened)
+            notice = detached
+                ? "«\(updated.title)» pospuesta a las \(time), solo esta vez. La serie sigue a su hora."
+                : "«\(updated.title)» pospuesta a las \(time)."
+        }
+    }
+
+    /// Sends one task to the inbox. For a series that means this occurrence only; the series keeps its schedule.
+    func moveToInbox(_ task: FocusTask) {
+        guard writable, !busy, task.id != session?.task.id else { return }
+        let detached = isSeriesHead(task)
+        var unscheduled = occurrenceForDirectEdit(task)
+        unscheduled.isScheduled = false
+        saveTask(unscheduled)
+        if detached, error == nil {
+            notice = "Esta ocurrencia de «\(unscheduled.title)» pasa a la bandeja. La serie sigue programada."
         }
     }
 
@@ -403,6 +557,25 @@ final class AppModel: ObservableObject {
         }
         projected.sort { $0.scheduledAt < $1.scheduledAt }
         return (real, projected)
+    }
+
+    /// Moves recurring series past a missed day so later days keep their reminders and Calendar block.
+    /// Returns true when something changed (the caller persists, reschedules and syncs).
+    @discardableResult
+    func rollMissedSeries(now reference: Date = Date()) -> Bool {
+        guard writable else { return false }
+        let rolled = SeriesRoller.roll(
+            workspace.tasks,
+            sessionTaskID: session?.task.id,
+            now: reference,
+            workdays: workspace.settings.workdays
+        )
+        guard !rolled.rolledSeriesIDs.isEmpty else { return false }
+        workspace.tasks = rolled.tasks
+        for id in rolled.rolledSeriesIDs {
+            if let task = workspace.tasks.first(where: { $0.id == id }) { enqueueProjectionForTask(task, now: reference) }
+        }
+        return true
     }
 
     func schedule() {
@@ -703,6 +876,8 @@ final class AppModel: ObservableObject {
             }
         }
         workspace.session = nil
+        // "Sigue pendiente" on an occurrence from an earlier day must not freeze its series there.
+        rollMissedSeries(now: confirmInstant)
         showCompletion = false
         changedFiles = []
         writingFiles = []
@@ -760,6 +935,8 @@ final class AppModel: ObservableObject {
         )
         workspace.history.insert(record, at: 0)
         workspace.session = nil
+        // A cancelled occurrence from an earlier day must not freeze its series there either.
+        rollMissedSeries(now: cancelInstant)
         if let index = workspace.tasks.firstIndex(where: { $0.id == s.task.id }) {
             let task = workspace.tasks[index]
             if task.isScheduled && task.scheduledAt > cancelInstant {
@@ -1085,11 +1262,13 @@ final class AppModel: ObservableObject {
         let today = Calendar.current.startOfDay(for: now)
         if today != lastPrunedDay {
             lastPrunedDay = today
-            workspace.prune(at: now)
-            _ = persist()
-            schedule()
             // A dated copy per day, so a bad save or a mistake is recoverable from Ajustes → Restaurar copia.
             if !preview { try? store.createDailySnapshotIfNeeded(at: now) }
+            workspace.prune(at: now)
+            let rolled = rollMissedSeries(now: now)
+            _ = persist()
+            schedule()
+            if rolled { syncCalendar() }
         }
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility

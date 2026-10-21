@@ -183,6 +183,72 @@ final class RegressionTests: XCTestCase {
         }
     }
 
+    /// Skipping one day used to freeze a series in the past for good: no reminder, no Calendar block, while the agenda
+    /// still drew the following days. Rolling moves it to today and leaves the missed day behind as overdue.
+    func testMissedDayRollsTheSeriesForwardAndKeepsTheMissedOccurrenceAsOverdue() throws {
+        let cal = madrid()
+        let monday = cal.date(from: DateComponents(year: 2026, month: 10, day: 19, hour: 9))!
+        let wednesdayNoon = cal.date(from: DateComponents(year: 2026, month: 10, day: 21, hour: 12))!
+        var series = FocusTask(title: "Estudiar", scheduledAt: monday, minutes: 45, repeatRule: .daily)
+        series.calendarEventID = "evento-serie"
+
+        // Before rolling, the series has no reminder at all on any later day: this is the bug.
+        XCTAssertTrue(ReminderPlan.make(tasks: [series], sessionTaskID: nil, now: wednesdayNoon).isEmpty)
+
+        let result = SeriesRoller.roll([series], sessionTaskID: nil, now: wednesdayNoon, calendar: cal)
+        XCTAssertEqual(result.rolledSeriesIDs, [series.id])
+        let head = try XCTUnwrap(result.tasks.first { $0.id == series.id })
+        // Lands on today's occurrence (Wednesday 9:00), keeping its identity and its Calendar event to move.
+        XCTAssertEqual(cal.component(.day, from: head.scheduledAt), 21)
+        XCTAssertEqual(cal.component(.hour, from: head.scheduledAt), 9)
+        XCTAssertEqual(head.repeatRule, .daily)
+        XCTAssertEqual(head.calendarEventID, "evento-serie")
+
+        // The missed Monday stays visible as one ordinary overdue task, tied to its series, without a Calendar event.
+        XCTAssertEqual(result.createdOverdueIDs.count, 1)
+        let missed = try XCTUnwrap(result.tasks.first { $0.id == result.createdOverdueIDs[0] })
+        XCTAssertEqual(missed.repeatRule, .never)
+        XCTAssertEqual(missed.seriesID, series.id)
+        XCTAssertEqual(cal.component(.day, from: missed.scheduledAt), 19)
+        XCTAssertNil(missed.calendarEventID)
+
+        // Tomorrow's reminders exist again.
+        let thursdayEarly = cal.date(from: DateComponents(year: 2026, month: 10, day: 22, hour: 7))!
+        let rolledAgain = SeriesRoller.roll(result.tasks, sessionTaskID: nil, now: thursdayEarly, calendar: cal)
+        XCTAssertFalse(ReminderPlan.make(tasks: rolledAgain.tasks, sessionTaskID: nil, now: thursdayEarly).isEmpty)
+        // Missing it again does not pile up a second overdue copy of the same series.
+        XCTAssertTrue(rolledAgain.createdOverdueIDs.isEmpty)
+        XCTAssertEqual(rolledAgain.tasks.filter { $0.repeatRule == .never && $0.seriesID == series.id }.count, 1)
+    }
+
+    /// What must NOT roll: today's occurrence (you can still do it), a completed one, the running session, and
+    /// days the series skips on purpose.
+    func testRollLeavesTodayCompletedSessionAndSkippedDaysAlone() throws {
+        let cal = madrid()
+        let wednesdayNoon = cal.date(from: DateComponents(year: 2026, month: 10, day: 21, hour: 12))!
+        let todayAtNine = cal.date(from: DateComponents(year: 2026, month: 10, day: 21, hour: 9))!
+        let monday = cal.date(from: DateComponents(year: 2026, month: 10, day: 19, hour: 9))!
+
+        let today = FocusTask(title: "Hoy pasada", scheduledAt: todayAtNine, minutes: 30, repeatRule: .daily)
+        let done = FocusTask(title: "Hecha", scheduledAt: monday, minutes: 30, repeatRule: .daily, completed: true)
+        let running = FocusTask(title: "En sesión", scheduledAt: monday, minutes: 30, repeatRule: .daily)
+        let result = SeriesRoller.roll([today, done, running], sessionTaskID: running.id, now: wednesdayNoon, calendar: cal)
+        XCTAssertTrue(result.rolledSeriesIDs.isEmpty)
+        XCTAssertEqual(result.tasks, [today, done, running])
+
+        // Weekly on Mondays, missed last Monday, today Wednesday: next occurrence is next Monday, not today.
+        let weekly = FocusTask(title: "Semanal", scheduledAt: monday.addingTimeInterval(-7 * 86400), minutes: 30, repeatRule: .weekly)
+        let weeklyRolled = try XCTUnwrap(SeriesRoller.roll([weekly], sessionTaskID: nil, now: wednesdayNoon, calendar: cal).tasks.first { $0.id == weekly.id })
+        XCTAssertEqual(cal.component(.day, from: weeklyRolled.scheduledAt), 26)
+        XCTAssertEqual(cal.component(.weekday, from: weeklyRolled.scheduledAt), 2)
+
+        // A day detached from the series (skipped) is jumped over.
+        var daily = FocusTask(title: "Diaria", scheduledAt: monday, minutes: 30, repeatRule: .daily)
+        daily.skippedDates.insert("2026-10-21")
+        let dailyRolled = try XCTUnwrap(SeriesRoller.roll([daily], sessionTaskID: nil, now: wednesdayNoon, calendar: cal).tasks.first { $0.id == daily.id })
+        XCTAssertEqual(cal.component(.day, from: dailyRolled.scheduledAt), 22)
+    }
+
     /// Only one session can exist at a time, so a reminder must never offer to start the task already running.
     func testRunningTaskGetsNoReminderWhileOtherTasksKeepTheirs() {
         let now = Date()

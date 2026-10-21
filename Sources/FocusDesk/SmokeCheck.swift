@@ -118,6 +118,16 @@ enum SmokeCheck {
             try await idle(model)
             guard model.session?.task.id == taskA.id else { throw Failure.message("Hand-off: first session did not start") }
 
+            // With a session, pause and finish must be registered system-wide (they only reached FocusDesk when it was
+            // in front). Only acceptable failure: another FocusDesk instance with its own session holds the keys.
+            let otherInstance = NSRunningApplication.runningApplications(withBundleIdentifier: "local.focusdesk.app")
+                .contains { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+            try? await settle(until: { model.sessionHotKeysActive })
+            guard model.sessionHotKeysActive || otherInstance else {
+                throw Failure.message("Session shortcuts ⌃⌥⌘P/⌃⌥⌘T were not registered system-wide")
+            }
+            let hotKeyStatus = model.sessionHotKeysActive ? "registered" : "held by another FocusDesk instance"
+
             // Starting B asks instead of silently refusing, and A keeps running meanwhile.
             model.handoffRequest = nil
             model.handleNotificationAction(identifier: ReminderService.actionStart, userInfo: ["taskID": taskB.id.uuidString])
@@ -193,6 +203,121 @@ enum SmokeCheck {
 
             model.cancelSession(note: "Cierre tras prueba de relevo")
             model.deleteTask(taskB)
+            // Without a session they are released, so ⌃⌥⌘P and ⌃⌥⌘T stay free for other apps.
+            try await settle(until: { !model.sessionHotKeysActive })
+
+            // 4d. Recurring series: agenda edits act on one occurrence, the editor's choice is honoured, and a missed
+            // day does not freeze the series in the past.
+            let cal = Calendar.current
+            let seriesStart = Date().addingTimeInterval(1800)
+            let series = FocusTask(title: "Serie diaria", scheduledAt: seriesStart, minutes: 30, repeatRule: .daily)
+            model.saveTask(series)
+            let countBefore = model.workspace.tasks.count
+
+            // Snoozing the series' current occurrence must not move the series.
+            model.snoozeTask(series, minutes: 10)
+            guard let headAfterSnooze = model.workspace.tasks.first(where: { $0.id == series.id }),
+                  let snoozedSingle = model.workspace.tasks.first(where: { $0.seriesID == series.id && $0.repeatRule == .never }),
+                  model.workspace.tasks.count == countBefore + 1,
+                  headAfterSnooze.repeatRule == .daily,
+                  cal.isDate(headAfterSnooze.scheduledAt, inSameDayAs: seriesStart.addingTimeInterval(86400)),
+                  cal.component(.hour, from: headAfterSnooze.scheduledAt) == cal.component(.hour, from: seriesStart),
+                  cal.component(.minute, from: headAfterSnooze.scheduledAt) == cal.component(.minute, from: seriesStart),
+                  abs(snoozedSingle.scheduledAt.timeIntervalSince(seriesStart.addingTimeInterval(600))) < 2 else {
+                throw Failure.message("Snoozing an occurrence moved the whole series")
+            }
+
+            // Editing a future (projected) occurrence as "toda la serie" keeps the series' own start date.
+            let headDate = headAfterSnooze.scheduledAt
+            let farDay = cal.date(byAdding: .day, value: 3, to: headDate)!
+            guard var projected = model.tasksForDay(farDay).projected.first(where: { $0.seriesID == series.id }) else {
+                throw Failure.message("Series occurrence was not projected")
+            }
+            let projectedDate = projected.scheduledAt
+            projected.title = "Serie diaria renombrada"
+            model.saveEdited(projected, originalOccurrenceDate: projectedDate, onlyThisOccurrence: false)
+            guard let renamedHead = model.workspace.tasks.first(where: { $0.id == series.id }),
+                  renamedHead.title == "Serie diaria renombrada",
+                  abs(renamedHead.scheduledAt.timeIntervalSince(headDate)) < 1,
+                  renamedHead.repeatRule == .daily else {
+                throw Failure.message("Editing the series from an occurrence moved its start or lost its rule")
+            }
+
+            // Moving that occurrence by one hour as "toda la serie" moves the series by one hour, same day.
+            projected = model.tasksForDay(farDay).projected.first(where: { $0.seriesID == series.id })!
+            let movedProjectedDate = projected.scheduledAt
+            projected.scheduledAt = projected.scheduledAt.addingTimeInterval(3600)
+            model.saveEdited(projected, originalOccurrenceDate: movedProjectedDate, onlyThisOccurrence: false)
+            guard let shiftedHead = model.workspace.tasks.first(where: { $0.id == series.id }),
+                  cal.isDate(shiftedHead.scheduledAt, inSameDayAs: headDate),
+                  abs(shiftedHead.scheduledAt.timeIntervalSince(headDate.addingTimeInterval(3600))) < 1 else {
+                throw Failure.message("Moving the series from an occurrence did not move it consistently")
+            }
+
+            // "Solo esta ocurrencia" after changing its date skips the ORIGINAL day, not the new one.
+            projected = model.tasksForDay(farDay).projected.first(where: { $0.seriesID == series.id })!
+            let originalDay = projected.scheduledAt
+            projected.scheduledAt = cal.date(byAdding: .day, value: 1, to: originalDay)!
+            model.saveEdited(projected, originalOccurrenceDate: originalDay, onlyThisOccurrence: true)
+            guard let skippingHead = model.workspace.tasks.first(where: { $0.id == series.id }),
+                  skippingHead.skippedDates.contains(FocusRules.dayKey(for: originalDay)),
+                  !model.tasksForDay(originalDay).projected.contains(where: { $0.seriesID == series.id }) else {
+                throw Failure.message("Detaching a moved occurrence left the original day projected")
+            }
+
+            // A detached occurrence edited as "toda la serie" never turns the series into "No repetir" or duplicates it.
+            var single = model.workspace.tasks.first(where: { $0.id == snoozedSingle.id })!
+            single.title = "Serie diaria final"
+            let countBeforeDetachedEdit = model.workspace.tasks.count
+            model.saveEdited(single, originalOccurrenceDate: single.scheduledAt, onlyThisOccurrence: false)
+            guard let finalHead = model.workspace.tasks.first(where: { $0.id == series.id }),
+                  finalHead.repeatRule == .daily,
+                  finalHead.title == "Serie diaria final",
+                  model.workspace.tasks.count == countBeforeDetachedEdit,
+                  model.workspace.tasks.first(where: { $0.id == snoozedSingle.id })?.title == "Serie diaria final" else {
+                throw Failure.message("Editing a detached occurrence broke or duplicated the series")
+            }
+            model.saveEdited(single, originalOccurrenceDate: single.scheduledAt, onlyThisOccurrence: true)
+            guard model.workspace.tasks.count == countBeforeDetachedEdit else {
+                throw Failure.message("'Solo esta' on a detached occurrence duplicated it")
+            }
+
+            // A series left on an earlier day is rolled to today and the missed day stays as one overdue task.
+            let yesterday = cal.date(byAdding: .day, value: -1, to: Date())!
+            let missedSeries = FocusTask(title: "Serie saltada", scheduledAt: cal.date(bySettingHour: 8, minute: 0, second: 0, of: yesterday)!, minutes: 20, repeatRule: .daily)
+            model.saveTask(missedSeries)
+            guard model.rollMissedSeries(),
+                  let rolledHead = model.workspace.tasks.first(where: { $0.id == missedSeries.id }),
+                  cal.isDateInToday(rolledHead.scheduledAt) || rolledHead.scheduledAt > Date(),
+                  model.workspace.tasks.filter({ $0.seriesID == missedSeries.id && $0.repeatRule == .never }).count == 1 else {
+                throw Failure.message("A missed day froze the series in the past")
+            }
+            for leftover in model.workspace.tasks where leftover.id == series.id || leftover.seriesID == series.id ||
+                leftover.id == missedSeries.id || leftover.seriesID == missedSeries.id {
+                model.deleteTask(leftover)
+            }
+
+            // 4e. Reminders that cannot reach the user are announced on Hoy instead of failing silently.
+            let reminderProbe = FocusTask(title: "Aviso futuro", scheduledAt: Date().addingTimeInterval(7200), minutes: 15)
+            model.saveTask(reminderProbe)
+            let realStatus = model.reminders.status
+            model.notificationBannerDismissed = false
+            model.reminders.status = .denied
+            let deniedNeedsAttention = model.notificationsNeedAttention
+            model.reminders.status = .notDetermined
+            let undecidedNeedsAttention = model.notificationsNeedAttention
+            model.reminders.status = .authorized
+            let authorizedNeedsAttention = model.notificationsNeedAttention
+            model.reminders.status = .denied
+            model.notificationBannerDismissed = true
+            let dismissedNeedsAttention = model.notificationsNeedAttention
+            model.notificationBannerDismissed = false
+            model.reminders.status = realStatus
+            model.deleteTask(reminderProbe)
+            let nothingToRemind = model.notificationsNeedAttention && !model.workspace.tasks.contains { !$0.completed && $0.isScheduled && $0.scheduledAt > Date() }
+            guard deniedNeedsAttention, undecidedNeedsAttention, !authorizedNeedsAttention, !dismissedNeedsAttention, !nothingToRemind else {
+                throw Failure.message("Disabled-reminders warning shows at the wrong time")
+            }
 
             // 5. Session cancellation distinct from completion (Item 13)
             let nextTask = model.workspace.tasks.first(where: { !$0.completed && $0.title == restored.tasks.filter({ !$0.completed }).first!.title })
@@ -252,7 +377,7 @@ enum SmokeCheck {
                 throw Failure.message("Auto-backup recovery after corruption")
             }
 
-            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); lock pauses & unlock offers resume without counting locked time; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery."
+            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery."
         } catch {
             return "FAIL: \(error.localizedDescription)"
         }

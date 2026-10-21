@@ -346,42 +346,82 @@ final class BraveReader {
 }
 
 final class GlobalHotKey {
-    private var reference: EventHotKeyRef?
-    private var handler: EventHandlerRef?
-    var action: (() -> Void)?
+    /// The configurable shortcut that opens the planner or the compact panel.
+    static let openID: UInt32 = 1
+    /// Session shortcuts. Menu key equivalents only reach FocusDesk while it is the frontmost app, and during a session
+    /// you are in CapCut or Brave — so pause and finish are registered system-wide while a session exists.
+    static let pauseResumeID: UInt32 = 2
+    static let finishID: UInt32 = 3
+    private static let signature: OSType = 0x464F4353 // "FOCS"
 
+    private var references: [UInt32: EventHotKeyRef] = [:]
+    private var handler: EventHandlerRef?
+    /// Called on the main thread with the id of the shortcut that was pressed.
+    var action: ((UInt32) -> Void)?
+
+    /// Registers (or replaces) the open shortcut.
     @discardableResult
     func register(keyCode: UInt32 = UInt32(kVK_ANSI_F), modifiers: UInt32 = UInt32(cmdKey | optionKey | controlKey), enabled: Bool = true) -> Bool {
-        unregister()
+        register(id: Self.openID, keyCode: keyCode, modifiers: modifiers, enabled: enabled)
+    }
+
+    /// Registers (or replaces) the shortcut with `id`. Returns false if another app already owns the combination.
+    @discardableResult
+    func register(id: UInt32, keyCode: UInt32, modifiers: UInt32, enabled: Bool = true) -> Bool {
+        unregister(id: id)
         guard enabled else { return true }
-        if handler == nil {
-            var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-            let status = InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
-                guard let context else { return OSStatus(eventNotHandledErr) }
-                Unmanaged<GlobalHotKey>.fromOpaque(context).takeUnretainedValue().action?()
-                return noErr
-            }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &handler)
-            guard status == noErr else { return false }
-        }
-        return RegisterEventHotKey(
+        guard installHandlerIfNeeded() else { return false }
+        var reference: EventHotKeyRef?
+        let status = RegisterEventHotKey(
             keyCode,
             modifiers,
-            EventHotKeyID(signature: 0x464F4353, id: 1),
+            EventHotKeyID(signature: Self.signature, id: id),
             GetApplicationEventTarget(),
             0,
             &reference
-        ) == noErr
+        )
+        guard status == noErr, let reference else { return false }
+        references[id] = reference
+        return true
     }
 
-    func unregister() {
-        if let reference {
+    func isRegistered(_ id: UInt32) -> Bool { references[id] != nil }
+
+    func unregister(id: UInt32) {
+        if let reference = references.removeValue(forKey: id) {
             UnregisterEventHotKey(reference)
-            self.reference = nil
         }
     }
 
+    /// Removes the open shortcut (the session ones are managed separately).
+    func unregister() { unregister(id: Self.openID) }
+
+    private func installHandlerIfNeeded() -> Bool {
+        guard handler == nil else { return true }
+        var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
+            guard let context, let event else { return OSStatus(eventNotHandledErr) }
+            // Which shortcut fired: every registration shares this one handler.
+            var hotKeyID = EventHotKeyID()
+            let read = GetEventParameter(
+                event,
+                EventParamName(kEventParamDirectObject),
+                EventParamType(typeEventHotKeyID),
+                nil,
+                MemoryLayout<EventHotKeyID>.size,
+                nil,
+                &hotKeyID
+            )
+            guard read == noErr, hotKeyID.signature == GlobalHotKey.signature else { return OSStatus(eventNotHandledErr) }
+            let owner = Unmanaged<GlobalHotKey>.fromOpaque(context).takeUnretainedValue()
+            owner.action?(hotKeyID.id)
+            return noErr
+        }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &handler)
+        return status == noErr
+    }
+
     deinit {
-        unregister()
+        for reference in references.values { UnregisterEventHotKey(reference) }
         if let handler { RemoveEventHandler(handler) }
     }
 }

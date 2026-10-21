@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Combine
 import FocusCore
 import SwiftUI
@@ -37,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let popover = NSPopover()
     private let hotkey = GlobalHotKey()
     private var subscriptions = Set<AnyCancellable>()
+    private var lastPauseToggle = Date.distantPast
+    private var warnedSessionHotKeys = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
@@ -44,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.showWindow = { [weak self] in self?.show() }
         model.toggleCompactPanel = { [weak self] in self?.togglePanel() }
         model.onHotKeySettingsChanged = { [weak self] in self?.applyHotKeySettings() }
-        hotkey.action = { [weak self] in self?.handleHotKeyTriggered() }
+        hotkey.action = { [weak self] id in self?.handleHotKeyTriggered(id) }
         applyHotKeySettings()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -60,6 +63,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: MenuPanel(model: model))
         model.$now.combineLatest(model.$workspace).sink { [weak self] _, _ in self?.updateStatus() }.store(in: &subscriptions)
+        // Session shortcuts exist only while there is a session, so ⌃⌥⌘P and ⌃⌥⌘T stay free for other apps otherwise.
+        model.$workspace
+            .map { $0.session != nil }
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] hasSession in self?.applySessionHotKeys(active: hasSession) }
+            .store(in: &subscriptions)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(show), name: Notification.Name("local.focusdesk.showWindow"), object: nil)
         updateStatus()
         show()
@@ -106,12 +116,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func handleHotKeyTriggered() {
-        switch model.workspace.settings.hotKeyTarget {
-        case .mainWindow:
-            show()
-        case .compactPanel:
-            togglePanel()
+    private func handleHotKeyTriggered(_ id: UInt32) {
+        switch id {
+        case GlobalHotKey.pauseResumeID:
+            menuPauseResume()
+        case GlobalHotKey.finishID:
+            menuFinishSession()
+        default:
+            switch model.workspace.settings.hotKeyTarget {
+            case .mainWindow:
+                show()
+            case .compactPanel:
+                togglePanel()
+            }
+        }
+    }
+
+    /// ⌃⌥⌘P and ⌃⌥⌘T, system-wide while a session exists: the menu equivalents only work with FocusDesk in front.
+    private func applySessionHotKeys(active: Bool) {
+        let modifiers = UInt32(cmdKey | optionKey | controlKey)
+        guard active else {
+            hotkey.unregister(id: GlobalHotKey.pauseResumeID)
+            hotkey.unregister(id: GlobalHotKey.finishID)
+            model.sessionHotKeysActive = false
+            return
+        }
+        let pause = hotkey.register(id: GlobalHotKey.pauseResumeID, keyCode: UInt32(kVK_ANSI_P), modifiers: modifiers)
+        let finish = hotkey.register(id: GlobalHotKey.finishID, keyCode: UInt32(kVK_ANSI_T), modifiers: modifiers)
+        model.sessionHotKeysActive = pause && finish
+        if !(pause && finish), !warnedSessionHotKeys {
+            warnedSessionHotKeys = true
+            model.notice = "Otra app ya usa ⌃⌥⌘P o ⌃⌥⌘T, así que solo funcionan con FocusDesk delante. Pausa o termina desde la barra de menús."
         }
     }
 
@@ -191,6 +226,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     @objc private func menuPauseResume() {
         guard let s = model.session, s.endedAt == nil else { return }
+        // The same keystroke can reach both the system-wide shortcut and the menu: never toggle twice for one press.
+        guard Date().timeIntervalSince(lastPauseToggle) > 0.35 else { return }
+        lastPauseToggle = Date()
         if s.paused { model.resume() } else { model.pause() }
     }
     @objc private func menuFinishSession() {

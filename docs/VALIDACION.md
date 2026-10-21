@@ -173,3 +173,50 @@ en la primera pasada y sí al usar la app.
   empezar una tarea, empezar otra y comprobar el diálogo; bloquear la pantalla y desbloquearla para ver el aviso.
 - La supresión de bloques competidores durante una sesión se comprueba por unidad, no contra EventKit real: el modo
   demostración no escribe en Calendar. Pendiente de confirmar en la isla con una sesión real y una tarea solapada.
+
+---
+
+# Las cinco mejoras de prioridad alta · 21 de octubre de 2026
+
+De `docs/MEJORAS.md`, puntos 1 a 5.
+
+1. **Las series ya no se congelan tras un día perdido.** `SeriesRoller.roll` (FocusCore) mueve cada serie no
+   completada cuya ocurrencia es de un día anterior a su primera ocurrencia desde hoy, respetando los días separados,
+   y deja el día perdido como una tarea atrasada normal, ligada a la serie y sin evento de Calendar. Una sola por
+   serie, para no enterrar el día bajo copias. La serie conserva su identidad y su evento de Calendar, que el puente
+   mueve. Se aplica al arrancar (después de la copia diaria), al cambiar de día y tras confirmar «Sigue pendiente» o
+   cancelar. No toca la ocurrencia de hoy, las completadas ni la sesión en curso.
+2. **Posponer, arrastrar, alargar o mandar a la bandeja actúa sobre ese día.** `snoozeTask`, `shift` y `moveToInbox`
+   separan primero la ocurrencia (`detachOccurrence`) y cambian solo la copia. Antes, «Posponer 10 min» en el aviso de
+   «Estudiar 9:00» dejaba la serie a las 9:10 para siempre. El aviso lo dice: «solo esta vez, la serie sigue a su hora».
+3. **El editor respeta «toda la serie» y «solo esta ocurrencia».** La lógica pasó a `AppModel.saveEdited`, que
+   distingue la serie, una ocurrencia futura y una ya separada. El editor recuerda la fecha con la que se abrió. Desde
+   una ocurrencia futura, «toda la serie» conserva la fecha de inicio de la serie (antes la serie pasaba a empezar ese
+   día y desaparecían los anteriores) y aplica el mismo movimiento de día y hora. Una ocurrencia ya separada nunca pasa
+   su «No repetir» a la serie ni se duplica. «Solo esta» salta el día **original** aunque la hayas movido. Abriendo
+   desde una ocurrencia, «solo esta» va por defecto, con una línea que explica qué va a cambiar.
+4. **⌃⌥⌘P y ⌃⌥⌘T funcionan con otra app delante.** `GlobalHotKey` admite varios atajos y lee cuál se pulsó
+   (`GetEventParameter`). Los dos de sesión se registran en todo el sistema solo mientras hay una sesión, y se liberan
+   al acabar. Si otra app ya los usa, se avisa una vez. Una sola pulsación nunca alterna la pausa dos veces.
+5. **El permiso de avisos se pide cuando importa, y su falta se ve.** Se pide al guardar la primera tarea con hora
+   futura, y Hoy muestra un aviso persistente con «Activar avisos» o «Abrir Ajustes» mientras falte y haya algo que
+   avisar.
+
+## Comprobado
+
+- `swift test`: **34 pruebas, 0 fallos**. Dos nuevas para el punto 1: el día perdido mueve la serie a hoy, conserva
+  su evento, deja una sola atrasada y recupera los avisos de mañana; y no se mueve la ocurrencia de hoy, una
+  completada, la sesión en curso ni un día separado, y una serie semanal salta a su siguiente lunes.
+- Chequeo integrado del bundle real en **PASS** (código de salida de la propia app, 0), ampliado con: posponer una
+  ocurrencia sin mover la serie; renombrar desde una ocurrencia futura sin mover el inicio; mover una hora desde una
+  ocurrencia moviendo la serie una hora el mismo día; «solo esta» tras cambiar la fecha saltando el día original;
+  editar una ocurrencia separada sin romper ni duplicar la serie; avanzar una serie de ayer; atajos de sesión
+  **registrados de verdad en el sistema** durante la sesión y liberados al terminar; y cuándo debe salir el aviso de
+  avisos desactivados.
+- El chequeo destapó un fallo propio antes de entregar: al mover la serie se perdían los segundos de la hora. Corregido.
+
+## Sin comprobar
+
+- **La pulsación de ⌃⌥⌘P/⌃⌥⌘T con otra app delante.** El registro con el sistema está comprobado; la pulsación real
+  necesita manejar el teclado, y ese permiso no está concedido.
+- **El diálogo de permiso de macOS** al guardar la primera tarea: el modo demostración no usa notificaciones.

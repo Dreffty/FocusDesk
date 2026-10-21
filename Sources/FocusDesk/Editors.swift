@@ -11,16 +11,11 @@ struct TaskEditor: View {
     @State private var saveProfileName = ""
     @State private var showSaveProfile = false
     @State private var editSingleOccurrenceOnly = false
+    /// The date the editor was opened with. The occurrence to detach is this one even if the user moves it.
+    @State private var originalOccurrenceDate: Date?
+    @State private var seriesKind: AppModel.SeriesEditKind = .notInSeries
 
-    private var parentSeriesID: UUID? {
-        if let seriesID = draft.seriesID, model.workspace.tasks.contains(where: { $0.id == seriesID }) {
-            return seriesID
-        }
-        if let existing = model.workspace.tasks.first(where: { $0.id == draft.id }), existing.repeatRule != .never {
-            return existing.id
-        }
-        return nil
-    }
+    private var belongsToSeries: Bool { seriesKind != .notInSeries }
 
     private var domainParse: (valid: [String], invalid: [String]) {
         FocusRules.parseDomains(draft.domains)
@@ -98,13 +93,16 @@ struct TaskEditor: View {
                         }
                     }
 
-                    if parentSeriesID != nil {
-                        HStack(spacing: 12) {
-                            Image(systemName: "repeat.circle").foregroundStyle(Palette.mint)
-                            Picker("Cambio en tarea repetitiva", selection: $editSingleOccurrenceOnly) {
-                                Text("Editar toda la serie").tag(false)
-                                Text("Editar solo esta ocurrencia (\(draft.scheduledAt.formatted(date: .abbreviated, time: .omitted)))").tag(true)
-                            }.pickerStyle(.segmented)
+                    if belongsToSeries {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "repeat.circle").foregroundStyle(Palette.mint)
+                                Picker("Cambio en tarea repetitiva", selection: $editSingleOccurrenceOnly) {
+                                    Text("Editar toda la serie").tag(false)
+                                    Text("Editar solo esta ocurrencia (\((originalOccurrenceDate ?? draft.scheduledAt).formatted(date: .abbreviated, time: .omitted)))").tag(true)
+                                }.pickerStyle(.segmented)
+                            }
+                            Text(seriesHint).font(.caption).foregroundStyle(Palette.muted)
                         }.padding(12).background(Palette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
 
@@ -327,19 +325,11 @@ struct TaskEditor: View {
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Guardar tarea") {
-                    if editSingleOccurrenceOnly, let seriesID = parentSeriesID {
-                        model.saveTask(draft, detachFromSeriesID: seriesID, occurrenceDate: draft.scheduledAt)
-                    } else if let seriesID = draft.seriesID, !editSingleOccurrenceOnly,
-                              let seriesTask = model.workspace.tasks.first(where: { $0.id == seriesID }) {
-                        var updatedSeries = draft
-                        updatedSeries.id = seriesTask.id
-                        updatedSeries.seriesID = nil
-                        updatedSeries.calendarEventID = seriesTask.calendarEventID
-                        updatedSeries.calendarSnapshot = seriesTask.calendarSnapshot
-                        model.saveTask(updatedSeries)
-                    } else {
-                        model.saveTask(draft)
-                    }
+                    model.saveEdited(
+                        draft,
+                        originalOccurrenceDate: originalOccurrenceDate ?? draft.scheduledAt,
+                        onlyThisOccurrence: belongsToSeries && editSingleOccurrenceOnly
+                    )
                     if model.error == nil { dismiss() }
                 }
                 .buttonStyle(FocusPrimaryButton())
@@ -349,6 +339,17 @@ struct TaskEditor: View {
         }
         .padding(24)
         .frame(width: 700, height: min(780, (NSScreen.main?.visibleFrame.height ?? 820) - 70))
+        .onAppear {
+            guard originalOccurrenceDate == nil else { return }
+            originalOccurrenceDate = draft.scheduledAt
+            seriesKind = model.seriesEditKind(for: draft)
+            // Opened from one occurrence (a future one, or one already detached), the safe default is to change that
+            // one only. Opened from the series itself, the default stays "toda la serie".
+            switch seriesKind {
+            case .projected, .detached: editSingleOccurrenceOnly = true
+            case .head, .notInSeries: editSingleOccurrenceOnly = false
+            }
+        }
         .background(Palette.background)
         .preferredColorScheme(.dark)
         .tint(Palette.mint)
@@ -374,6 +375,19 @@ struct TaskEditor: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         draft.folder = url.path
         folderWarning = "Elige una carpeta concreta del proyecto; se revisan como máximo 5.000 entradas ignorando temporales."
+    }
+
+    private var seriesHint: String {
+        switch (seriesKind, editSingleOccurrenceOnly) {
+        case (.detached, false):
+            return "Los cambios de título, duración, apps y checklist pasan también a la serie. Su hora y su repetición no cambian."
+        case (_, true):
+            return "Solo cambia este día. El resto de la serie sigue igual."
+        case (.projected, false):
+            return "Cambia la serie entera. Si mueves la hora o el día, toda la serie se mueve igual; no empieza en este día."
+        default:
+            return "Cambia la serie entera a partir de su próxima ocurrencia."
+        }
     }
 
     private func applyProfile(_ profile: FocusProfile) {
