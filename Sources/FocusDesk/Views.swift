@@ -1228,16 +1228,17 @@ private struct HistoryPage: View {
                             Text("Todas").tag("Todas")
                             ForEach(model.workspace.settings.categories.map(\.name), id: \.self) { Text($0).tag($0) }
                         }
-                        .frame(maxWidth: 200)
+                        .frame(maxWidth: 180)
                         Picker("Estado", selection: $status) {
                             ForEach(["Todas", "Completadas", "Incompletas", "Canceladas"], id: \.self) { Text($0).tag($0) }
                         }
-                        .frame(maxWidth: 200)
+                        .frame(maxWidth: 190)
+                        // Natural width: squeezed, the "Periodo" label broke into three lines.
                         Picker("Periodo", selection: $range) {
                             ForEach(["Todo", "Hoy", "Ayer", "7 días", "30 días"], id: \.self) { Text($0).tag($0) }
                         }
                         .pickerStyle(.segmented)
-                        .frame(maxWidth: 320)
+                        .fixedSize()
                         Spacer(minLength: 0)
                         if search != "" || category != "Todas" || status != "Todas" || range != "Todo" {
                             Button("Quitar filtros") { search = ""; category = "Todas"; status = "Todas"; range = "Todo" }
@@ -1272,7 +1273,7 @@ private struct HistoryPage: View {
                     let done = dayRecords.filter(\.completed).count
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(Self.dayHeader(day)).font(.app(15, weight: .semibold))
-                        Text("\(dayRecords.count) sesiones · \(done) completadas · \(TodayPage.workedText(Double(minutes) * 60))")
+                        Text("\(dayRecords.count) \(dayRecords.count == 1 ? "sesión" : "sesiones") · \(done) \(done == 1 ? "completada" : "completadas") · \(TodayPage.workedText(Double(minutes) * 60))")
                             .font(.app(12))
                             .foregroundStyle(Palette.muted)
                     }
@@ -1990,6 +1991,8 @@ struct SessionButtons: View {
             }
             .buttonStyle(FocusPrimaryButton(compact: compact))
             .disabled(model.busy)
+            .fixedSize()
+            .layoutPriority(1)
             .help("He terminado (⌃⌥⌘T)")
             if model.session?.endedAt == nil {
                 let paused = model.session?.paused == true
@@ -1998,9 +2001,11 @@ struct SessionButtons: View {
                 }
                 .buttonStyle(.focus(.secondary, compact: compact))
                 .help(paused ? "Reanudar (⌃⌥⌘P)" : "Pausar (⌃⌥⌘P)")
-                Button { model.addTime() } label: { Label("+10 min", systemImage: "plus") }
+                // In the 360-pt panel the full label pushed «He terminado» into "He term…".
+                Button { model.addTime() } label: { Label(compact ? "10" : "+10 min", systemImage: "plus") }
                     .buttonStyle(.focus(.ghost, compact: compact))
                     .help("Ampliar 10 minutos (⌃⌥⌘A)")
+                    .accessibilityLabel("Ampliar 10 minutos")
                 Button { confirmCancel = true } label: { Image(systemName: "xmark") }
                     .buttonStyle(FocusIconButtonStyle(size: compact ? 24 : 30, tint: Palette.danger.opacity(0.8)))
                     .help("Cancelar la sesión sin completar la tarea")

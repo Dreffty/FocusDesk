@@ -220,3 +220,53 @@ De `docs/MEJORAS.md`, puntos 1 a 5.
 - **La pulsación de ⌃⌥⌘P/⌃⌥⌘T con otra app delante.** El registro con el sistema está comprobado; la pulsación real
   necesita manejar el teclado, y ese permiso no está concedido.
 - **El diálogo de permiso de macOS** al guardar la primera tarea: el modo demostración no usa notificaciones.
+
+---
+
+# Las 34 mejoras restantes y la revisión de diseño · 21 de octubre de 2026, noche
+
+Qué se hizo: las mejoras 6 a 39 de `MEJORAS.md` (bloques A–E, commits `2c49dc2`, `fea494d`, `bde3f39`) y la revisión
+con las guías de Apple de `REVISION-DISENO.md`. Después, un repaso entero buscando fallos metidos por tantos cambios.
+
+## Comprobado
+
+- `swift test`: **41 pruebas, 0 fallos**. Las 7 nuevas cubren: reabrir una sesión terminada sin perder lo trabajado
+  ni contar la parada; archivos antiguos sin el campo de inicio automático; columnas para las tareas solapadas;
+  primer hueco libre del día saltando los descansos; el resumen por app y la checklist conservados al podar el
+  historial; solo atajos globales seguros en Ajustes; y un dato roto que no bloquea la agenda.
+- Chequeo integrado del bundle real en **PASS** (código de salida de la propia app, 0), ampliado con: relevo de
+  sesión, bloqueo y reanudación, series, atajos registrados en el sistema, reabrir una sesión terminada por error,
+  inicio automático, deshacer y rehacer de varios pasos (un paso antiguo no revierte un cambio posterior), acciones
+  sobre lo atrasado, apuntar rápido, elegir y mover tareas con el teclado y lectura tolerante de un archivo con un
+  dato roto.
+- **Capturas dibujadas por la propia app** (`--preview --snapshots`): Hoy, Semana, Historial, panel de la barra,
+  confirmación, editor y Ajustes, en claro y en oscuro, y con el texto al 130 %. Se miraron una a una.
+- `codesign --verify --deep --strict` y `plutil -lint`: correctos.
+- Instalada en `~/Applications` con `scripts/install.command` (respalda la versión anterior y pasa el chequeo antes
+  de copiar) y abierta. **Los datos reales siguen intactos**: 3 tareas, 5 sesiones de historial y 3 perfiles; la
+  categoría Tienda pasó al turquesa nuevo; tamaño de texto normal y contador en la barra activado; sin copia de
+  «lectura parcial» (el archivo se leyó entero) y sin errores en el registro.
+
+## Fallos propios encontrados en el repaso, y arreglados
+
+- Editar «toda la serie» desde una ocurrencia perdía el **inicio automático** (no se copiaba con el resto de campos).
+- El selector «Periodo» del Historial partía su etiqueta en dos líneas.
+- «1 pasos», «1 sesiones»: plurales mal en la confirmación y el Historial.
+- Botones de la confirmación y chips de duración del editor cortados con el texto grande; la confirmación ahora se
+  ensancha con el tamaño del texto.
+- En la tarjeta compacta de la sesión, «+10 min» se cortaba: queda «10» con el icono, y VoiceOver dice «Ampliar 10
+  minutos».
+- Antes, en los bloques: el tamaño del texto no llegaba a todas las vistas, deshacer dejaba grupos abiertos que
+  juntaban cambios distintos, y un recorte eliminó por error «apuntar rápido» (se recuperó del commit anterior y el
+  chequeo lo cubre ahora).
+
+## Sin comprobar
+
+- **Pulsaciones reales de teclado**: ⌃⌥⌘P y ⌃⌥⌘T con otra app delante, y la navegación de la agenda con flechas. Está
+  comprobado que los atajos quedan registrados y que la lógica de cada tecla hace lo que debe, pero el permiso para
+  manejar el teclado no está concedido.
+- **VoiceOver de verdad** y los ajustes reales de «Aumentar contraste» y «Reducir movimiento»: las capturas fuerzan
+  la apariencia y el código responde a esos ajustes, pero nadie ha escuchado la app con el lector de pantalla.
+- **El diálogo de permiso de avisos de macOS**: el modo demostración no usa notificaciones.
+- **Calendar real**: que la isla de Vorssaint deje de mostrar las tareas que empezarían durante una sesión está
+  comprobado en la lógica, no con EventKit y Vorssaint delante.

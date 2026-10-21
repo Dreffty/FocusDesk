@@ -732,6 +732,7 @@ final class AppModel: ObservableObject {
         head.checklist = draft.checklist
         head.profileID = draft.profileID
         head.isFixedAppointment = draft.isFixedAppointment
+        head.autoStart = draft.autoStart
     }
 
     /// Applies to `date` the same move (whole days, then wall-clock time) that took `original` to `edited`.

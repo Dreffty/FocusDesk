@@ -169,6 +169,7 @@ struct TaskEditor: View {
                                                 .accessibilityLabel("\(minutes) minutos")
                                         }
                                     }
+                                    .fixedSize()
                                 }
                             }
 
@@ -484,7 +485,7 @@ struct CompletionView: View {
                         HStack(spacing: 10) {
                             Chip("\(Int(s.accumulated / 60)) min de sesión", icon: "clock", color: Palette.mint)
                             Chip("\(s.interruptionCount) interrupciones", icon: "exclamationmark.bubble", color: s.interruptionCount == 0 ? Palette.mint : Palette.warning)
-                            Chip("\(s.checked.count) pasos", icon: "checklist")
+                            Chip("\(s.checked.count) \(s.checked.count == 1 ? "paso" : "pasos")", icon: "checklist")
                             Chip("\(model.selectedDeliverables.count)/\(allEvidenceFiles.count) entregables", icon: "doc.badge.checkmark", color: Palette.mint)
                         }
                     }
@@ -606,10 +607,13 @@ struct CompletionView: View {
 
             HStack(spacing: 10) {
                 // Same question as the session controls: cancelling throws the session away.
+                // Every label whole: buttons size to their text, the sheet is wide enough for all four.
                 Button("Cancelar sesión") { confirmCancel = true }
                     .buttonStyle(.focusDestructive)
+                    .fixedSize()
                 Button("Volver a la sesión") { model.reopenSession() }
                     .buttonStyle(.focusGhost)
+                    .fixedSize()
                     .keyboardShortcut(.cancelAction)
                     .help("Deshace «He terminado» y sigue con el tiempo que te quedaba (Esc)")
                 Spacer()
@@ -619,15 +623,17 @@ struct CompletionView: View {
                 .buttonStyle(.focusSecondary)
                 .keyboardShortcut(.return, modifiers: .option)
                 .help("Guardar la sesión sin dar la tarea por terminada (⌥↩)")
+                .fixedSize()
                 Button("Sí, he terminado") {
                     model.confirm(completed: true, note: note, transition: transition)
                 }
                 .buttonStyle(FocusPrimaryButton())
                 .keyboardShortcut(.defaultAction)
+                .fixedSize()
             }
         }
         .padding(26)
-        .frame(width: 620)
+        .frame(width: 720 + 160 * (TextScale.factor - 1))
         .background(Palette.background)
         .tint(Palette.mint)
         .interactiveDismissDisabled()

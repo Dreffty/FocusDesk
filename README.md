@@ -4,7 +4,7 @@ Tu plan del día y el tiempo de cada tarea, accesibles desde la barra de menús 
 
 ## Abrir
 
-Abre `~/Applications/FocusDesk.app` con doble clic, búscala en Spotlight o usa su icono del Dock. La copia compilada también está en `dist/FocusDesk.app`. Cerrar su ventana deja la app funcionando en la barra. El atajo global (**Control + Opción + Comando + F** por defecto, configurable en **Ajustes**) vuelve a abrir el planificador o el panel compacto. Para cerrarla completamente, usa **Salir** en su menú.
+Abre `~/Applications/FocusDesk.app` con doble clic, búscala en Spotlight o usa su icono del Dock. La copia compilada también está en `dist/FocusDesk.app`. Cerrar su ventana deja la app funcionando en la barra. El atajo global (**Control + Opción + Comando + F** por defecto, configurable en **Ajustes**, que se abren con `⌘,` en su propia ventana) vuelve a abrir el planificador o el panel compacto. Para cerrarla completamente, usa **Salir** en su menú.
 
 Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma estable local (`Apple Development`) cuando está disponible en el llavero (con respaldo ad-hoc `-`), conservando los permisos de macOS entre recompilaciones.
 
@@ -23,6 +23,14 @@ Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma 
 Cerrar la pantalla o el bloqueo del Mac pausan la observación; el reposo de la pantalla por sí solo, no.
 
 El modo estricto devuelve el foco a una app permitida y registra una sola interrupción por cada episodio continuo fuera del entorno de trabajo (volver a trabajar y salir de nuevo cuenta como otra). Finder, Ajustes del Sistema, FocusDesk, Vorssaint y diálogos del sistema siguen accesibles. Si una app permitida se cierra o falla su activación tras varios intentos, la sesión se pausa automáticamente para evitar bucles y conservar el control. Un navegador permitido puede abrir cualquier web: los dominios se normalizan (aceptando URLs como `https://claude.ai/`), se señalan y registran, pero no se bloquean.
+
+## Teclado, deshacer y apariencia
+
+- **Deshacer y rehacer** (`⌘Z`, `⇧⌘Z`) cualquier cambio de la agenda: mover, alargar, posponer, borrar o editar una tarea. El menú Edición dice qué se va a deshacer.
+- **La agenda se maneja sin ratón**: con Hoy delante, las flechas ↑↓ eligen tarea, `↩` la abre, `Espacio` la empieza, `⌥↑`/`⌥↓` la mueven 5 minutos, `⇧⌥↑`/`⇧⌥↓` cambian su duración, `⌫` la borra (pidiendo confirmación) y `Esc` quita la selección. Lo que se puede hacer con la tarea elegida está también en el menú **Tarea** (`⌘E` para editarla), y **Ayuda → Atajos de FocusDesk** los resume todos. `⌘1`, `⌘2` y `⌘3` van a Hoy, Semana e Historial; `⌘[` y `⌘]` pasan al día o a la semana anterior o siguiente, y `⌘T` vuelve a hoy. Con FocusDesk delante, **⌃⌥⌘A** amplía la sesión 10 minutos.
+- **Apuntar rápido**: el campo del panel de la barra de menús manda una tarea a la bandeja sin hora con solo escribir y pulsar `↩`, sin abrir la ventana. Doble clic en un hueco vacío de la vista por horas crea una tarea a esa hora.
+- **Claro u oscuro**: FocusDesk sigue la apariencia de macOS, y respeta «Aumentar contraste» y «Reducir movimiento».
+- **Tamaño del texto**: Ajustes → General → Normal, Grande o Muy grande. Ahí también decides si el contador aparece en la barra de menús.
 
 ## Vorssaint y Apple Calendar
 
