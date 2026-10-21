@@ -363,24 +363,44 @@ enum SmokeCheck {
             let calB = Calendar.current
             let movable = FocusTask(title: "Mover y deshacer", scheduledAt: Date().addingTimeInterval(5400), minutes: 30)
             model.saveTask(movable)
+            model.undoManager.removeAllActions()
             model.shift(movable, to: movable.scheduledAt.addingTimeInterval(1800))
-            guard model.canUndoAgenda else { throw Failure.message("Undo not offered after moving a task") }
+            try await nextEvent()
+            guard model.canUndoAgenda, model.undoManager.undoActionName.contains("Mover") else {
+                throw Failure.message("Undo not offered (with its name) after moving a task")
+            }
             model.undoAgendaChange()
+            try await nextEvent()
             guard let undone = model.workspace.tasks.first(where: { $0.id == movable.id }),
-                  abs(undone.scheduledAt.timeIntervalSince(movable.scheduledAt)) < 1, !model.canUndoAgenda else {
+                  abs(undone.scheduledAt.timeIntervalSince(movable.scheduledAt)) < 1, model.undoManager.canRedo else {
                 throw Failure.message("Undo did not put the task back")
             }
-            // A later, unrelated edit makes the older undo unavailable instead of reverting it.
-            model.shift(movable, to: movable.scheduledAt.addingTimeInterval(600))
+            // Rehacer brings the move back.
+            model.redoAgendaChange()
+            try await nextEvent()
+            guard let redone = model.workspace.tasks.first(where: { $0.id == movable.id }),
+                  abs(redone.scheduledAt.timeIntervalSince(movable.scheduledAt.addingTimeInterval(1800))) < 1 else {
+                throw Failure.message("Redo did not apply the move again")
+            }
+            // A later, unrelated edit is never reverted by an older undo step: the step is refused instead.
             var other = FocusTask(title: "Otra edición", scheduledAt: Date().addingTimeInterval(9000), minutes: 15)
             model.saveTask(other)
             other.title = "Otra edición cambiada"
             model.saveTask(other)
-            guard !model.canUndoAgenda else { throw Failure.message("Undo stayed available after an unrelated edit") }
+            try await nextEvent()
+            model.undoAgendaChange()
+            try await nextEvent()
+            guard model.workspace.tasks.contains(where: { $0.id == other.id && $0.title == "Otra edición cambiada" }),
+                  let stillMoved = model.workspace.tasks.first(where: { $0.id == movable.id }),
+                  abs(stillMoved.scheduledAt.timeIntervalSince(movable.scheduledAt.addingTimeInterval(1800))) < 1 else {
+                throw Failure.message("An old undo step reverted an unrelated later edit")
+            }
             // Deleting can be undone.
             model.deleteTask(other)
+            try await nextEvent()
             guard model.canUndoAgenda else { throw Failure.message("Undo not offered after deleting") }
             model.undoAgendaChange()
+            try await nextEvent()
             guard model.workspace.tasks.contains(where: { $0.id == other.id && $0.title == "Otra edición cambiada" }) else {
                 throw Failure.message("Undo did not restore the deleted task")
             }
@@ -389,7 +409,9 @@ enum SmokeCheck {
             model.saveTask(undoSeries)
             let tasksBeforeSnooze = model.workspace.tasks.count
             model.snoozeTask(undoSeries, minutes: 10)
+            try await nextEvent()
             model.undoAgendaChange()
+            try await nextEvent()
             guard model.workspace.tasks.count == tasksBeforeSnooze,
                   let seriesBack = model.workspace.tasks.first(where: { $0.id == undoSeries.id }),
                   abs(seriesBack.scheduledAt.timeIntervalSince(undoSeries.scheduledAt)) < 1 else {
@@ -499,10 +521,15 @@ enum SmokeCheck {
                 throw Failure.message("Auto-backup recovery after corruption")
             }
 
-            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery."
+            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo and redo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery."
         } catch {
             return "FAIL: \(error.localizedDescription)"
         }
+    }
+
+    /// Lets the current event end, as it would between two user actions (AppKit closes undo groups per event).
+    private static func nextEvent() async throws {
+        try await Task.sleep(nanoseconds: 120_000_000)
     }
 
     /// Waits for a distributed notification to be delivered and handled on the main actor.

@@ -13,15 +13,24 @@ enum NextTransitionAction: Equatable {
 final class AppModel: ObservableObject {
     @Published var workspace = Workspace()
     @Published var now = Date()
-    @Published var error: String?
-    @Published var notice: String?
+    @Published var error: String? { didSet { announce(error, oldValue: oldValue, priority: .high) } }
+    @Published var notice: String? { didSet { announce(notice, oldValue: oldValue, priority: .medium) } }
     @Published var evidenceMessage: String?
     @Published var changedFiles: [String] = []
     @Published var writingFiles: [String] = []
     @Published var selectedDeliverables: Set<String> = []
     @Published var manualAttachments: [String] = []
     @Published var busy = false
-    @Published var page = "Hoy"
+    /// Ajustes lives in its own window now; asking for the old page opens that window instead.
+    @Published var page = "Hoy" {
+        didSet {
+            if page == AppPage.settings.rawValue {
+                page = oldValue == AppPage.settings.rawValue ? AppPage.today.rawValue : oldValue
+                showSettings?(nil)
+            }
+        }
+    }
+    var showSettings: ((SettingsSectionTab?) -> Void)?
     @Published var selectedDate = Date()
     @Published var editingTask: FocusTask?
     @Published var showCompletion = false
@@ -32,7 +41,7 @@ final class AppModel: ObservableObject {
     /// Task the user asked to start while another session was running. Drives the explicit hand-off question.
     @Published var handoffRequest: FocusTask?
     /// Stays on screen until acted upon, unlike `notice`, so a session paused by the Mac is never missed.
-    @Published var resumePrompt: String?
+    @Published var resumePrompt: String? { didSet { announce(resumePrompt, oldValue: oldValue, priority: .high) } }
     /// True while ⌃⌥⌘P and ⌃⌥⌘T are registered system-wide for the running session (set by the app delegate).
     var sessionHotKeysActive = false
     /// The Hoy banner about disabled reminders can be hidden for this launch.
@@ -47,14 +56,16 @@ final class AppModel: ObservableObject {
     /// Tasks already started on their own (or skipped because another session was running), so it happens once.
     private var autoStartHandled: Set<String> = []
 
-    /// One step of undo for direct agenda edits (drag, snooze, inbox, delete). Only valid while nothing else changed
-    /// the agenda since, so it can never revert an unrelated edit made afterwards.
-    struct AgendaUndo {
-        let label: String
-        let before: [FocusTask]
-        var after: [FocusTask]
-    }
-    @Published private(set) var agendaUndo: AgendaUndo?
+    /// Undo and redo for direct agenda edits (drag, snooze, inbox, delete), in the Edit menu with ⌘Z and ⇧⌘Z
+    /// (`undo-and-redo.md › Desktop`). The main window hands this manager to AppKit. Each step only applies while
+    /// nothing else changed the agenda since, so it never reverts an unrelated edit made afterwards.
+    let undoManager: UndoManager = {
+        // Explicit groups, one per agenda change: AppKit's per-event grouping left a group open when the change
+        // did not come from a user event, and an open group cannot be undone.
+        let manager = UndoManager()
+        manager.groupsByEvent = false
+        return manager
+    }()
 
     let calendar = CalendarBridge()
     let reminders = ReminderService()
@@ -83,6 +94,16 @@ final class AppModel: ObservableObject {
     var onHotKeySettingsChanged: (() -> Void)?
 
     var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    /// Notices appear far from VoiceOver's cursor: read them out when they change, errors and prompts first.
+    private func announce(_ text: String?, oldValue: String?, priority: NSAccessibilityPriorityLevel) {
+        guard let text, text != oldValue, NSWorkspace.shared.isVoiceOverEnabled else { return }
+        NSAccessibility.post(
+            element: NSApp.mainWindow ?? NSApp as Any,
+            notification: .announcementRequested,
+            userInfo: [.announcement: text, .priority: priority.rawValue]
+        )
+    }
 
     init(directory: URL? = nil, preview: Bool = false) {
         self.preview = preview
@@ -116,6 +137,14 @@ final class AppModel: ObservableObject {
             self.error = "No se han podido leer tus datos. Se han conservado intactos en \(store.url.path). Puedes recuperar la última copia automática o importar un respaldo desde el aviso o Ajustes. (\(error.localizedDescription))"
         }
         hasInitialBaseline = workspace.session?.baselineValid ?? false
+        TextScale.factor = CGFloat(workspace.settings.textScale)
+        // "Tienda" used the exact mint of the accent and the running session: same colour, two meanings.
+        let retired = CategoryItem.retiredTiendaColor
+        if let index = workspace.settings.categories.firstIndex(where: {
+            $0.name == "Tienda" && abs($0.red - retired.red) < 0.001 && abs($0.green - retired.green) < 0.001 && abs($0.blue - retired.blue) < 0.001
+        }), let tienda = CategoryItem.defaults.first(where: { $0.name == "Tienda" }) {
+            workspace.settings.categories[index] = tienda
+        }
         // Shortcuts like ⇧⌘F or ⌥⌘F are no longer offered: they hijacked other apps' commands system-wide.
         if writable, workspace.settings.hotKeyEnabled, HotKeyPreset.isRetired(modifiers: workspace.settings.hotKeyModifiers) {
             let previous = workspace.settings.hotKeyLabel
@@ -300,6 +329,7 @@ final class AppModel: ObservableObject {
         guard writable else { return }
         let before = workspace.settings
         mutate(&workspace.settings)
+        TextScale.factor = CGFloat(workspace.settings.textScale)
         _ = persist()
         if before.hotKeyEnabled != workspace.settings.hotKeyEnabled ||
            before.hotKeyCode != workspace.settings.hotKeyCode ||
@@ -389,7 +419,7 @@ final class AppModel: ObservableObject {
         let before = workspace.tasks
         defer {
             if error == nil, before.count != workspace.tasks.count {
-                rememberUndo("el borrado de «\(task.title)»", before: before)
+                rememberUndo("Borrar «\(task.title)»", before: before)
                 notice = "«\(task.title)» eliminada."
             }
         }
@@ -433,11 +463,18 @@ final class AppModel: ObservableObject {
             ? "«\(updated.title)» ahora dura \(updated.minutes) min."
             : "«\(updated.title)» movida a \(when)."
         notice = detached ? what + " Solo esta ocurrencia; la serie sigue a su hora." : what
-        rememberUndo("el cambio de «\(updated.title)»", before: before)
+        rememberUndo("Mover «\(updated.title)»", before: before)
     }
 
     private func rememberUndo(_ label: String, before: [FocusTask]) {
-        agendaUndo = AgendaUndo(label: label, before: before, after: workspace.tasks)
+        let after = workspace.tasks
+        undoManager.beginUndoGrouping()
+        undoManager.registerUndo(withTarget: self) { model in
+            model.applyAgendaState(before, expecting: after, label: label)
+        }
+        undoManager.setActionName(label)
+        undoManager.endUndoGrouping()
+        objectWillChange.send()
     }
 
     /// Calendar ids get filled in by the sync right after a change; they are not an edit by the user.
@@ -450,22 +487,33 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var canUndoAgenda: Bool {
-        guard let undo = agendaUndo else { return false }
-        return Self.agendaSignature(undo.after) == Self.agendaSignature(workspace.tasks)
-    }
+    var canUndoAgenda: Bool { undoManager.canUndo }
 
     func undoAgendaChange() {
-        guard writable, !busy, let undo = agendaUndo else { return }
-        guard canUndoAgenda else {
-            agendaUndo = nil
+        guard undoManager.groupingLevel == 0, undoManager.canUndo else { return }
+        undoManager.undo()
+    }
+
+    func redoAgendaChange() {
+        guard undoManager.groupingLevel == 0, undoManager.canRedo else { return }
+        undoManager.redo()
+    }
+
+    /// Puts the agenda back to `target` if nothing else changed it since `expected`, and registers the opposite step
+    /// so Rehacer works too.
+    private func applyAgendaState(_ target: [FocusTask], expecting expected: [FocusTask], label: String) {
+        guard writable, !busy else { return }
+        guard Self.agendaSignature(expected) == Self.agendaSignature(workspace.tasks) else {
+            // Something else changed the agenda in between: refusing is safer than reverting that too.
+            DispatchQueue.main.async { [weak self] in self?.undoManager.removeAllActions(withTarget: self as Any) }
             notice = "Ya no se puede deshacer: la agenda cambió después."
             return
         }
+        let undoing = undoManager.isUndoing
         let current = workspace.tasks
         let reference = Date()
         // Keep what Calendar knows now: a restored task must not point at an event that was already removed.
-        var restored = undo.before.map { task -> FocusTask in
+        var restored = target.map { task -> FocusTask in
             var copy = task
             let live = current.first { $0.id == task.id }
             copy.calendarEventID = live?.calendarEventID
@@ -492,11 +540,15 @@ final class AppModel: ObservableObject {
             enqueueProjectionForTask(task, now: reference)
         }
         calendar.pendingCount = workspace.pendingCalendarOps.count
-        agendaUndo = nil
+        let applied = workspace.tasks
+        undoManager.registerUndo(withTarget: self) { model in
+            model.applyAgendaState(current, expecting: applied, label: label)
+        }
+        undoManager.setActionName(label)
         _ = persist()
         schedule()
         syncCalendar()
-        notice = "Deshecho \(undo.label)."
+        notice = undoing ? "Deshecho: \(label)." : "Rehecho: \(label)."
     }
 
     /// Jots something down from the menu-bar panel without leaving the current work: an inbox task, no time yet.
@@ -662,7 +714,7 @@ final class AppModel: ObservableObject {
     func snoozeTask(_ task: FocusTask, minutes: Int = 10) {
         guard writable, !busy, task.id != session?.task.id else { return }
         let before = workspace.tasks
-        defer { if error == nil { rememberUndo("el aplazamiento de «\(task.title)»", before: before) } }
+        defer { if error == nil { rememberUndo("Posponer «\(task.title)»", before: before) } }
         let detached = isSeriesHead(task)
         let updated = occurrenceForDirectEdit(task).snoozed(minutes: minutes, now: Date())
         reminders.removeDelivered(forTaskID: task.id)
@@ -687,7 +739,7 @@ final class AppModel: ObservableObject {
         notice = detached
             ? "Esta ocurrencia de «\(unscheduled.title)» pasa a la bandeja. La serie sigue programada."
             : "«\(unscheduled.title)» pasa a la bandeja sin hora."
-        rememberUndo("el paso a la bandeja de «\(unscheduled.title)»", before: before)
+        rememberUndo("Pasar a la bandeja «\(unscheduled.title)»", before: before)
     }
 
     /// Returns real tasks on `date` plus projected future occurrences of recurring tasks for preview.
@@ -920,7 +972,8 @@ final class AppModel: ObservableObject {
     }
 
     func addTime(minutes: Int = 10) {
-        guard writable, workspace.session?.endedAt == nil else { return }
+        // Requires a running session: with none it used to rewrite the file and sync Calendar for nothing.
+        guard writable, let s = workspace.session, s.endedAt == nil else { return }
         workspace.session?.add(minutes: minutes)
         overtimeNotified = false
         if let s = workspace.session {

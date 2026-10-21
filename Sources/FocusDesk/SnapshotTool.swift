@@ -15,25 +15,45 @@ enum SnapshotTool {
             var written: [String] = []
             guard let window = mainWindow() else { throw Failure("Main window not found") }
             window.setContentSize(NSSize(width: 1240, height: 860))
-
-            let pages: [(String, () -> Void)] = [
-                ("hoy-horas", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(true, forKey: "FocusDesk.dayLayoutHourly") }),
-                ("hoy-lista", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(false, forKey: "FocusDesk.dayLayoutHourly") }),
-                ("semana", { model.page = AppPage.week.rawValue }),
-                ("historial", { model.page = AppPage.history.rawValue }),
-                ("ajustes", { model.page = AppPage.settings.rawValue }),
-            ]
-            for (name, show) in pages {
-                show()
-                try await settle()
-                try capture(window.contentView, name: name, in: folder)
-                written.append(name)
-                // The window cannot be taller than the screen: also draw the page's whole scrollable content.
-                if let page = largestScrollContent(in: window.contentView) {
-                    try capture(page, name: name + "-completa", in: folder)
-                    written.append(name + "-completa")
+            // Every screen in both appearances (and optionally at the largest text size): the app follows the system.
+            let appearances: [(String, NSAppearance.Name)] = [("oscuro", .darkAqua), ("claro", .aqua)]
+            let scale = CommandLine.arguments.contains("--snapshot-large-text") ? 1.3 : 1.0
+            model.updateSettings { $0.textScale = scale }
+            for (suffix, appearanceName) in appearances {
+                NSApp.appearance = NSAppearance(named: appearanceName)
+                try await settle(0.6)
+                for (name, show) in pagesToShow(model) {
+                    show()
+                    try await settle()
+                    try capture(window.contentView, name: "\(name)-\(suffix)", in: folder)
+                    written.append("\(name)-\(suffix)")
+                    if let page = largestScrollContent(in: window.contentView) {
+                        try capture(page, name: "\(name)-\(suffix)-completa", in: folder)
+                    }
                 }
             }
+            // The settings window, pane by pane, in both appearances.
+            model.showSettings?(nil)
+            try await settle(0.6)
+            if let settings = NSApp.windows.first(where: { $0.contentViewController is NSTabViewController }),
+               let tabs = settings.contentViewController as? NSTabViewController {
+                for (suffix, appearanceName) in appearances {
+                    NSApp.appearance = NSAppearance(named: appearanceName)
+                    for index in tabs.tabViewItems.indices {
+                        tabs.selectedTabViewItemIndex = index
+                        try await settle(0.5)
+                        let name = "ajustes-\(index + 1)-\(suffix)"
+                        try capture(settings.contentView?.superview ?? settings.contentView, name: name, in: folder)
+                        written.append(name)
+                    }
+                }
+                settings.orderOut(nil)
+            }
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+            if CommandLine.arguments.contains("--snapshot-pages-only") {
+                return "SNAPSHOTS: " + written.joined(separator: ", ")
+            }
+
             UserDefaults.standard.set(true, forKey: "FocusDesk.dayLayoutHourly")
             model.page = AppPage.today.rawValue
 
@@ -109,6 +129,15 @@ enum SnapshotTool {
         model.setCheck("0", value: true)
         model.selectedDate = Date()
         model.notice = nil
+    }
+
+    private static func pagesToShow(_ model: AppModel) -> [(String, () -> Void)] {
+        [
+            ("hoy-horas", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(true, forKey: "FocusDesk.dayLayoutHourly") }),
+            ("hoy-lista", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(false, forKey: "FocusDesk.dayLayoutHourly") }),
+            ("semana", { model.page = AppPage.week.rawValue }),
+            ("historial", { model.page = AppPage.history.rawValue }),
+        ]
     }
 
     private static func largestScrollContent(in root: NSView?) -> NSView? {

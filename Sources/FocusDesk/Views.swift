@@ -60,6 +60,13 @@ struct MainView: View {
     @State private var deleteRecordID: UUID?
 
     var body: some View {
+        content
+            // A new text size has to reach every view, including leaf views whose inputs did not change and that
+            // SwiftUI would otherwise not redraw: rebuild the tree when the size changes.
+            .id(model.workspace.settings.textScale)
+    }
+
+    @ViewBuilder private var content: some View {
         HStack(spacing: 0) {
             SidebarView(model: model)
             Rectangle().fill(Palette.stroke).frame(width: 1)
@@ -94,7 +101,6 @@ struct MainView: View {
         }
         .frame(minWidth: 980, minHeight: 680)
         .background(Palette.background)
-        .preferredColorScheme(.dark)
         .tint(Palette.mint)
         .sheet(item: $model.editingTask) { task in TaskEditor(model: model, draft: task) }
         .sheet(isPresented: $model.showCompletion) { CompletionView(model: model) }
@@ -117,16 +123,9 @@ struct MainView: View {
         } message: {
             Text("Solo puede haber un temporizador en marcha. Terminarás la de ahora y confirmarás su resultado antes de empezar la nueva, así no se pierde el tiempo ya trabajado.")
         }
-        .task(id: model.notice) {
-            // Informational notices disappear on their own; errors and prompts stay until resolved. The 7 seconds
-            // only count while FocusDesk is in front — a notice should never vanish before anyone could read it.
-            guard let current = model.notice else { return }
-            while !Task.isCancelled, !NSApp.isActive {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-            }
-            try? await Task.sleep(nanoseconds: 7_000_000_000)
-            if !Task.isCancelled, model.notice == current { model.notice = nil }
-        }
+        // Notices leave by an explicit action — their ✕, the next notice, or moving to another page — never on a timer:
+        // "Prefer dismissing views with an explicit action" (`accessibility.md › Cognitive`).
+        .onChange(of: model.page) { _, _ in model.notice = nil }
     }
 
     private var handoffTitle: String {
@@ -145,13 +144,13 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "scope")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Palette.background)
+                    .font(.app(16, weight: .semibold))
+                    .foregroundStyle(Palette.onAccent)
                     .frame(width: 30, height: 30)
                     .background(Palette.mint, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("focusdesk").font(.system(size: 17, weight: .semibold, design: .rounded))
-                    Text("Menos ruido. Más foco.").font(.system(size: 10)).foregroundStyle(Palette.muted)
+                    Text("focusdesk").font(.app(17, weight: .semibold, design: .rounded))
+                    Text("Menos ruido. Más foco.").font(.app(10)).foregroundStyle(Palette.muted)
                 }
             }
             .padding(.top, 44)
@@ -159,9 +158,25 @@ struct SidebarView: View {
             .padding(.horizontal, 6)
 
             VStack(spacing: 3) {
-                ForEach(AppPage.allCases) { item in
+                ForEach(AppPage.allCases.filter { $0 != .settings }) { item in
                     SidebarItem(page: item, selected: model.currentPage == item, badge: badge(for: item)) { model.go(to: item) }
                 }
+            }
+
+            // What the Ajustes badge used to signal, now that Ajustes opens in its own window with ⌘,.
+            let calendarAttention = model.calendar.pendingCount + model.calendar.issues.count
+            if calendarAttention > 0 {
+                Button { model.showSettings?(.connections) } label: {
+                    Label(
+                        model.calendar.issues.isEmpty ? "Calendar: \(calendarAttention) cambios en cola" : "Calendar: \(calendarAttention) por revisar",
+                        systemImage: "exclamationmark.arrow.triangle.2.circlepath"
+                    )
+                    .font(.app(12, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.focus(.warning, compact: true))
+                .padding(.top, 10)
+                .help("Abrir Ajustes › Conexiones y avisos")
             }
 
             Button { model.editingTask = model.newTaskDraft() } label: {
@@ -172,20 +187,26 @@ struct SidebarView: View {
             .help("Nueva tarea (⌘N)")
             .padding(.top, 16)
 
-            Spacer(minLength: 16)
-
-            if let session = model.session {
-                SidebarSessionCard(model: model, session: session)
-            } else if let next = model.next {
-                SidebarNextCard(model: model, task: next)
+            // The running session and its «Terminar» sit up here: the bottom edge of a sidebar is often hidden when
+            // the window is moved (`sidebars.md › Desktop`).
+            Group {
+                if let session = model.session {
+                    SidebarSessionCard(model: model, session: session)
+                } else if let next = model.next {
+                    SidebarNextCard(model: model, task: next)
+                }
             }
+            .padding(.top, 14)
+
+            Spacer(minLength: 16)
 
             HStack(spacing: 8) {
                 Image(systemName: "keyboard").foregroundStyle(Palette.muted)
                 Text(model.workspace.settings.hotKeyEnabled ? "Abrir desde cualquier app" : "Atajo global desactivado")
-                    .font(.system(size: 11))
+                    .font(.app(11))
                     .foregroundStyle(Palette.muted)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 if model.workspace.settings.hotKeyEnabled { KeyHint(model.workspace.settings.hotKeyLabel) }
             }
@@ -194,7 +215,8 @@ struct SidebarView: View {
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 16)
-        .frame(width: 228)
+        // Wider with larger text, so «Terminar» and the countdown never get clipped.
+        .frame(width: 228 + 140 * (TextScale.factor - 1))
         .background(Palette.sidebar)
     }
 
@@ -221,16 +243,16 @@ private struct SidebarItem: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 11) {
-                Image(systemName: page.icon).font(.system(size: 14, weight: .medium)).frame(width: 20)
-                Text(page.rawValue).font(.system(size: 13, weight: selected ? .semibold : .medium))
+                Image(systemName: page.icon).font(.app(14, weight: .medium)).frame(width: 20)
+                Text(page.rawValue).font(.app(13, weight: selected ? .semibold : .medium))
                 Spacer(minLength: 4)
                 if badge > 0 {
                     Text("\(badge)")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.app(10, weight: .bold))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .foregroundStyle(Palette.coral)
-                        .background(Palette.coral.opacity(0.18), in: Capsule())
+                        .foregroundStyle(Palette.warning)
+                        .background(Palette.warning.opacity(0.18), in: Capsule())
                 } else if hovering && !selected {
                     KeyHint(page.shortcut)
                 }
@@ -240,7 +262,7 @@ private struct SidebarItem: View {
             .foregroundStyle(selected ? Palette.mint : (hovering ? Palette.text : Palette.muted))
             .background(
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(selected ? Palette.mint.opacity(0.11) : (hovering ? Color.white.opacity(0.045) : .clear))
+                    .fill(selected ? Palette.mint.opacity(0.11) : (hovering ? Palette.fill : .clear))
             )
             .overlay(alignment: .leading) {
                 if selected { Capsule().fill(Palette.mint).frame(width: 3, height: 16).offset(x: -7) }
@@ -252,6 +274,7 @@ private struct SidebarItem: View {
         .animation(.easeOut(duration: 0.12), value: hovering)
         .help("\(page.rawValue) (\(page.shortcut))")
         .accessibilityLabel(page.rawValue)
+        .accessibilityValue(badge > 0 ? "\(badge) pendientes" : "")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -265,22 +288,25 @@ private struct SidebarSessionCard: View {
         let ended = session.endedAt != nil
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 6) {
-                Circle().fill(ended ? Palette.mint : (session.paused ? Palette.coral : Palette.mint)).frame(width: 6, height: 6)
+                Circle().fill(ended ? Palette.mint : (session.paused ? Palette.warning : Palette.mint)).frame(width: 6, height: 6)
                 Text(ended ? "POR CONFIRMAR" : (session.paused ? "EN PAUSA" : "EN SESIÓN"))
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.app(9, weight: .bold))
                     .tracking(1.2)
                     .foregroundStyle(Palette.muted)
                 Spacer()
                 Button { model.go(to: .today) } label: { Image(systemName: "arrow.up.right") }
                     .buttonStyle(FocusIconButtonStyle(size: 22))
                     .help("Ver la sesión en Hoy")
+                    .accessibilityLabel("Ver la sesión en Hoy")
             }
-            Text(session.task.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+            Text(session.task.title).font(.app(13, weight: .semibold)).lineLimit(2)
             if !ended {
                 Text(FocusRules.clock(remaining))
-                    .font(.system(size: 26, weight: .light, design: .monospaced))
-                    .foregroundStyle(remaining < 0 ? Palette.coral : Palette.mint)
-                    .contentTransition(.numericText())
+                    .font(.app(26, weight: .regular, design: .monospaced))
+                    .foregroundStyle(remaining < 0 ? Palette.warning : Palette.mint)
+                    .modifier(CountdownTransition())
+                    .accessibilityLabel(remaining < 0 ? "Tiempo extra" : "Tiempo restante")
+                    .accessibilityValue(spokenDuration(remaining))
             }
             HStack(spacing: 6) {
                 if !ended {
@@ -288,10 +314,12 @@ private struct SidebarSessionCard: View {
                         Image(systemName: session.paused ? "play.fill" : "pause.fill")
                     }
                     .buttonStyle(.focusIcon)
+                    .accessibilityLabel(session.paused ? "Reanudar" : "Pausar")
                     .help(session.paused ? "Reanudar (⌃⌥⌘P)" : "Pausar (⌃⌥⌘P)")
                     Button { model.addTime() } label: { Image(systemName: "plus") }
                         .buttonStyle(.focusIcon)
                         .help("Ampliar 10 minutos")
+                        .accessibilityLabel("Ampliar 10 minutos")
                 }
                 Spacer(minLength: 0)
                 Button { model.finish() } label: { Label(ended ? "Confirmar" : "Terminar", systemImage: "checkmark") }
@@ -312,10 +340,10 @@ private struct SidebarNextCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("SIGUIENTE").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(Palette.muted)
-            Text(task.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+            Text("SIGUIENTE").font(.app(9, weight: .bold)).tracking(1.2).foregroundStyle(Palette.muted)
+            Text(task.title).font(.app(13, weight: .semibold)).lineLimit(2)
             Text(task.isScheduled ? "\(dayTitle(for: task.scheduledAt)) · \(task.scheduledAt.formatted(date: .omitted, time: .shortened)) · \(task.minutes) min" : "Sin hora · \(task.minutes) min")
-                .font(.system(size: 11))
+                .font(.app(11))
                 .foregroundStyle(Palette.muted)
             HStack(spacing: 6) {
                 Button { model.start(task) } label: { Label("Empezar", systemImage: "play.fill") }
@@ -326,6 +354,7 @@ private struct SidebarNextCard: View {
                     .buttonStyle(.focusIcon)
                     .disabled(model.busy || model.readOnly)
                     .help("Posponer 10 minutos")
+                    .accessibilityLabel("Posponer 10 minutos")
             }
         }
         .padding(12)
@@ -344,10 +373,10 @@ private struct TopBar: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.now.formatted(.dateTime.weekday(.wide).day().month(.wide)).uppercased())
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.app(10, weight: .semibold))
                     .tracking(1.8)
                     .foregroundStyle(Palette.muted)
-                Text(model.currentPage.headline).font(.system(size: 22, weight: .semibold, design: .rounded))
+                Text(model.currentPage.headline).font(.app(22, weight: .semibold, design: .rounded))
             }
             Spacer(minLength: 12)
             if model.calendar.pendingCount > 0 {
@@ -380,7 +409,7 @@ private struct BannerStack: View {
             if let prompt = model.resumePrompt {
                 HStack(spacing: 10) {
                     Image(systemName: "pause.circle.fill")
-                    Text(prompt).font(.callout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
+                    Text(prompt).font(.app(12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
                     // Strict pause with no allowed app open: open one and the session resumes by itself.
                     ForEach(model.promptApps.prefix(3)) { app in
@@ -392,18 +421,19 @@ private struct BannerStack: View {
                     Button("Terminar") { model.dismissResumePrompt(); model.finish() }
                         .buttonStyle(.focus(.secondary, compact: true))
                     Button { model.dismissResumePrompt() } label: { Image(systemName: "xmark") }
-                        .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.coral))
+                        .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.warning))
                         .help("Dejarla en pausa")
+                        .accessibilityLabel("Dejarla en pausa")
                 }
                 .padding(12)
-                .foregroundStyle(Palette.coral)
-                .background(Palette.coral.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.coral.opacity(0.28), lineWidth: 1))
+                .foregroundStyle(Palette.warning)
+                .background(Palette.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.warning.opacity(0.28), lineWidth: 1))
             }
             if let error = model.error {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill").padding(.top, 1)
-                    Text(error).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Text(error).font(.app(12)).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
                     if model.hasUnsavedChanges {
                         Button("Reintentar guardado") { _ = model.retrySave() }.buttonStyle(.focus(.secondary, compact: true))
@@ -418,6 +448,7 @@ private struct BannerStack: View {
                     Button { model.error = nil } label: { Image(systemName: "xmark") }
                         .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.danger))
                         .help("Ocultar")
+                        .accessibilityLabel("Ocultar")
                 }
                 .padding(12)
                 .foregroundStyle(Palette.danger)
@@ -427,16 +458,17 @@ private struct BannerStack: View {
             if let notice = model.notice {
                 HStack(spacing: 10) {
                     Image(systemName: "info.circle.fill")
-                    Text(notice).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Text(notice).font(.app(12)).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
                     if model.canUndoAgenda {
                         Button("Deshacer") { model.undoAgendaChange() }
                             .buttonStyle(.focus(.secondary, compact: true))
-                            .help("Deshacer el último cambio en la agenda (⌥⌘Z)")
+                            .help("Deshacer el último cambio en la agenda (⌘Z)")
                     }
                     Button { model.notice = nil } label: { Image(systemName: "xmark") }
                         .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.mint))
                         .help("Ocultar")
+                        .accessibilityLabel("Ocultar")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -477,8 +509,8 @@ private struct TodayPage: View {
 
             HStack(spacing: 12) {
                 StatPill(label: "Por hacer", value: "\(pending.count + projected.count)", icon: "circle.dotted")
-                StatPill(label: "Tiempo previsto", value: "\(plannedMinutes) min", icon: "hourglass", tint: Palette.category("Estudio"))
-                StatPill(label: "Sin horario", value: "\(model.unscheduledTasks.count)", icon: "tray", tint: Palette.coral)
+                StatPill(label: "Tiempo previsto", value: "\(plannedMinutes) min", icon: "hourglass", tint: Palette.muted)
+                StatPill(label: "Sin horario", value: "\(model.unscheduledTasks.count)", icon: "tray", tint: Palette.warning)
                 StatPill(label: "Completadas", value: "\(real.filter(\.completed).count)", icon: "checkmark.circle")
                 StatPill(label: "Trabajado", value: Self.workedText(model.workedSeconds(on: model.selectedDate)), icon: "timer", tint: Palette.mint)
             }
@@ -492,7 +524,7 @@ private struct TodayPage: View {
                         }
                         .padding(.top, 10)
                     } label: {
-                        SectionHeader("Atrasadas de otros días · \(overdue.count)", icon: "exclamationmark.circle")
+                        SectionHeader("Atrasadas de otros días · \(overdue.count)", icon: "exclamationmark.circle", tint: Palette.warning)
                     }
                 }
             }
@@ -529,6 +561,7 @@ private struct TodayPage: View {
                 Button { model.shiftSelectedDay(by: -1) } label: { Image(systemName: "chevron.left") }
                     .buttonStyle(.focusIcon)
                     .help("Día anterior (⌘[)")
+                    .accessibilityLabel("Día anterior")
                 Button { model.selectedDate = Date() } label: {
                     Text(dayTitle(for: model.selectedDate)).frame(minWidth: 70)
                 }
@@ -537,6 +570,7 @@ private struct TodayPage: View {
                 Button { model.shiftSelectedDay(by: 1) } label: { Image(systemName: "chevron.right") }
                     .buttonStyle(.focusIcon)
                     .help("Día siguiente (⌘])")
+                    .accessibilityLabel("Día siguiente")
             }
             DatePicker("Fecha", selection: $model.selectedDate, displayedComponents: .date)
                 .labelsHidden()
@@ -568,11 +602,11 @@ private struct NotificationPermissionBanner: View {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "bell.slash.fill").padding(.top, 1)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Los avisos están desactivados").font(.callout.weight(.semibold))
+                    Text("Los avisos están desactivados").font(.app(12, weight: .semibold))
                     Text(denied
                          ? "macOS no deja a FocusDesk avisarte: no sabrás que una tarea empieza ni tendrás «Empezar ahora» en el aviso. Actívalos en Ajustes del Sistema → Notificaciones → FocusDesk."
                          : "Sin permiso no te avisaré antes de tus tareas ni cuando llegue su hora.")
-                        .font(.callout)
+                        .font(.app(12))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -586,14 +620,14 @@ private struct NotificationPermissionBanner: View {
                     .buttonStyle(FocusPrimaryButton(compact: true))
                 }
                 Button { model.notificationBannerDismissed = true } label: { Image(systemName: "xmark") }
-                    .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.coral))
+                    .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.warning))
                     .help("Ocultar hasta la próxima vez que abras FocusDesk")
                     .accessibilityLabel("Ocultar aviso de notificaciones")
             }
             .padding(12)
-            .foregroundStyle(Palette.coral)
-            .background(Palette.coral.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.coral.opacity(0.28), lineWidth: 1))
+            .foregroundStyle(Palette.warning)
+            .background(Palette.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.warning.opacity(0.28), lineWidth: 1))
             .task { await reminders.refresh() }
         }
     }
@@ -607,11 +641,11 @@ private struct NextUpHero: View {
             HStack(alignment: .center, spacing: 28) {
                 VStack(alignment: .leading, spacing: 12) {
                     Label("TU SIGUIENTE PASO", systemImage: "sparkle")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.app(10, weight: .bold))
                         .tracking(1.4)
                         .foregroundStyle(Palette.mint)
                     if let next = model.next {
-                        Text(next.title).font(.system(size: 26, weight: .semibold, design: .rounded)).lineLimit(2)
+                        Text(next.title).font(.app(26, weight: .semibold, design: .rounded)).lineLimit(2)
                         HStack(spacing: 6) {
                             Chip(next.category, color: model.color(for: next))
                             Chip("\(next.minutes) min", icon: "hourglass")
@@ -621,7 +655,7 @@ private struct NextUpHero: View {
                                 Chip("Sin hora", icon: "tray")
                             }
                             if let due = next.dueDate {
-                                Chip("Límite \(due.formatted(date: .abbreviated, time: .shortened))", icon: "flag", color: due < model.now ? Palette.coral : Palette.muted)
+                                DueChip(due: due, now: model.now)
                             }
                         }
                         HStack(spacing: 10) {
@@ -637,7 +671,7 @@ private struct NextUpHero: View {
                         }
                         .padding(.top, 4)
                     } else {
-                        Text("Una cosa cada vez.").font(.system(size: 26, weight: .semibold, design: .rounded))
+                        Text("Una cosa cada vez.").font(.app(26, weight: .semibold, design: .rounded))
                         Text("Prepara tu primera tarea o aplica un perfil reutilizable. Te ayudamos a volver a ella.")
                             .foregroundStyle(Palette.muted)
                         Button { model.editingTask = model.newTaskDraft() } label: { Label("Crear una tarea", systemImage: "plus") }
@@ -659,13 +693,13 @@ private struct NextUpHero: View {
             if let next = model.next, next.isScheduled, next.scheduledAt > model.now,
                next.scheduledAt.timeIntervalSince(model.now) <= Double(max(10, next.leadMinutes)) * 60 {
                 VStack(spacing: 4) {
-                    Text("EMPIEZA EN").font(.system(size: 8, weight: .bold)).tracking(1)
+                    Text("EMPIEZA EN").font(.app(8, weight: .bold)).tracking(1)
                     Text(FocusRules.clock(next.scheduledAt.timeIntervalSince(model.now)))
-                        .font(.system(size: 22, weight: .medium, design: .monospaced))
+                        .font(.app(22, weight: .medium, design: .monospaced))
                 }
                 .foregroundStyle(Palette.mint)
             } else {
-                Image(systemName: "scope").font(.system(size: 30, weight: .ultraLight)).foregroundStyle(Palette.mint)
+                Image(systemName: "scope").font(.app(30, weight: .ultraLight)).foregroundStyle(Palette.mint)
             }
         }
         .accessibilityLabel("Próxima sesión")
@@ -690,8 +724,8 @@ struct TaskRowView: View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(task.isScheduled ? task.scheduledAt.formatted(date: .omitted, time: .shortened) : "—")
-                    .font(.system(size: 15, weight: .medium, design: .monospaced))
-                Text("\(task.minutes) min").font(.caption).foregroundStyle(Palette.muted)
+                    .font(.app(15, weight: .medium, design: .monospaced))
+                Text("\(task.minutes) min").font(.app(10)).foregroundStyle(Palette.muted)
             }
             .frame(width: 62, alignment: .leading)
 
@@ -699,7 +733,7 @@ struct TaskRowView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(task.title)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.app(15, weight: .medium))
                     .strikethrough(task.completed)
                     .lineLimit(2)
                 HStack(spacing: 5) {
@@ -708,13 +742,13 @@ struct TaskRowView: View {
                     else if task.repeatRule != .never { Chip(task.repeatRule.label, icon: "repeat") }
                     if task.strict { Chip("Estricto", icon: "scope") }
                     if task.isFixedAppointment { Chip("Cita fija", icon: "lock.fill") }
-                    if overlaps { Chip("Solapada", icon: "exclamationmark.triangle.fill", color: Palette.coral) }
+                    if overlaps { Chip("Solapada", icon: "exclamationmark.triangle.fill", color: Palette.warning) }
                     if let issue = model.calendar.issues[task.id] {
-                        Chip("Calendar: revisar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.coral)
+                        Chip("Calendar: revisar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.warning)
                             .help("Vorssaint no mostrará esta cuenta atrás: \(issue) Resuélvelo en Ajustes.")
                     }
                     if let due = task.dueDate {
-                        Chip("Límite \(due.formatted(date: .abbreviated, time: .shortened))", icon: "flag", color: due < model.now ? Palette.coral : Palette.muted)
+                        DueChip(due: due, now: model.now)
                     }
                 }
             }
@@ -727,10 +761,10 @@ struct TaskRowView: View {
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.surface.opacity(isProjected ? 0.6 : 1)))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(isActive ? Palette.mint.opacity(0.5) : Color.white.opacity(hovering ? 0.12 : 0.05),
+                .strokeBorder(isActive ? Palette.mint.opacity(0.5) : (hovering ? Palette.fieldStroke : Palette.stroke),
                               style: StrokeStyle(lineWidth: 1, dash: isProjected ? [5, 3] : []))
         )
-        .opacity(task.completed ? 0.55 : 1)
+        .saturation(task.completed ? 0 : 1)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
@@ -742,9 +776,9 @@ struct TaskRowView: View {
 
     @ViewBuilder private var trailing: some View {
         if task.completed {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.mint).font(.title3)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.mint).font(.app(15))
         } else if isActive {
-            Chip("EN SESIÓN", icon: "circle.fill", color: Palette.mint)
+            Chip("En sesión", icon: "circle.fill", color: Palette.mint)
         } else {
             HStack(spacing: 6) {
                 Button { model.startFromAgenda(task, isProjected: isProjected) } label: { Image(systemName: "play.fill") }
@@ -757,12 +791,14 @@ struct TaskRowView: View {
                         .buttonStyle(.focusIcon)
                         .disabled(model.busy || model.readOnly)
                         .help("Posponer 10 minutos")
+                        .accessibilityLabel("Posponer 10 minutos")
                 }
                 Menu { menuItems } label: { Image(systemName: "ellipsis") }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
                     .frame(width: 28, height: 28)
                     .help("Más acciones")
+                    .accessibilityLabel("Más acciones")
             }
         }
     }
@@ -808,7 +844,7 @@ private struct UnscheduledInbox: View {
                 }
                 if model.unscheduledTasks.isEmpty {
                     Text("Guarda aquí tareas como «Preparar guion, antes del viernes» sin reservar todavía una hora. Arrástralas a la agenda cuando decidas cuándo hacerlas.")
-                        .font(.callout)
+                        .font(.app(12))
                         .foregroundStyle(Palette.muted)
                 } else {
                     ForEach(model.unscheduledTasks) { task in
@@ -827,15 +863,15 @@ private struct InboxRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "line.3.horizontal").font(.caption).foregroundStyle(Palette.muted.opacity(0.6)).help("Arrastra a la agenda")
+            Image(systemName: "line.3.horizontal").font(.app(10)).foregroundStyle(Palette.muted.opacity(0.6)).help("Arrastra a la agenda")
             RoundedRectangle(cornerRadius: 2).fill(model.color(for: task)).frame(width: 3, height: 30)
             VStack(alignment: .leading, spacing: 4) {
-                Text(task.title).font(.system(size: 14, weight: .medium)).lineLimit(1)
+                Text(task.title).font(.app(14, weight: .medium)).lineLimit(1)
                 HStack(spacing: 5) {
                     Chip("\(task.minutes) min", icon: "hourglass")
                     Chip(task.category, color: model.color(for: task))
                     if let due = task.dueDate {
-                        Chip("Antes de \(due.formatted(date: .abbreviated, time: .shortened))", icon: "flag.fill", color: due < model.now ? Palette.coral : Palette.mint)
+                        DueChip(due: due, now: model.now, prefix: "Antes de")
                     }
                 }
             }
@@ -848,6 +884,7 @@ private struct InboxRow: View {
                 .buttonStyle(FocusIconButtonStyle(tint: Palette.mint))
                 .disabled(model.busy || model.readOnly)
                 .help("Empezar ahora")
+                .accessibilityLabel("Empezar ahora")
             Menu {
                 Button { model.editingTask = task } label: { Label("Editar…", systemImage: "pencil") }
                 Button {
@@ -861,7 +898,7 @@ private struct InboxRow: View {
                 .frame(width: 28, height: 28)
         }
         .padding(10)
-        .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Palette.fill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .hoverHighlight()
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.editingTask = task }
@@ -884,16 +921,18 @@ private struct WeekPage: View {
                 Button { shiftWeek(-1) } label: { Image(systemName: "chevron.left") }
                     .buttonStyle(.focusIcon)
                     .help("Semana anterior")
+                    .accessibilityLabel("Semana anterior")
                 Text("\(start.formatted(.dateTime.day().month(.abbreviated))) – \(end.formatted(.dateTime.day().month(.abbreviated).year()))")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.app(15, weight: .semibold))
                     .frame(minWidth: 170)
                 Button { shiftWeek(1) } label: { Image(systemName: "chevron.right") }
                     .buttonStyle(.focusIcon)
                     .help("Semana siguiente")
+                    .accessibilityLabel("Semana siguiente")
                 Button("Esta semana") { model.selectedDate = Date() }
                     .buttonStyle(.focus(.ghost, compact: true))
                 Spacer()
-                Text("Arrastra bloques entre días o a una franja horaria").font(.caption).foregroundStyle(Palette.muted)
+                Text("Arrastra bloques entre días o a una franja horaria").font(.app(10)).foregroundStyle(Palette.muted)
             }
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 92), spacing: 10, alignment: .top), count: 7), alignment: .leading, spacing: 10) {
@@ -932,12 +971,12 @@ private struct WeekDayColumn: View {
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(date.formatted(.dateTime.weekday(.abbreviated)).uppercased())
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.app(10, weight: .semibold))
                         .tracking(1)
-                        .foregroundStyle(isWorkday ? Palette.muted : Palette.coral.opacity(0.8))
+                        .foregroundStyle(isWorkday ? Palette.muted : Palette.warning.opacity(0.8))
                     Spacer(minLength: 0)
                     Text(date.formatted(.dateTime.day()))
-                        .font(.system(size: 20, weight: isToday ? .bold : .medium, design: .rounded))
+                        .font(.app(20, weight: isToday ? .bold : .medium, design: .rounded))
                         .foregroundStyle(isToday ? Palette.background : Palette.text)
                         .frame(minWidth: 30, minHeight: 30)
                         .background(isToday ? Palette.mint : .clear, in: Circle())
@@ -968,6 +1007,7 @@ private struct WeekDayColumn: View {
             }
             .buttonStyle(.focus(.ghost, compact: true))
             .help("Nueva tarea este día")
+            .accessibilityLabel("Nueva tarea este día")
 
             Spacer(minLength: 0)
         }
@@ -1003,11 +1043,11 @@ private struct SlotDropTarget: View {
 
     var body: some View {
         Text(label)
-            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .font(.app(9, weight: .medium, design: .monospaced))
             .foregroundStyle(targeted ? Palette.background : Palette.muted)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 4)
-            .background(targeted ? Palette.mint : Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .background(targeted ? Palette.mint : Palette.fill, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             .dropDestination(for: String.self) { values, _ in onDrop(values) } isTargeted: { targeted = $0 }
             .help("Suelta aquí para programar a las \(label)")
     }
@@ -1024,13 +1064,13 @@ private struct WeekTaskCard: View {
         let color = model.color(for: task)
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
-                Text(task.scheduledAt.formatted(date: .omitted, time: .shortened)).font(.system(size: 10, design: .monospaced)).foregroundStyle(Palette.muted)
+                Text(task.scheduledAt.formatted(date: .omitted, time: .shortened)).font(.app(10, design: .monospaced)).foregroundStyle(Palette.muted)
                 Spacer(minLength: 0)
-                if isProjected { Image(systemName: "repeat").font(.system(size: 9)).foregroundStyle(Palette.mint) }
-                if hasOverlap { Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9)).foregroundStyle(Palette.coral) }
+                if isProjected { Image(systemName: "repeat").font(.app(9)).foregroundStyle(Palette.mint) }
+                if hasOverlap { Image(systemName: "exclamationmark.triangle.fill").font(.app(9)).foregroundStyle(Palette.warning) }
             }
-            Text(task.title).font(.system(size: 12, weight: .semibold)).lineLimit(3).strikethrough(task.completed)
-            Text("\(task.minutes) min").font(.system(size: 10, weight: .medium)).foregroundStyle(color)
+            Text(task.title).font(.app(12, weight: .semibold)).lineLimit(3).strikethrough(task.completed)
+            Text("\(task.minutes) min").font(.app(10, weight: .medium)).foregroundStyle(color)
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1040,10 +1080,10 @@ private struct WeekTaskCard: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(hasOverlap ? Palette.coral.opacity(0.7) : (isProjected ? color.opacity(0.35) : .clear),
+                .strokeBorder(hasOverlap ? Palette.warning.opacity(0.7) : (isProjected ? color.opacity(0.35) : .clear),
                               style: StrokeStyle(lineWidth: 1, dash: isProjected ? [4, 3] : []))
         )
-        .opacity(task.completed ? 0.55 : 1)
+        .saturation(task.completed ? 0 : 1)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { if task.id != model.session?.task.id { model.editingTask = task } }
@@ -1061,6 +1101,19 @@ private struct WeekTaskCard: View {
         }
         .draggable(task.id.uuidString)
         .help("\(task.title) · clic para editar, clic derecho para más acciones")
+        // Only a tap gesture before: not reachable by keyboard or VoiceOver. Now a button with its state in words.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(weekCardDescription)
+        .accessibilityAction { if task.id != model.session?.task.id { model.editingTask = task } }
+    }
+
+    private var weekCardDescription: String {
+        var parts = ["\(task.scheduledAt.formatted(date: .omitted, time: .shortened)), \(task.title), \(task.minutes) minutos, \(task.category)"]
+        if task.completed { parts.append("completada") }
+        if hasOverlap { parts.append("solapada con otra tarea") }
+        if isProjected { parts.append("ocurrencia futura de una serie") }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -1107,17 +1160,19 @@ private struct HistoryPage: View {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass").foregroundStyle(Palette.muted)
-                        TextField("Buscar por tarea, nota, área o archivo…", text: $search).textFieldStyle(.plain).font(.system(size: 14))
+                        TextField("Buscar por tarea, nota, área o archivo…", text: $search).textFieldStyle(.plain).font(.app(14))
                         if !search.isEmpty {
                             Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
                                 .buttonStyle(.plain)
                                 .foregroundStyle(Palette.muted)
                                 .help("Limpiar búsqueda")
+                                .accessibilityLabel("Limpiar búsqueda")
                         }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
-                    .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .background(Palette.fill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.fieldStroke, lineWidth: 1))
                     HStack(spacing: 14) {
                         Picker("Área", selection: $category) {
                             Text("Todas").tag("Todas")
@@ -1145,7 +1200,7 @@ private struct HistoryPage: View {
             HStack(spacing: 12) {
                 StatPill(label: "Sesiones", value: "\(list.count)", icon: "list.bullet.rectangle")
                 StatPill(label: "Completadas", value: "\(completed)", icon: "checkmark.circle")
-                StatPill(label: "Tiempo de sesión (reloj)", value: "\(sessionMinutes) min", icon: "clock.fill", tint: Palette.category("Estudio"))
+                StatPill(label: "Tiempo de sesión (reloj)", value: "\(sessionMinutes) min", icon: "clock.fill", tint: Palette.muted)
                 StatPill(label: "Actividad observada", value: "\(observedMinutes) min", icon: "eye", tint: Palette.muted)
             }
 
@@ -1166,9 +1221,9 @@ private struct HistoryPage: View {
                     let minutes = Int(dayRecords.reduce(0) { $0 + $1.session.accumulated } / 60)
                     let done = dayRecords.filter(\.completed).count
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(Self.dayHeader(day)).font(.system(size: 15, weight: .semibold))
+                        Text(Self.dayHeader(day)).font(.app(15, weight: .semibold))
                         Text("\(dayRecords.count) sesiones · \(done) completadas · \(TodayPage.workedText(Double(minutes) * 60))")
-                            .font(.callout)
+                            .font(.app(12))
                             .foregroundStyle(Palette.muted)
                     }
                     .padding(.top, 6)
@@ -1201,22 +1256,22 @@ private struct HistoryRecordCard: View {
     let onDelete: () -> Void
 
     private var statusText: String { record.cancelled ? "Cancelada" : (record.completed ? "Completada" : "Sigue pendiente") }
-    private var statusColor: Color { record.cancelled ? Palette.muted : (record.completed ? Palette.mint : Palette.coral) }
+    private var statusColor: Color { record.cancelled ? Palette.muted : (record.completed ? Palette.mint : Palette.warning) }
 
     var body: some View {
         Card(padding: 18) {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: record.cancelled ? "xmark.circle" : (record.completed ? "checkmark.circle.fill" : "pause.circle"))
                     .foregroundStyle(statusColor)
-                    .font(.title2)
+                    .font(.app(17))
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
-                        Text(record.session.task.title).font(.system(size: 16, weight: .semibold))
+                        Text(record.session.task.title).font(.app(16, weight: .semibold))
                         Chip(statusText, color: statusColor)
                     }
                     let end = record.session.endedAt ?? record.session.startedAt.addingTimeInterval(record.session.accumulated)
                     Text("\(record.session.startedAt.formatted(date: .omitted, time: .shortened))–\(end.formatted(date: .omitted, time: .shortened)) · \(Int(record.session.accumulated / 60)) min · \(record.session.task.category)")
-                        .font(.caption)
+                        .font(.app(10))
                         .foregroundStyle(Palette.muted)
                     let steps = record.checklistSteps
                     if !steps.isEmpty {
@@ -1224,16 +1279,16 @@ private struct HistoryRecordCard: View {
                         HStack(spacing: 6) {
                             Chip("Checklist \(ticked.count) de \(steps.count)", icon: "checklist", color: ticked.count == steps.count ? Palette.mint : Palette.muted)
                             if !ticked.isEmpty {
-                                Text(ticked.map(\.text).joined(separator: " · ")).font(.caption).foregroundStyle(Palette.muted).lineLimit(1)
+                                Text(ticked.map(\.text).joined(separator: " · ")).font(.app(10)).foregroundStyle(Palette.muted).lineLimit(1)
                             }
                         }
                     }
                     if !record.note.isEmpty {
-                        Text(record.note).font(.callout).foregroundStyle(Palette.text.opacity(0.85))
+                        Text(record.note).font(.app(12)).foregroundStyle(Palette.text.opacity(0.85))
                     }
                     if !record.confirmedFiles.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Resultado confirmado por ti").font(.caption.weight(.semibold)).foregroundStyle(Palette.mint)
+                            Text("Resultado confirmado por ti").font(.app(10, weight: .semibold)).foregroundStyle(Palette.mint)
                             ForEach(record.confirmedFiles, id: \.self) { path in
                                 HStack(spacing: 6) {
                                     Image(systemName: "checkmark.seal.fill").foregroundStyle(Palette.mint)
@@ -1241,19 +1296,19 @@ private struct HistoryRecordCard: View {
                                     Button("Mostrar") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
                                         .buttonStyle(.focus(.ghost, compact: true))
                                 }
-                                .font(.caption)
+                                .font(.app(10))
                             }
                         }
                     }
                     if !record.changedFiles.isEmpty {
                         Text("Señal automática: \(record.changedFiles.count) archivo(s) nuevos o modificados en la carpeta")
-                            .font(.caption2)
+                            .font(.app(10))
                             .foregroundStyle(Palette.muted)
                     }
                     let summaries = record.appSummaries
                     if !summaries.isEmpty {
                         HStack(spacing: 6) {
-                            Text("Observado:").font(.caption2).foregroundStyle(Palette.muted)
+                            Text("Observado:").font(.app(10)).foregroundStyle(Palette.muted)
                             ForEach(summaries.prefix(4)) { item in
                                 Chip("\(item.name) · \(max(1, Int((item.seconds / 60).rounded()))) min")
                             }
@@ -1273,22 +1328,22 @@ private struct HistoryRecordCard: View {
                                         }
                                         Spacer()
                                         if activity.duration > 0 { Text("\(Int(activity.duration)) s").monospacedDigit() }
-                                        if activity.interruption { Image(systemName: "arrow.uturn.backward").foregroundStyle(Palette.coral) }
+                                        if activity.interruption { Image(systemName: "arrow.uturn.backward").foregroundStyle(Palette.warning) }
                                     }
-                                    .font(.caption)
+                                    .font(.app(10))
                                     .foregroundStyle(Palette.muted)
                                 }
                             }
                             .padding(.top, 4)
                         }
-                        .font(.caption)
+                        .font(.app(10))
                     }
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 6) {
-                    Text("\(Int(record.session.accumulated / 60)) min").font(.system(size: 20, weight: .semibold, design: .rounded)).monospacedDigit()
-                    Text("de \(record.session.task.minutes) previstos").font(.caption).foregroundStyle(Palette.muted)
-                    Text("\(record.session.interruptionCount) interrupciones").font(.caption).foregroundStyle(Palette.muted)
+                    Text("\(Int(record.session.accumulated / 60)) min").font(.app(20, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text("de \(record.session.task.minutes) previstos").font(.app(10)).foregroundStyle(Palette.muted)
+                    Text("\(record.session.interruptionCount) interrupciones").font(.app(10)).foregroundStyle(Palette.muted)
                     Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
                         .buttonStyle(FocusIconButtonStyle(size: 26, tint: Palette.danger))
                         .help("Borrar esta sesión del historial")
@@ -1403,7 +1458,7 @@ struct HourlyDayTimelineView: View {
             VStack(alignment: .leading, spacing: 10) {
                 SectionHeader("Por horas", icon: "calendar.day.timeline.left") {
                     Text("Arrastra un bloque para moverlo · su borde inferior para cambiar la duración · los de borde discontinuo son una vista previa de la serie")
-                        .font(.caption2)
+                        .font(.app(10))
                         .foregroundStyle(Palette.muted)
                 }
                 ScrollViewReader { proxy in
@@ -1453,14 +1508,14 @@ struct HourlyDayTimelineView: View {
                     Text("\(brk.title) · \(String(format: "%02d:%02d", brk.startHour, brk.startMinute)) · \(brk.durationMinutes) min")
                     Spacer()
                 }
-                .font(.caption2)
+                .font(.app(10))
                 .foregroundStyle(Palette.muted)
                 .padding(.horizontal, 10)
                 .frame(height: max(20, CGFloat(brk.durationMinutes) * pixelsPerMinute))
                 .frame(maxWidth: .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.white.opacity(0.03))
+                        .fill(Palette.fill)
                         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 4])).foregroundStyle(Palette.stroke))
                 )
                 .padding(.leading, gutter + 4)
@@ -1478,13 +1533,13 @@ struct HourlyDayTimelineView: View {
             if minutes >= 0 && minutes <= (endHour - startHour) * 60 {
                 HStack(spacing: 0) {
                     Text(model.now.formatted(date: .omitted, time: .shortened))
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Palette.background)
+                        .font(.app(9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Palette.onAccent)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
-                        .background(Palette.coral, in: Capsule())
+                        .background(Palette.danger, in: Capsule())
                         .frame(width: gutter, alignment: .trailing)
-                    Rectangle().fill(Palette.coral).frame(height: 1.5)
+                    Rectangle().fill(Palette.danger).frame(height: 1.5)
                 }
                 .offset(y: CGFloat(minutes) * pixelsPerMinute - 7)
                 .allowsHitTesting(false)
@@ -1509,11 +1564,21 @@ struct HourlyDayTimelineView: View {
             let state = s.endedAt != nil ? "Por confirmar" : (s.paused ? "En pausa" : "En directo")
             let range = "\(live.start.formatted(date: .omitted, time: .shortened))–\(live.end.formatted(date: .omitted, time: .shortened))"
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(range).font(.system(size: 10, weight: .semibold, design: .monospaced)).foregroundStyle(Palette.text)
-                    Text(s.task.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                    Chip(state, icon: s.paused ? "pause.fill" : "dot.radiowaves.left.and.right", color: Palette.mint)
-                    Spacer(minLength: 0)
+                if frame.width < 300 {
+                    HStack(spacing: 4) {
+                        Image(systemName: s.paused ? "pause.fill" : "dot.radiowaves.left.and.right").font(.app(10)).foregroundStyle(Palette.mint)
+                        Text(live.start.formatted(date: .omitted, time: .shortened))
+                            .font(.app(10, weight: .semibold, design: .monospaced)).foregroundStyle(Palette.text).fixedSize()
+                        Text(state).font(.app(10, weight: .semibold)).foregroundStyle(Palette.mint).lineLimit(1)
+                    }
+                    Text(s.task.title).font(.app(12, weight: .semibold)).lineLimit(frame.height >= 60 ? 2 : 1)
+                } else {
+                    HStack(spacing: 8) {
+                        Text(range).font(.app(10, weight: .semibold, design: .monospaced)).foregroundStyle(Palette.text).fixedSize()
+                        Text(s.task.title).font(.app(12, weight: .semibold)).lineLimit(1)
+                        Chip(state, icon: s.paused ? "pause.fill" : "dot.radiowaves.left.and.right", color: Palette.mint)
+                        Spacer(minLength: 0)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -1546,33 +1611,25 @@ struct HourlyDayTimelineView: View {
         let isEditable = !isProjected && !task.completed && !isActive && !model.readOnly
         let dragging = moveOffsets[task.id] != nil || resizeDeltas[task.id] != nil
 
+        // Side by side, columns get narrow: then a compact layout keeps the start time and the title readable
+        // instead of truncating everything to "Gra…" with a clipped chip. Overlap is already shown by the columns.
+        let compact = frame.width < 300
+        let range = "\(preview.scheduledAt.formatted(date: .omitted, time: .shortened))–\(preview.end.formatted(date: .omitted, time: .shortened))"
+        var state: [String] = []
+        if task.completed { state.append("completada") }
+        if isActive { state.append("en sesión") }
+        if overlaps { state.append("solapada con otra tarea") }
+        if isProjected { state.append("ocurrencia futura de una serie") }
+        if frame.continuesTomorrow { state.append("sigue mañana") }
+        if calendarIssue != nil { state.append("Calendar necesita revisión") }
+        let spoken: String = state.isEmpty ? "\(range), \(task.title)" : "\(range), \(task.title), " + state.joined(separator: ", ")
+
         return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Text("\(preview.scheduledAt.formatted(date: .omitted, time: .shortened))–\(preview.end.formatted(date: .omitted, time: .shortened))")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(dragging ? Palette.text : Palette.muted)
-                Text(task.title).font(.system(size: 12, weight: .semibold)).lineLimit(1).strikethrough(task.completed)
-                if isProjected { Image(systemName: "repeat").font(.system(size: 10)).foregroundStyle(Palette.mint) }
-                if isActive { Chip("En sesión", color: Palette.mint) }
-                if overlaps { Chip("Solapa", icon: "exclamationmark.triangle.fill", color: Palette.coral) }
-                if frame.continuesTomorrow { Chip("Sigue mañana", icon: "arrow.turn.down.right") }
-                if let calendarIssue {
-                    Chip("Calendar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.coral)
-                        .help("Vorssaint no mostrará esta cuenta atrás: \(calendarIssue) Resuélvelo en Ajustes.")
-                }
-                Spacer(minLength: 4)
-                if !task.completed && !isActive {
-                    Button { model.startFromAgenda(task, isProjected: isProjected) } label: { Image(systemName: "play.fill") }
-                        .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.mint))
-                        .disabled(model.busy || model.readOnly)
-                        .help(model.session == nil ? "Empezar ahora" : "Empezar esta en lugar de la que está en marcha")
-                }
-                if !isActive {
-                    Button { model.editingTask = task } label: { Image(systemName: "pencil") }
-                        .buttonStyle(FocusIconButtonStyle(size: 22))
-                        .help("Editar")
-                }
-            }
+            blockHeader(
+                task: task, preview: preview, isProjected: isProjected, isActive: isActive, overlaps: overlaps,
+                compact: compact, blockHeight: blockHeight, dragging: dragging, calendarIssue: calendarIssue,
+                continuesTomorrow: frame.continuesTomorrow, range: range
+            )
             Spacer(minLength: 0)
             if isEditable && blockHeight >= 38 {
                 HStack {
@@ -1607,13 +1664,15 @@ struct HourlyDayTimelineView: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(overlaps ? Palette.coral : (isActive ? Palette.mint : color.opacity(0.45)),
+                .strokeBorder(overlaps ? Palette.warning : (isActive ? Palette.mint : color.opacity(0.45)),
                               style: StrokeStyle(lineWidth: overlaps || isActive ? 1.5 : 1, dash: isProjected ? [5, 3] : []))
         )
         .shadow(color: .black.opacity(dragging ? 0.35 : 0), radius: 8, y: 3)
-        .opacity(task.completed ? 0.5 : 1)
+        .saturation(task.completed ? 0 : 1)
         .offset(x: frame.x, y: topY)
         .zIndex(dragging ? 1 : 0)
+        .onTapGesture(count: 2) { if !isActive { model.editingTask = task } }
+        .modifier(BlockAccessibility(model: model, task: task, spoken: spoken, isProjected: isProjected, isActive: isActive, isEditable: isEditable))
         .gesture(
             DragGesture(minimumDistance: 4)
                 .onChanged { value in
@@ -1650,6 +1709,91 @@ struct HourlyDayTimelineView: View {
         if task.completed { return "\(task.title) · completada" }
         return "\(task.title) · arrastra para moverla, su borde inferior para la duración"
     }
+    @ViewBuilder private func blockHeader(
+        task: FocusTask, preview: FocusTask, isProjected: Bool, isActive: Bool, overlaps: Bool, compact: Bool,
+        blockHeight: CGFloat, dragging: Bool, calendarIssue: String?, continuesTomorrow: Bool, range: String
+    ) -> some View {
+            if compact {
+                HStack(spacing: 4) {
+                    Text(preview.scheduledAt.formatted(date: .omitted, time: .shortened))
+                        .font(.app(10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(dragging ? Palette.text : Palette.muted)
+                        .fixedSize()
+                    if blockHeight < 44 {
+                        Text(task.title).font(.app(12, weight: .semibold)).lineLimit(1).strikethrough(task.completed)
+                    }
+                    if overlaps { Image(systemName: "exclamationmark.triangle.fill").font(.app(10)).foregroundStyle(Palette.warning) }
+                    if isProjected { Image(systemName: "repeat").font(.app(10)).foregroundStyle(Palette.mint) }
+                    if calendarIssue != nil { Image(systemName: "exclamationmark.arrow.triangle.2.circlepath").font(.app(10)).foregroundStyle(Palette.warning) }
+                    Spacer(minLength: 0)
+                    if !task.completed && !isActive {
+                        Button { model.startFromAgenda(task, isProjected: isProjected) } label: { Image(systemName: "play.fill") }
+                            .buttonStyle(FocusIconButtonStyle(size: 20, tint: Palette.mint))
+                            .disabled(model.busy || model.readOnly)
+                            .help(model.session == nil ? "Empezar ahora" : "Empezar esta en lugar de la que está en marcha")
+                            .accessibilityLabel("Empezar \(task.title)")
+                    }
+                }
+                if blockHeight >= 44 {
+                    Text(task.title)
+                        .font(.app(12, weight: .semibold))
+                        .lineLimit(blockHeight >= 60 ? 2 : 1)
+                        .strikethrough(task.completed)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Text(range)
+                        .font(.app(10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(dragging ? Palette.text : Palette.muted)
+                        .fixedSize()
+                    Text(task.title).font(.app(12, weight: .semibold)).lineLimit(1).strikethrough(task.completed)
+                    if isProjected { Image(systemName: "repeat").font(.app(10)).foregroundStyle(Palette.mint) }
+                    if isActive { Chip("En sesión", color: Palette.mint) }
+                    if overlaps { Chip("Solapa", icon: "exclamationmark.triangle.fill", color: Palette.warning) }
+                    if continuesTomorrow { Chip("Sigue mañana", icon: "arrow.turn.down.right") }
+                    if let calendarIssue {
+                        Chip("Calendar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.warning)
+                            .help("Vorssaint no mostrará esta cuenta atrás: \(calendarIssue) Resuélvelo en Ajustes.")
+                    }
+                    Spacer(minLength: 4)
+                    if !task.completed && !isActive {
+                        Button { model.startFromAgenda(task, isProjected: isProjected) } label: { Image(systemName: "play.fill") }
+                            .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.mint))
+                            .disabled(model.busy || model.readOnly)
+                            .help(model.session == nil ? "Empezar ahora" : "Empezar esta en lugar de la que está en marcha")
+                            .accessibilityLabel("Empezar \(task.title)")
+                    }
+                    if !isActive {
+                        Button { model.editingTask = task } label: { Image(systemName: "pencil") }
+                            .buttonStyle(FocusIconButtonStyle(size: 22))
+                            .help("Editar")
+                            .accessibilityLabel("Editar \(task.title)")
+                    }
+                }
+            }
+    }
+}
+
+/// One element for VoiceOver with the whole story of a block, and the drag-only edits as named actions.
+private struct BlockAccessibility: ViewModifier {
+    @ObservedObject var model: AppModel
+    let task: FocusTask
+    let spoken: String
+    let isProjected: Bool
+    let isActive: Bool
+    let isEditable: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(spoken)
+            .accessibilityAction(named: "Editar") { if !isActive { model.editingTask = task } }
+            .accessibilityAction(named: "Empezar") { if !task.completed && !isActive { model.startFromAgenda(task, isProjected: isProjected) } }
+            .accessibilityAction(named: "Adelantar 15 minutos") { if isEditable { model.shift(task, to: task.scheduledAt.addingTimeInterval(-900)) } }
+            .accessibilityAction(named: "Retrasar 15 minutos") { if isEditable { model.shift(task, to: task.scheduledAt.addingTimeInterval(900)) } }
+            .accessibilityAction(named: "Alargar 15 minutos") { if isEditable { model.shift(task, to: task.scheduledAt, durationMinutes: task.minutes + 15) } }
+            .accessibilityAction(named: "Acortar 15 minutos") { if isEditable { model.shift(task, to: task.scheduledAt, durationMinutes: task.minutes - 15) } }
+    }
 }
 
 private struct HourRow: View {
@@ -1664,20 +1808,20 @@ private struct HourRow: View {
         let isWorkHour = hour >= model.workspace.settings.workStartHour && hour < model.workspace.settings.workEndHour
         HStack(alignment: .top, spacing: 0) {
             Text(String(format: "%02d:00", hour))
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(isWorkHour ? Palette.muted : Palette.muted.opacity(0.4))
+                .font(.app(10, design: .monospaced))
+                .foregroundStyle(Palette.muted)
                 .frame(width: gutter - 8, alignment: .trailing)
                 .padding(.trailing, 8)
                 .offset(y: -6)
             VStack(spacing: 0) {
-                Rectangle().fill(Color.white.opacity(isWorkHour ? 0.07 : 0.035)).frame(height: 1)
+                Rectangle().fill(Palette.stroke).frame(height: 1)
                 Spacer(minLength: 0)
             }
         }
         .frame(height: height)
         .background(
             Rectangle()
-                .fill(targeted ? Palette.mint.opacity(0.10) : (isWorkHour ? Color.white.opacity(0.012) : Color.black.opacity(0.16)))
+                .fill(targeted ? Palette.mint.opacity(0.10) : (isWorkHour ? Color.clear : Palette.offHours))
                 .padding(.leading, gutter)
         )
         .gesture(
@@ -1695,6 +1839,7 @@ private struct HourRow: View {
             }
         )
         .help("Doble clic en un hueco para crear una tarea a esa hora")
+        .accessibilityHidden(true)
         .dropDestination(for: String.self) { values, location in
             guard !model.readOnly, !model.busy, let raw = values.first, let id = UUID(uuidString: raw),
                   let task = model.workspace.tasks.first(where: { $0.id == id && !$0.completed }),
@@ -1719,7 +1864,7 @@ struct SessionHero: View {
         let elapsed = model.currentElapsed(for: session)
         let progress = min(1, max(0, elapsed / max(1, session.budget)))
         let ended = session.endedAt != nil
-        let ringColor = remaining < 0 ? Palette.coral : Palette.mint
+        let ringColor = remaining < 0 ? Palette.warning : Palette.mint
         let checks = session.task.checklist.split(separator: "\n").map(String.init)
 
         Card(padding: 26) {
@@ -1728,30 +1873,30 @@ struct SessionHero: View {
                     HStack(spacing: 6) {
                         Chip(ended ? "RESULTADO PENDIENTE" : (session.paused ? "EN PAUSA" : "AHORA, SOLO ESTO"),
                              icon: ended ? "checkmark.seal" : (session.paused ? "pause.fill" : "circle.fill"),
-                             color: session.paused && !ended ? Palette.coral : Palette.mint)
+                             color: session.paused && !ended ? Palette.warning : Palette.mint)
                         Chip(session.task.category, color: model.color(for: session.task))
                         if session.task.strict { Chip("Estricto", icon: "scope") }
                         if let issue = model.calendar.issues[session.task.id] {
-                            Chip("Vorssaint sin sincronizar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.coral)
+                            Chip("Vorssaint sin sincronizar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.warning)
                                 .help("\(issue) Resuélvelo en Ajustes.")
                         }
                     }
-                    Text(session.task.title).font(.system(size: 26, weight: .semibold, design: .rounded)).lineLimit(2)
+                    Text(session.task.title).font(.app(26, weight: .semibold, design: .rounded)).lineLimit(2)
                     Text(session.task.strict ? "Te devolvemos a tus apps de trabajo si te distraes." : "Avisos suaves. Tú decides el ritmo.")
                         .foregroundStyle(Palette.muted)
                     SessionButtons(model: model)
                     if !session.task.apps.isEmpty {
                         Label(session.task.apps.map(\.name).joined(separator: " · "), systemImage: "square.grid.2x2")
-                            .font(.caption)
+                            .font(.app(10))
                             .foregroundStyle(Palette.muted)
                     }
                     if !checks.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(Array(checks.enumerated()), id: \.offset) { index, text in
-                                Toggle(text, isOn: Binding(
+                                Toggle(isOn: Binding(
                                     get: { model.session?.checked.contains(String(index)) == true },
                                     set: { model.setCheck(String(index), value: $0) }
-                                ))
+                                )) { Text(text).font(.app(13)) }
                                 .toggleStyle(.checkbox)
                             }
                         }
@@ -1763,16 +1908,19 @@ struct SessionHero: View {
                     ProgressRing(progress: progress, color: ringColor, lineWidth: 9)
                     VStack(spacing: 4) {
                         Text(FocusRules.clock(remaining))
-                            .font(.system(size: 30, weight: .light, design: .monospaced))
+                            .font(.app(30, weight: .regular, design: .monospaced))
                             .foregroundStyle(ringColor)
-                            .contentTransition(.numericText())
+                            .modifier(CountdownTransition())
                         Text(remaining < 0 ? "TIEMPO EXTRA" : "RESTANTE")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.app(9, weight: .semibold))
                             .tracking(1.4)
                             .foregroundStyle(Palette.muted)
                     }
                 }
                 .frame(width: 168, height: 168)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(remaining < 0 ? "Tiempo extra" : (session.paused && !ended ? "En pausa, tiempo restante" : "Tiempo restante"))
+                .accessibilityValue(spokenDuration(remaining))
                 .opacity(session.paused && !ended ? 0.6 : 1)
             }
         }
@@ -1801,10 +1949,11 @@ struct SessionButtons: View {
                 .help(paused ? "Reanudar (⌃⌥⌘P)" : "Pausar (⌃⌥⌘P)")
                 Button { model.addTime() } label: { Label("+10 min", systemImage: "plus") }
                     .buttonStyle(.focus(.ghost, compact: compact))
-                    .help("Ampliar 10 minutos (⌃⌥⌘+)")
+                    .help("Ampliar 10 minutos (⌃⌥⌘A)")
                 Button { confirmCancel = true } label: { Image(systemName: "xmark") }
                     .buttonStyle(FocusIconButtonStyle(size: compact ? 24 : 30, tint: Palette.danger.opacity(0.8)))
                     .help("Cancelar la sesión sin completar la tarea")
+                    .accessibilityLabel("Cancelar la sesión sin completar la tarea")
             }
             Spacer(minLength: 0)
         }
@@ -1839,32 +1988,37 @@ struct MenuPanel: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
+        panel.id(model.workspace.settings.textScale)
+    }
+
+    @ViewBuilder private var panel: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "scope")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Palette.background)
+                    .font(.app(11, weight: .bold))
+                    .foregroundStyle(Palette.onAccent)
                     .frame(width: 22, height: 22)
                     .background(Palette.mint, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                Text("FocusDesk").font(.system(size: 13, weight: .semibold))
+                Text("FocusDesk").font(.app(13, weight: .semibold))
                 Spacer()
                 if model.calendar.pendingCount > 0 {
-                    Chip("\(model.calendar.pendingCount) en cola", icon: "arrow.triangle.2.circlepath", color: Palette.coral)
+                    Chip("\(model.calendar.pendingCount) en cola", icon: "arrow.triangle.2.circlepath", color: Palette.warning)
                         .help("Cambios pendientes de enviar a Calendar")
                 }
                 Button { model.showWindow?() } label: { Image(systemName: "macwindow") }
                     .buttonStyle(FocusIconButtonStyle(size: 24))
                     .help("Abrir planificador")
+                    .accessibilityLabel("Abrir planificador")
             }
 
             if let s = model.session {
                 sessionSection(s)
             } else if let next = model.next {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("SIGUIENTE TAREA").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(Palette.muted)
-                    Text(next.title).font(.system(size: 16, weight: .semibold)).lineLimit(2)
+                    Text("SIGUIENTE TAREA").font(.app(9, weight: .bold)).tracking(1.2).foregroundStyle(Palette.muted)
+                    Text(next.title).font(.app(16, weight: .semibold)).lineLimit(2)
                     Text(next.isScheduled ? "\(dayTitle(for: next.scheduledAt)) · \(next.scheduledAt.formatted(date: .omitted, time: .shortened)) · \(next.minutes) min" : "Bandeja sin hora · \(next.minutes) min")
-                        .font(.caption)
+                        .font(.app(10))
                         .foregroundStyle(Palette.muted)
                 }
                 HStack(spacing: 8) {
@@ -1895,17 +2049,16 @@ struct MenuPanel: View {
         .padding(18)
         .frame(width: 360)
         .background(Palette.background)
-        .preferredColorScheme(.dark)
         .tint(Palette.mint)
     }
 
     @ViewBuilder private func sessionSection(_ s: WorkSession) -> some View {
-        Text(s.task.title).font(.system(size: 16, weight: .semibold)).lineLimit(2)
+        Text(s.task.title).font(.app(16, weight: .semibold)).lineLimit(2)
         if s.endedAt != nil {
-            Text("Sesión terminada · confirma el resultado").font(.caption).foregroundStyle(Palette.mint)
+            Text("Sesión terminada · confirma el resultado").font(.app(10)).foregroundStyle(Palette.mint)
             if let nextTask = model.upcomingAfterSession {
                 Text("\(model.queuedStartTask != nil ? "Esperando para empezar" : "Siguiente"): \(nextTask.title) · \(nextTask.minutes) min")
-                    .font(.caption).foregroundStyle(Palette.muted).lineLimit(1)
+                    .font(.app(10)).foregroundStyle(Palette.muted).lineLimit(1)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Button { model.confirm(completed: true, note: "", transition: .startNextNow) } label: { Label("Terminada · empezar siguiente", systemImage: "forward.fill") }
@@ -1934,19 +2087,21 @@ struct MenuPanel: View {
             let remaining = model.currentRemaining(for: s)
             HStack(alignment: .firstTextBaseline) {
                 Text(FocusRules.clock(remaining))
-                    .font(.system(size: 38, weight: .light, design: .monospaced))
-                    .foregroundStyle(remaining < 0 ? Palette.coral : Palette.mint)
-                    .contentTransition(.numericText())
-                if s.paused { Chip("En pausa", icon: "pause.fill", color: Palette.coral) }
+                    .font(.app(38, weight: .regular, design: .monospaced))
+                    .foregroundStyle(remaining < 0 ? Palette.warning : Palette.mint)
+                    .modifier(CountdownTransition())
+                    .accessibilityLabel(remaining < 0 ? "Tiempo extra" : "Tiempo restante")
+                    .accessibilityValue(spokenDuration(remaining))
+                if s.paused { Chip("En pausa", icon: "pause.fill", color: Palette.warning) }
             }
             SessionButtons(model: model, compact: true)
             if !s.paused {
                 let ends = Date().addingTimeInterval(max(0, remaining))
-                Text("Termina a las \(ends.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(Palette.muted)
+                Text("Termina a las \(ends.formatted(date: .omitted, time: .shortened))").font(.app(10)).foregroundStyle(Palette.muted)
             }
             if let after = model.upcomingAfterSession {
                 Text("Después: \(after.title)\(after.isScheduled ? " · " + after.scheduledAt.formatted(date: .omitted, time: .shortened) : "")")
-                    .font(.caption)
+                    .font(.app(10))
                     .foregroundStyle(Palette.muted)
                     .lineLimit(1)
             }

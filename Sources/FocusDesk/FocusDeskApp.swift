@@ -25,7 +25,7 @@ struct FocusDeskApplication {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSWindowDelegate, NSMenuItemValidation {
     let model: AppModel = {
         let preview = CommandLine.arguments.contains("--preview")
         let args = CommandLine.arguments
@@ -40,6 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var subscriptions = Set<AnyCancellable>()
     private var lastPauseToggle = Date.distantPast
     private var warnedSessionHotKeys = false
+    private var settingsWindow: NSWindow?
+    /// Typing in the main window keeps its own undo history, separate from agenda changes.
+    private let textUndoManager = UndoManager()
+    private var settingsPaneObservation: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
@@ -47,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.showWindow = { [weak self] in self?.show() }
         model.toggleCompactPanel = { [weak self] in self?.togglePanel() }
         model.onHotKeySettingsChanged = { [weak self] in self?.applyHotKeySettings() }
+        model.showSettings = { [weak self] section in self?.showSettings(section) }
         hotkey.action = { [weak self] id in self?.handleHotKeyTriggered(id) }
         applyHotKeySettings()
 
@@ -96,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         if CommandLine.arguments.contains("--verify-calendar") && !model.preview {
-            model.page = "Ajustes"
+            showSettings(.connections)
             Task {
                 let report = await CalendarLiveCheck.run(model)
                 print(report)
@@ -112,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         if CommandLine.arguments.contains("--connect-calendar") && !model.preview {
-            model.page = "Ajustes"
+            showSettings(.connections)
             Task { await model.calendar.request() }
         }
     }
@@ -165,10 +170,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         statusItem?.button?.title = title == "FocusDesk" ? "" : " " + title
         statusItem?.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         statusItem?.button?.toolTip = model.session.map { "FocusDesk · \($0.task.title) · \(title)" } ?? "FocusDesk · abrir tareas"
+        // VoiceOver read a fixed name; now the whole state in words, rounded to the minute so it does not churn.
+        statusItem?.button?.setAccessibilityLabel(statusAccessibilityText())
+        // People decide whether the countdown lives in the menu bar (`the-menu-bar.md › Menu bar extras`).
+        statusItem?.isVisible = model.workspace.settings.showMenuBarItem
+    }
+
+    private func statusAccessibilityText() -> String {
+        guard let s = model.session else {
+            if let upcoming = model.scheduledTasks.first(where: { $0.scheduledAt > model.now }),
+               upcoming.scheduledAt.timeIntervalSince(model.now) <= Double(upcoming.leadMinutes) * 60 {
+                return "FocusDesk, «\(upcoming.title)» empieza en \(spokenDuration(upcoming.scheduledAt.timeIntervalSince(model.now)))"
+            }
+            return "FocusDesk, sin sesión"
+        }
+        if s.endedAt != nil { return "FocusDesk, «\(s.task.title)» terminada, confirma el resultado" }
+        if s.paused { return "FocusDesk, «\(s.task.title)» en pausa" }
+        let remaining = model.currentRemaining(for: s)
+        return remaining < 0
+            ? "FocusDesk, «\(s.task.title)», tiempo extra \(spokenDuration(remaining))"
+            : "FocusDesk, «\(s.task.title)», quedan \(spokenDuration(remaining))"
     }
 
     @objc private func togglePanel() {
-        guard let button = statusItem?.button else { return }
+        // With the menu-bar item hidden there is nothing to anchor the panel to: open the planner instead.
+        guard let button = statusItem?.button, statusItem?.isVisible == true else { show(); return }
         if popover.isShown {
             popover.performClose(nil)
         } else {
@@ -193,6 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             window.minSize = NSSize(width: 960, height: 680)
             window.contentView = NSHostingView(rootView: MainView(model: model).environment(\.locale, Locale(identifier: "es_ES")))
             window.setFrameAutosaveName("FocusDeskMainWindow")
+            window.delegate = self
             if !window.setFrameUsingName("FocusDeskMainWindow") { window.center() }
             self.window = window
         }
@@ -205,19 +232,134 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) { model.shutdown() }
 
-    @objc private func settings() { model.page = "Ajustes"; show() }
+    @objc private func settings() { showSettings(nil) }
+
+    /// Ajustes in its own window, opened with ⌘, from the app menu: a non-customizable toolbar with one pane per
+    /// group, the title follows the pane, minimize and zoom dimmed, and the last pane comes back (`settings.md`).
+    func showSettings(_ section: SettingsSectionTab?) {
+        if settingsWindow == nil {
+            let tabs = NSTabViewController()
+            tabs.tabStyle = .toolbar
+            for pane in SettingsSectionTab.panes {
+                let root = SettingsPane(model: model, section: pane).environment(\.locale, Locale(identifier: "es_ES"))
+                let host = NSHostingController(rootView: root)
+                host.title = pane.rawValue
+                let item = NSTabViewItem(viewController: host)
+                item.label = pane.rawValue
+                item.image = NSImage(systemSymbolName: pane.icon, accessibilityDescription: pane.rawValue)
+                tabs.addTabViewItem(item)
+            }
+            let saved = UserDefaults.standard.integer(forKey: "FocusDesk.settingsPane")
+            tabs.selectedTabViewItemIndex = min(max(0, saved), SettingsSectionTab.panes.count - 1)
+            settingsPaneObservation = tabs.observe(\.selectedTabViewItemIndex, options: [.new]) { _, change in
+                if let index = change.newValue { UserDefaults.standard.set(index, forKey: "FocusDesk.settingsPane") }
+            }
+            let window = NSWindow(contentViewController: tabs)
+            window.styleMask = [.titled, .closable]
+            window.toolbarStyle = .preference
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 820, height: 640))
+            window.backgroundColor = NSColor(Palette.background)
+            window.center()
+            window.setFrameAutosaveName("FocusDeskSettingsWindow")
+            settingsWindow = window
+        }
+        if let section, let index = SettingsSectionTab.panes.firstIndex(of: section),
+           let tabs = settingsWindow?.contentViewController as? NSTabViewController {
+            tabs.selectedTabViewItemIndex = index
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// The main window gives AppKit the model's undo manager, so Edición › Deshacer and ⌘Z reach agenda changes.
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        guard window === self.window else { return nil }
+        // While a text field is being edited, ⌘Z undoes the typing; otherwise it undoes the last agenda change.
+        return window.firstResponder is NSTextView ? textUndoManager : model.undoManager
+    }
+
+    /// Session commands from the Dock icon too: the menu-bar item can be hidden (`the-menu-bar.md`).
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        if let s = model.session {
+            menu.addItem(NSMenuItem(title: "«\(s.task.title)»", action: nil, keyEquivalent: ""))
+            if s.endedAt == nil {
+                let pause = menu.addItem(withTitle: s.paused ? "Reanudar" : "Pausar", action: #selector(menuPauseResume), keyEquivalent: "")
+                pause.target = self
+                let finish = menu.addItem(withTitle: "He terminado", action: #selector(menuFinishSession), keyEquivalent: "")
+                finish.target = self
+                let extend = menu.addItem(withTitle: "Ampliar 10 minutos", action: #selector(menuAddTenMinutes), keyEquivalent: "")
+                extend.target = self
+            } else {
+                let confirm = menu.addItem(withTitle: "Confirmar el resultado…", action: #selector(menuFinishSession), keyEquivalent: "")
+                confirm.target = self
+            }
+            menu.addItem(.separator())
+        } else if model.next != nil {
+            let start = menu.addItem(withTitle: "Empezar siguiente tarea", action: #selector(menuStartNext), keyEquivalent: "")
+            start.target = self
+        }
+        let new = menu.addItem(withTitle: "Nueva tarea…", action: #selector(newTask), keyEquivalent: "")
+        new.target = self
+        return menu
+    }
+
+    /// Commands stay visible and are disabled when they cannot run, instead of doing nothing (`the-menu-bar.md`).
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let s = model.session
+        switch menuItem.action {
+        case #selector(menuPauseResume):
+            menuItem.title = s?.paused == true ? "Reanudar" : "Pausar"
+            return s != nil && s?.endedAt == nil && !model.readOnly
+        case #selector(menuFinishSession):
+            menuItem.title = s?.endedAt != nil ? "Confirmar el resultado…" : "He terminado"
+            return s != nil
+        case #selector(menuAddTenMinutes):
+            return s != nil && s?.endedAt == nil && !model.readOnly
+        case #selector(menuStartNext):
+            return model.next != nil && !model.busy && !model.readOnly
+        case #selector(newTask):
+            return !model.readOnly
+        case #selector(prevDay), #selector(nextDay):
+            return model.currentPage == .today || model.currentPage == .week
+        default:
+            return true
+        }
+    }
+
+    @objc private func showShortcutsHelp() {
+        let alert = NSAlert()
+        alert.messageText = "Atajos de FocusDesk"
+        alert.informativeText = """
+        Desde cualquier app
+        \(model.workspace.settings.hotKeyLabel)  Abrir FocusDesk
+        ⌃⌥⌘P  Pausar o reanudar la sesión
+        ⌃⌥⌘T  He terminado
+
+        Con FocusDesk delante
+        ⌘N  Nueva tarea · ⌘,  Ajustes
+        ⌘1 ⌘2 ⌘3  Hoy, Semana, Historial
+        ⌘[ ⌘]  Día o semana anterior y siguiente · ⌘T  Hoy
+        ⌃⌥⌘S  Empezar la siguiente tarea · ⌃⌥⌘A  Ampliar 10 minutos
+        ⌘Z ⇧⌘Z  Deshacer y rehacer cambios en la agenda
+        """
+        alert.addButton(withTitle: "Cerrar")
+        alert.runModal()
+    }
     @objc private func goTodayPage() { model.page = "Hoy"; show() }
     @objc private func goWeekPage() { model.page = "Semana"; show() }
     @objc private func goHistoryPage() { model.page = "Historial"; show() }
     @objc private func prevDay() {
-        model.shiftSelectedDay(by: -1)
+        model.shiftSelectedDay(by: model.currentPage == .week ? -7 : -1)
     }
     @objc private func nextDay() {
-        model.shiftSelectedDay(by: 1)
+        model.shiftSelectedDay(by: model.currentPage == .week ? 7 : 1)
     }
     @objc private func jumpToCurrentDay() {
         model.selectedDate = Date()
-        model.page = "Hoy"
+        // On Semana, ⌘T goes to this week without leaving the page.
+        if model.currentPage != .week { model.page = "Hoy" }
         show()
     }
     // Same draft as the sidebar button: respects the day you are looking at and the start of your working day.
@@ -255,58 +397,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func menuFinishSession() {
         if model.session != nil { model.finish() }
     }
-    @objc private func menuUndoAgenda() {
-        if model.canUndoAgenda { model.undoAgendaChange() } else { NSSound.beep() }
-    }
     @objc private func menuAddTenMinutes() {
-        if model.session?.endedAt == nil { model.addTime(minutes: 10) }
+        if let s = model.session, s.endedAt == nil { model.addTime(minutes: 10) }
     }
 
+    /// Standard order: app, Archivo, Edición, app-specific menus, Ventana, Ayuda (`the-menu-bar.md › Anatomy`).
     private func buildMainMenu() {
         let bar = NSMenu()
-        let appItem = NSMenuItem(); bar.addItem(appItem)
-        let appMenu = NSMenu(title: "FocusDesk"); appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "Acerca de FocusDesk", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        let settingsItem = appMenu.addItem(withTitle: "Ajustes…", action: #selector(settings), keyEquivalent: ","); settingsItem.target = self
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Ocultar FocusDesk", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "Salir de FocusDesk", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-
-        let fileItem = NSMenuItem(); bar.addItem(fileItem); fileItem.submenu = NSMenu(title: "Archivo")
-        let new = fileItem.submenu!.addItem(withTitle: "Nueva tarea", action: #selector(newTask), keyEquivalent: "n"); new.target = self
-        let reopen = fileItem.submenu!.addItem(withTitle: "Abrir planificador", action: #selector(show), keyEquivalent: "0"); reopen.target = self
-        let compact = fileItem.submenu!.addItem(withTitle: "Panel compacto de barra", action: #selector(togglePanel), keyEquivalent: "m")
-        compact.keyEquivalentModifierMask = [.command, .option, .control]; compact.target = self
-        fileItem.submenu!.addItem(withTitle: "Cerrar ventana", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-
-        let navItem = NSMenuItem(); bar.addItem(navItem); navItem.submenu = NSMenu(title: "Navegación")
-        let navToday = navItem.submenu!.addItem(withTitle: "Hoy", action: #selector(goTodayPage), keyEquivalent: "1"); navToday.target = self
-        let navWeek = navItem.submenu!.addItem(withTitle: "Semana", action: #selector(goWeekPage), keyEquivalent: "2"); navWeek.target = self
-        let navHistory = navItem.submenu!.addItem(withTitle: "Historial", action: #selector(goHistoryPage), keyEquivalent: "3"); navHistory.target = self
-        let navSettings = navItem.submenu!.addItem(withTitle: "Ajustes", action: #selector(settings), keyEquivalent: "4"); navSettings.target = self
-        navItem.submenu!.addItem(.separator())
-        let navPrevDay = navItem.submenu!.addItem(withTitle: "Día anterior", action: #selector(prevDay), keyEquivalent: "["); navPrevDay.target = self
-        let navNextDay = navItem.submenu!.addItem(withTitle: "Día siguiente", action: #selector(nextDay), keyEquivalent: "]"); navNextDay.target = self
-        let navNowDay = navItem.submenu!.addItem(withTitle: "Ir a hoy", action: #selector(jumpToCurrentDay), keyEquivalent: "t"); navNowDay.target = self
-
-        let sessionItem = NSMenuItem(); bar.addItem(sessionItem); sessionItem.submenu = NSMenu(title: "Sesión")
-        let startItem = sessionItem.submenu!.addItem(withTitle: "Empezar siguiente tarea", action: #selector(menuStartNext), keyEquivalent: "s")
-        startItem.keyEquivalentModifierMask = [.command, .option, .control]; startItem.target = self
-        let pauseItem = sessionItem.submenu!.addItem(withTitle: "Pausar o reanudar", action: #selector(menuPauseResume), keyEquivalent: "p")
-        pauseItem.keyEquivalentModifierMask = [.command, .option, .control]; pauseItem.target = self
-        let finishItem = sessionItem.submenu!.addItem(withTitle: "He terminado", action: #selector(menuFinishSession), keyEquivalent: "t")
-        finishItem.keyEquivalentModifierMask = [.command, .option, .control]; finishItem.target = self
-        let extendItem = sessionItem.submenu!.addItem(withTitle: "Ampliar +10 minutos", action: #selector(menuAddTenMinutes), keyEquivalent: "+")
-        extendItem.keyEquivalentModifierMask = [.command, .option, .control]; extendItem.target = self
-
-        let editItem = NSMenuItem(); bar.addItem(editItem); editItem.submenu = NSMenu(title: "Edición")
-        for (title, action, key) in [("Deshacer", "undo:", "z"), ("Cortar", "cut:", "x"), ("Copiar", "copy:", "c"), ("Pegar", "paste:", "v"), ("Seleccionar todo", "selectAll:", "a")] {
-            editItem.submenu!.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
+        func submenu(_ title: String) -> NSMenu {
+            let item = NSMenuItem()
+            bar.addItem(item)
+            let menu = NSMenu(title: title)
+            item.submenu = menu
+            return menu
         }
-        editItem.submenu!.addItem(.separator())
-        // ⌘Z stays with text fields; the agenda has its own undo so the two never get mixed up.
-        let undoAgenda = editItem.submenu!.addItem(withTitle: "Deshacer cambio en la agenda", action: #selector(menuUndoAgenda), keyEquivalent: "z")
-        undoAgenda.keyEquivalentModifierMask = [.command, .option]; undoAgenda.target = self
+        @discardableResult
+        func add(_ menu: NSMenu, _ title: String, _ action: Selector?, _ key: String = "", _ modifiers: NSEvent.ModifierFlags = [.command], target: AnyObject? = nil) -> NSMenuItem {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+            item.target = target
+            return item
+        }
+
+        let app = submenu("FocusDesk")
+        add(app, "Acerca de FocusDesk", #selector(NSApplication.orderFrontStandardAboutPanel(_:)))
+        app.addItem(.separator())
+        add(app, "Ajustes…", #selector(settings), ",", target: self)
+        app.addItem(.separator())
+        let servicesItem = app.addItem(withTitle: "Servicios", action: nil, keyEquivalent: "")
+        let services = NSMenu(title: "Servicios")
+        servicesItem.submenu = services
+        NSApp.servicesMenu = services
+        app.addItem(.separator())
+        add(app, "Ocultar FocusDesk", #selector(NSApplication.hide(_:)), "h")
+        add(app, "Ocultar otros", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option])
+        add(app, "Mostrar todo", #selector(NSApplication.unhideAllApplications(_:)))
+        app.addItem(.separator())
+        add(app, "Salir de FocusDesk", #selector(NSApplication.terminate(_:)), "q")
+
+        let file = submenu("Archivo")
+        add(file, "Nueva tarea…", #selector(newTask), "n", target: self)
+        add(file, "Abrir planificador", #selector(show), "0", target: self)
+        add(file, "Panel compacto de la barra", #selector(togglePanel), "m", [.control, .option, .command], target: self)
+        file.addItem(.separator())
+        add(file, "Cerrar ventana", #selector(NSWindow.performClose(_:)), "w")
+
+        let edit = submenu("Edición")
+        // Undo and redo reach agenda changes through the main window's undo manager (and text fields as usual).
+        add(edit, "Deshacer", Selector(("undo:")), "z")
+        add(edit, "Rehacer", Selector(("redo:")), "z", [.command, .shift])
+        edit.addItem(.separator())
+        add(edit, "Cortar", #selector(NSText.cut(_:)), "x")
+        add(edit, "Copiar", #selector(NSText.copy(_:)), "c")
+        add(edit, "Pegar", #selector(NSText.paste(_:)), "v")
+        add(edit, "Seleccionar todo", #selector(NSText.selectAll(_:)), "a")
+
+        let nav = submenu("Navegación")
+        add(nav, "Hoy", #selector(goTodayPage), "1", target: self)
+        add(nav, "Semana", #selector(goWeekPage), "2", target: self)
+        add(nav, "Historial", #selector(goHistoryPage), "3", target: self)
+        nav.addItem(.separator())
+        add(nav, "Anterior", #selector(prevDay), "[", target: self)
+        add(nav, "Siguiente", #selector(nextDay), "]", target: self)
+        add(nav, "Ir a hoy", #selector(jumpToCurrentDay), "t", target: self)
+
+        let session = submenu("Sesión")
+        add(session, "Empezar siguiente tarea", #selector(menuStartNext), "s", [.control, .option, .command], target: self)
+        add(session, "Pausar", #selector(menuPauseResume), "p", [.control, .option, .command], target: self)
+        add(session, "He terminado", #selector(menuFinishSession), "t", [.control, .option, .command], target: self)
+        // A letter: "+" needs Shift on many keyboards and sits elsewhere on others (`keyboards.md`).
+        add(session, "Ampliar 10 minutos", #selector(menuAddTenMinutes), "a", [.control, .option, .command], target: self)
+
+        let windowMenu = submenu("Ventana")
+        add(windowMenu, "Minimizar", #selector(NSWindow.performMiniaturize(_:)), "m")
+        add(windowMenu, "Zoom", #selector(NSWindow.performZoom(_:)))
+        windowMenu.addItem(.separator())
+        add(windowMenu, "Traer todo al frente", #selector(NSApplication.arrangeInFront(_:)))
+        NSApp.windowsMenu = windowMenu
+
+        let help = submenu("Ayuda")
+        add(help, "Atajos de FocusDesk", #selector(showShortcutsHelp), target: self)
+        NSApp.helpMenu = help
+
         NSApp.mainMenu = bar
     }
 

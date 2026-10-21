@@ -25,13 +25,14 @@ struct TaskEditor: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Dale un espacio.").font(.system(size: 26, weight: .semibold, design: .rounded))
-                    Text("Un objetivo claro. Un tiempo concreto.").font(.callout).foregroundStyle(Palette.muted)
+                    Text("Dale un espacio.").font(.app(26, weight: .semibold, design: .rounded))
+                    Text("Un objetivo claro. Un tiempo concreto.").font(.app(12)).foregroundStyle(Palette.muted)
                 }
                 Spacer()
                 Button { dismiss() } label: { Image(systemName: "xmark") }
                     .buttonStyle(FocusIconButtonStyle(size: 30))
                     .help("Cerrar")
+                    .accessibilityLabel("Cerrar")
             }
 
             ScrollView {
@@ -103,7 +104,7 @@ struct TaskEditor: View {
                                     Text("Editar solo esta ocurrencia (\((originalOccurrenceDate ?? draft.scheduledAt).formatted(date: .abbreviated, time: .omitted)))").tag(true)
                                 }.pickerStyle(.segmented)
                             }
-                            Text(seriesHint).font(.caption).foregroundStyle(Palette.muted)
+                            Text(seriesHint).font(.app(10)).foregroundStyle(Palette.muted)
                         }.padding(12).background(Palette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
 
@@ -113,7 +114,7 @@ struct TaskEditor: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("¿QUÉ VAS A HACER?").fieldLabelStyle()
                                 TextField("Ej. Grabar el vídeo de mañana", text: $draft.title)
-                                    .font(.title3)
+                                    .font(.app(15))
                                     .textFieldStyle(.roundedBorder)
                             }
 
@@ -123,7 +124,7 @@ struct TaskEditor: View {
                                 if draft.isScheduled {
                                     Toggle("Cita fija (no desplazar)", isOn: $draft.isFixedAppointment)
                                         .toggleStyle(.checkbox)
-                                        .font(.caption)
+                                        .font(.app(10))
                                         .foregroundStyle(Palette.muted)
                                 } else {
                                     Chip("Bandeja de pendientes sin hora", icon: "tray", color: Palette.mint)
@@ -159,7 +160,7 @@ struct TaskEditor: View {
                                                 set: { draft.dueDate = $0 }
                                             ), displayedComponents: [.date, .hourAndMinute]).labelsHidden()
                                         } else {
-                                            Text("Sin fecha límite").font(.caption).foregroundStyle(Palette.muted)
+                                            Text("Sin fecha límite").font(.app(10)).foregroundStyle(Palette.muted)
                                         }
                                     }
                                 }
@@ -171,6 +172,7 @@ struct TaskEditor: View {
                                         ForEach([15, 30, 60, 90], id: \.self) { minutes in
                                             Button("\(minutes)m") { draft.minutes = minutes }
                                                 .buttonStyle(SelectableChipStyle(selected: draft.minutes == minutes))
+                                                .accessibilityLabel("\(minutes) minutos")
                                         }
                                     }
                                 }
@@ -200,10 +202,11 @@ struct TaskEditor: View {
                                                 if active { draft.repeatDays.remove(day) } else { draft.repeatDays.insert(day) }
                                             }
                                             .buttonStyle(SelectableChipStyle(selected: active))
+                                            .accessibilityLabel(fullDayNameFor(day))
                                         }
                                     }
                                     if draft.repeatDays.isEmpty {
-                                        Text("Selecciona al menos un día para la repetición.").font(.caption).foregroundStyle(Palette.coral)
+                                        Text("Selecciona al menos un día para la repetición.").font(.app(10)).foregroundStyle(Palette.warning)
                                     }
                                 }
                             }
@@ -219,13 +222,13 @@ struct TaskEditor: View {
                                     Stepper("Avisar \(draft.leadMinutes) minutos antes", value: $draft.leadMinutes, in: 0...60, step: 5)
                                     Spacer()
                                     if model.workspace.tasks.contains(where: { FocusRules.overlaps(draft, $0) }) {
-                                        Chip("Coincide con otra tarea", icon: "exclamationmark.triangle", color: Palette.coral)
+                                        Chip("Coincide con otra tarea", icon: "exclamationmark.triangle", color: Palette.warning)
                                     }
                                 }
                             }
 
                             if draft.minutes > 60 {
-                                Text("Vorssaint mostrará el final solo durante los últimos 60 minutos. El contador de FocusDesk seguirá visible.").font(.caption).foregroundStyle(Palette.muted)
+                                Text("Vorssaint mostrará el final solo durante los últimos 60 minutos. El contador de FocusDesk seguirá visible.").font(.app(10)).foregroundStyle(Palette.muted)
                             }
                         }
                     }
@@ -238,19 +241,21 @@ struct TaskEditor: View {
                                     .buttonStyle(.focus(.secondary, compact: true))
                             }
                             if draft.apps.isEmpty {
-                                Text("Sin selección: se admiten todas las apps. Añade las necesarias para distinguir distracciones.").font(.callout).foregroundStyle(Palette.muted)
+                                Text("Sin selección: se admiten todas las apps. Añade las necesarias para distinguir distracciones.").font(.app(12)).foregroundStyle(Palette.muted)
                             } else {
                                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 8)], spacing: 8) {
                                     ForEach(draft.apps) { app in
                                         HStack(spacing: 8) {
                                             Image(nsImage: NSWorkspace.shared.icon(forFile: app.path)).resizable().frame(width: 20, height: 20)
-                                            Text(app.name).font(.caption.weight(.medium)).lineLimit(1)
+                                            Text(app.name).font(.app(10, weight: .medium)).lineLimit(1)
                                             Spacer(minLength: 4)
                                             Button {
                                                 draft.apps.removeAll { $0.id == app.id }
                                             } label: {
                                                 Image(systemName: "xmark")
                                             }
+                                            .accessibilityLabel("Quitar \(app.name)")
+                                            .help("Quitar \(app.name) de esta tarea")
                                             .buttonStyle(FocusIconButtonStyle(size: 20))
                                         }
                                         .padding(.horizontal, 10)
@@ -260,9 +265,9 @@ struct TaskEditor: View {
                                 }
                             }
                             Toggle("Volver a una app permitida cuando me distraiga", isOn: $draft.strict).toggleStyle(.switch)
-                            Text("Puedes pausar en cualquier momento. Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.caption).foregroundStyle(Palette.muted)
+                            Text("Puedes pausar en cualquier momento. Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
                             if draft.strict && draft.apps.isEmpty {
-                                Text("Selecciona al menos una aplicación para usar el modo estricto.").font(.caption).foregroundStyle(Palette.coral)
+                                Text("Selecciona al menos una aplicación para usar el modo estricto.").font(.app(10)).foregroundStyle(Palette.warning)
                             }
 
                             Divider().overlay(Palette.stroke)
@@ -282,14 +287,14 @@ struct TaskEditor: View {
                                     .textFieldStyle(.roundedBorder)
                                 if !domainParse.invalid.isEmpty {
                                     Text("Entradas no reconocidas como dominio (se ignorarán): \(domainParse.invalid.joined(separator: ", "))")
-                                        .font(.caption)
-                                        .foregroundStyle(Palette.coral)
+                                        .font(.app(10))
+                                        .foregroundStyle(Palette.warning)
                                 } else if !domainParse.valid.isEmpty {
                                     Text("Dominios activos: \(domainParse.valid.joined(separator: ", "))")
-                                        .font(.caption)
+                                        .font(.app(10))
                                         .foregroundStyle(Palette.mint)
                                 }
-                                Text("Sirven para avisar y registrar en Brave. No bloquean páginas. Activa su lectura en Ajustes.").font(.caption).foregroundStyle(Palette.muted)
+                                Text("Sirven para avisar y registrar en Brave. No bloquean páginas. Activa su lectura en Ajustes.").font(.app(10)).foregroundStyle(Palette.muted)
                             }
                         }
                     }
@@ -298,18 +303,19 @@ struct TaskEditor: View {
                     Card(padding: 18) {
                         VStack(alignment: .leading, spacing: 10) {
                             SectionHeader("Cómo sabrás que has terminado", icon: "checkmark.circle")
-                            Text("Checklist: un paso por línea").font(.caption).foregroundStyle(Palette.muted)
+                            Text("Checklist: un paso por línea").font(.app(10)).foregroundStyle(Palette.muted)
                             TextEditor(text: $draft.checklist)
-                                .font(.body)
+                                .font(.app(13))
                                 .frame(height: 76)
+                                .accessibilityLabel("Checklist, un paso por línea")
                                 .padding(6)
                                 .background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.stroke))
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("Carpeta de resultados").font(.callout.weight(.medium))
+                                    Text("Carpeta de resultados").font(.app(12, weight: .medium))
                                     Text(draft.folder ?? "Opcional. Solo se comparan metadatos; también podrás adjuntar un archivo al terminar.")
-                                        .font(.caption)
+                                        .font(.app(10))
                                         .foregroundStyle(Palette.muted)
                                         .lineLimit(2)
                                 }
@@ -321,7 +327,7 @@ struct TaskEditor: View {
                                         .buttonStyle(.focus(.ghost, compact: true))
                                 }
                             }
-                            if let folderWarning { Text(folderWarning).font(.caption).foregroundStyle(Palette.coral) }
+                            if let folderWarning { Text(folderWarning).font(.app(10)).foregroundStyle(Palette.warning) }
                         }
                     }
                 }.padding(.trailing, 6)
@@ -359,7 +365,6 @@ struct TaskEditor: View {
             }
         }
         .background(Palette.background)
-        .preferredColorScheme(.dark)
         .tint(Palette.mint)
     }
 
@@ -429,21 +434,21 @@ struct CompletionView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 14) {
                 Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 32, weight: .regular))
+                    .font(.app(32, weight: .regular))
                     .foregroundStyle(Palette.mint)
                     .frame(width: 52, height: 52)
                     .background(Palette.mint.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("¿Qué has conseguido?").font(.system(size: 24, weight: .semibold, design: .rounded))
+                    Text("¿Qué has conseguido?").font(.app(24, weight: .semibold, design: .rounded))
                     Text("La sesión ha terminado y las restricciones están desactivadas. Tú confirmas el resultado.")
-                        .font(.callout)
+                        .font(.app(12))
                         .foregroundStyle(Palette.muted)
                 }
             }
             if let error = model.error {
                 HStack {
                     Image(systemName: "exclamationmark.triangle.fill")
-                    Text(error).font(.caption)
+                    Text(error).font(.app(10))
                     Spacer()
                     Button("Reintentar guardado") { _ = model.retrySave() }
                         .buttonStyle(.focus(.warning, compact: true))
@@ -452,10 +457,10 @@ struct CompletionView: View {
             if let s = model.session {
                 Card(padding: 14) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(s.task.title).font(.title3.weight(.semibold))
+                        Text(s.task.title).font(.app(15, weight: .semibold))
                         HStack(spacing: 10) {
                             Chip("\(Int(s.accumulated / 60)) min de sesión", icon: "clock", color: Palette.mint)
-                            Chip("\(s.interruptionCount) interrupciones", icon: "exclamationmark.bubble", color: s.interruptionCount == 0 ? Palette.mint : Palette.coral)
+                            Chip("\(s.interruptionCount) interrupciones", icon: "exclamationmark.bubble", color: s.interruptionCount == 0 ? Palette.mint : Palette.warning)
                             Chip("\(s.checked.count) pasos", icon: "checklist")
                             Chip("\(model.selectedDeliverables.count)/\(allEvidenceFiles.count) entregables", icon: "doc.badge.checkmark", color: Palette.mint)
                         }
@@ -477,7 +482,7 @@ struct CompletionView: View {
                 }
             }
             if let message = model.evidenceMessage {
-                Text(message).font(.caption).foregroundStyle(Palette.coral)
+                Text(message).font(.app(10)).foregroundStyle(Palette.warning)
             }
 
             // Evidence selection & manual attachment (Item 16)
@@ -490,7 +495,7 @@ struct CompletionView: View {
                 }
                 if allEvidenceFiles.isEmpty {
                     Text("No se han detectado archivos nuevos en la carpeta. Puedes adjuntar el resultado manualmente o confirmar con una nota.")
-                        .font(.caption)
+                        .font(.app(10))
                         .foregroundStyle(Palette.muted)
                         .padding(.vertical, 6)
                 } else {
@@ -501,25 +506,25 @@ struct CompletionView: View {
                                 let isManual = model.manualAttachments.contains(path)
                                 let isWriting = model.writingFiles.contains(path)
                                 HStack(spacing: 10) {
-                                    Button {
-                                        model.toggleDeliverable(path)
-                                    } label: {
-                                        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                                            .font(.system(size: 15))
-                                            .foregroundStyle(isSelected ? Palette.mint : Palette.muted)
-                                    }.buttonStyle(.plain)
+                                    // A real checkbox: VoiceOver says which file it is and whether it is ticked.
+                                    Toggle(isOn: Binding(get: { isSelected }, set: { _ in model.toggleDeliverable(path) })) {
+                                        Text("Entregable")
+                                    }
+                                    .toggleStyle(.checkbox)
+                                    .labelsHidden()
+                                    .accessibilityLabel("Entregable: \(URL(fileURLWithPath: path).lastPathComponent)")
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack(spacing: 6) {
-                                            Text(URL(fileURLWithPath: path).lastPathComponent).font(.caption.weight(.medium)).lineLimit(1)
+                                            Text(URL(fileURLWithPath: path).lastPathComponent).font(.app(10, weight: .medium)).lineLimit(1)
                                             Chip(isManual ? "Adjunto manual" : "Señal automática", color: isManual ? Palette.mint : Palette.muted)
                                             if isSelected {
                                                 Chip("Resultado elegido", icon: "checkmark", color: Palette.mint)
                                             }
                                             if isWriting {
-                                                Chip("Recién escrito (<2 s)", icon: "clock", color: Palette.coral)
+                                                Chip("Recién escrito (<2 s)", icon: "clock", color: Palette.warning)
                                             }
                                         }
-                                        Text(path).font(.caption2).foregroundStyle(Palette.muted).lineLimit(1)
+                                        Text(path).font(.app(10)).foregroundStyle(Palette.muted).lineLimit(1)
                                     }
                                     Spacer()
                                     Button("Mostrar") {
@@ -536,7 +541,7 @@ struct CompletionView: View {
                         }
                     }.frame(maxHeight: 145)
                 }
-                Text("Señal automática ≠ trabajo demostrado: marca cuál corresponde al entregable real.").font(.caption2).foregroundStyle(Palette.muted)
+                Text("Señal automática ≠ trabajo demostrado: marca cuál corresponde al entregable real.").font(.app(10)).foregroundStyle(Palette.muted)
             }
 
             TextField("Resultado o próximo paso (opcional)", text: $note, axis: .vertical)
@@ -554,15 +559,15 @@ struct CompletionView: View {
                                 : "SIGUIENTE TAREA SUGERIDA: \(nextTask.title)",
                             systemImage: "arrow.right.circle"
                         )
-                            .font(.caption.weight(.semibold))
+                            .font(.app(10, weight: .semibold))
                             .foregroundStyle(Palette.mint)
                         Spacer()
                         if nextTask.isScheduled {
                             Text(nextTask.scheduledAt.formatted(date: .omitted, time: .shortened) + (nextTask.isFixedAppointment ? " · Cita fija" : ""))
-                                .font(.caption2)
+                                .font(.app(10))
                                 .foregroundStyle(Palette.muted)
                         } else {
-                            Text("Bandeja de pendientes").font(.caption2).foregroundStyle(Palette.muted)
+                            Text("Bandeja de pendientes").font(.app(10)).foregroundStyle(Palette.muted)
                         }
                     }
                     Picker("Al confirmar", selection: $transition) {
@@ -601,7 +606,6 @@ struct CompletionView: View {
         .padding(26)
         .frame(width: 620)
         .background(Palette.background)
-        .preferredColorScheme(.dark)
         .tint(Palette.mint)
         .interactiveDismissDisabled()
         .confirmationDialog(
@@ -629,6 +633,10 @@ struct CompletionView: View {
 }
 
 enum SettingsSectionTab: String, CaseIterable, Identifiable {
+    /// The panes of the settings window, in toolbar order.
+    static var panes: [SettingsSectionTab] { allCases.filter { $0 != .all } }
+
+    case general = "General"
     case connections = "Conexiones y avisos"
     case schedule = "Agenda y perfiles"
     case privacy = "Privacidad"
@@ -639,6 +647,7 @@ enum SettingsSectionTab: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
+        case .general: return "gearshape"
         case .connections: return "calendar.badge.clock"
         case .schedule: return "bookmark.square"
         case .privacy: return "hand.raised"
@@ -648,11 +657,37 @@ enum SettingsSectionTab: String, CaseIterable, Identifiable {
     }
 }
 
+/// Full weekday names for VoiceOver ("Lun" is otherwise read letter by letter).
+private func fullDayNameFor(_ weekday: Int) -> String {
+    ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"][max(0, min(6, weekday - 1))]
+}
+
+/// One pane of the settings window.
+struct SettingsPane: View {
+    @ObservedObject var model: AppModel
+    let section: SettingsSectionTab
+
+    var body: some View {
+        ScrollView {
+            SettingsView(model: model, bridge: model.calendar, reminders: model.reminders, fixedSection: section)
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minWidth: 820, maxWidth: .infinity, minHeight: 640, maxHeight: .infinity)
+        .background(Palette.background)
+        .tint(Palette.mint)
+        .id(model.workspace.settings.textScale)
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var bridge: CalendarBridge
     @ObservedObject var reminders: ReminderService
+    /// The settings window shows one pane per toolbar item (`settings.md › Desktop`); nil keeps the in-page picker.
+    var fixedSection: SettingsSectionTab? = nil
     @State private var selectedSection: SettingsSectionTab = .connections
+    private var section: SettingsSectionTab { fixedSection ?? selectedSection }
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var eraseDetails = false
     @State private var newCategoryName = ""
@@ -663,14 +698,16 @@ struct SettingsView: View {
     @State private var pendingImportURL: URL?
     @State private var pendingImportSummary = ""
     @State private var editingProfile: FocusProfile?
+    @State private var profilePendingDeletion: FocusProfile?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             if model.preview {
-                Text("Modo de prueba: las conexiones y permisos están desactivados.").foregroundStyle(Palette.coral)
+                Text("Modo de prueba: las conexiones y permisos están desactivados.").foregroundStyle(Palette.warning)
             }
 
             // Quick section navigation bar so the user can move between settings without scrolling
+            if fixedSection == nil {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(SettingsSectionTab.allCases) { tab in
@@ -683,8 +720,39 @@ struct SettingsView: View {
                     }
                 }
             }
+            }
 
-            if selectedSection == .connections || selectedSection == .all {
+            if section == .general || section == .all {
+                Card {
+                    VStack(alignment: .leading, spacing: 15) {
+                        SectionHeader("General", icon: "gearshape")
+                        // macOS has no Dynamic Type, so the app offers its own text size (accessibility.md › Vision).
+                        Picker("Tamaño del texto", selection: Binding(
+                            get: { model.workspace.settings.textScale },
+                            set: { value in model.updateSettings { $0.textScale = value } }
+                        )) {
+                            ForEach(TextScale.options, id: \.value) { option in
+                                Text(option.label).tag(option.value)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 420)
+                        Text("Agranda todos los textos de FocusDesk, también el panel de la barra de menús.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                        Toggle("Mostrar el contador en la barra de menús", isOn: Binding(
+                            get: { model.workspace.settings.showMenuBarItem },
+                            set: { value in model.updateSettings { $0.showMenuBarItem = value } }
+                        ))
+                        .toggleStyle(.switch)
+                        Text("Si lo ocultas, el tiempo sigue en el Dock y FocusDesk se abre con su atajo o desde el Dock.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                    }
+                }
+            }
+
+            if section == .connections || section == .all {
                 IntegrationView(model: model, bridge: bridge)
 
                 // Notifications & Configurable Global Shortcut (Items 1 & 14)
@@ -692,7 +760,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 15) {
                         SectionHeader("Recordatorios y acceso rápido", icon: "bell")
                         HStack {
-                            Text(reminders.message).font(.callout)
+                            Text(reminders.message).font(.app(12))
                             Spacer()
                             Button("Activar notificaciones") {
                                 Task { await reminders.request(); model.schedule() }
@@ -735,8 +803,8 @@ struct SettingsView: View {
                                 Text(target.label).tag(target)
                             }
                         }.pickerStyle(.segmented)
-                        Text("Atajos de teclado en la app: ⌘1–⌘4 Secciones · ⌘[ / ⌘] Cambiar día · ⌘N Nueva tarea · ⌃⌥⌘S Empezar siguiente · ⌃⌥⌘P Pausar/Reanudar · ⌃⌥⌘T He terminado.")
-                            .font(.caption)
+                        Text("Atajos en la app: ⌘1–⌘3 Hoy, Semana, Historial · ⌘, Ajustes · ⌘[ / ⌘] Anterior y siguiente · ⌘T Hoy · ⌘N Nueva tarea · ⌘Z / ⇧⌘Z Deshacer y rehacer · ⌃⌥⌘P Pausar · ⌃⌥⌘T He terminado · ⌃⌥⌘A Ampliar 10 min")
+                            .font(.app(10))
                             .foregroundStyle(Palette.muted)
                         Toggle("Abrir FocusDesk al iniciar sesión", isOn: $launchAtLogin).onChange(of: launchAtLogin) { _, value in
                             do {
@@ -750,7 +818,7 @@ struct SettingsView: View {
                 }
             }
 
-            if selectedSection == .schedule || selectedSection == .all {
+            if section == .schedule || section == .all {
                 // Reusable Profiles Management (Item 9)
                 Card {
                     VStack(alignment: .leading, spacing: 14) {
@@ -763,7 +831,7 @@ struct SettingsView: View {
                             .buttonStyle(FocusPrimaryButton(compact: true))
                         }
                         Text("Guarda las apps permitidas, dominios, modo estricto, duración habitual, checklist y carpeta para aplicarlos en un clic.")
-                            .font(.callout)
+                            .font(.app(12))
                             .foregroundStyle(Palette.muted)
                         ForEach(model.workspace.profiles) { profile in
                             HStack(spacing: 12) {
@@ -773,18 +841,21 @@ struct SettingsView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(profile.name).fontWeight(.semibold)
                                     Text("\(profile.category) · \(profile.minutes) min · \(profile.strict ? "Modo estricto" : "Modo aviso") · \(profile.apps.count) app(s)")
-                                        .font(.caption)
+                                        .font(.app(10))
                                         .foregroundStyle(Palette.muted)
                                 }
                                 Spacer()
                                 Button("Editar") { editingProfile = profile }
                                     .buttonStyle(.focus(.secondary, compact: true))
                                 if model.workspace.profiles.count > 1 {
+                                    // A profile carries apps, domains, folder and checklist: worth one question before it goes.
                                     Button {
-                                        model.deleteProfile(profile.id)
+                                        profilePendingDeletion = profile
                                     } label: {
                                         Image(systemName: "trash")
                                     }
+                                    .accessibilityLabel("Borrar perfil \(profile.name)")
+                                    .help("Borrar el perfil «\(profile.name)»")
                                     .buttonStyle(FocusIconButtonStyle(size: 26, tint: Palette.danger))
                                 }
                             }
@@ -799,7 +870,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 15) {
                         SectionHeader("Personalización de agenda y horario", icon: "calendar.day.timeline.left")
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Días laborables").font(.callout.weight(.medium))
+                            Text("Días laborables").font(.app(12, weight: .medium))
                             HStack(spacing: 8) {
                                 ForEach([(2, "Lun"), (3, "Mar"), (4, "Mié"), (5, "Jue"), (6, "Vie"), (7, "Sáb"), (1, "Dom")], id: \.0) { day, label in
                                     let active = model.workspace.settings.workdays.contains(day)
@@ -809,6 +880,7 @@ struct SettingsView: View {
                                         }
                                     }
                                     .buttonStyle(SelectableChipStyle(selected: active))
+                                            .accessibilityLabel(fullDayNameFor(day))
                                 }
                             }
                         }
@@ -823,17 +895,19 @@ struct SettingsView: View {
                             ), in: 8...23)
                         }
                         Divider().overlay(Palette.stroke)
-                        Text("Descansos habituales").font(.callout.weight(.medium))
+                        Text("Descansos habituales").font(.app(12, weight: .medium))
                         ForEach(model.workspace.settings.breaks) { brk in
                             HStack {
                                 Chip("\(String(format: "%02d:%02d", brk.startHour, brk.startMinute)) · \(brk.durationMinutes) min", icon: "cup.and.saucer")
-                                Text(brk.title).font(.callout)
+                                Text(brk.title).font(.app(12))
                                 Spacer()
                                 Button {
                                     model.updateSettings { $0.breaks.removeAll { b in b.id == brk.id } }
                                 } label: {
                                     Image(systemName: "trash")
                                 }
+                                .accessibilityLabel("Borrar descanso \(brk.title)")
+                                .help("Borrar el descanso «\(brk.title)»")
                                 .buttonStyle(FocusIconButtonStyle(size: 24, tint: Palette.danger))
                             }
                         }
@@ -850,25 +924,27 @@ struct SettingsView: View {
                             }.buttonStyle(.focus(.secondary, compact: true))
                         }
                         Divider().overlay(Palette.stroke)
-                        Text("Categorías y colores").font(.callout.weight(.medium))
+                        Text("Categorías y colores").font(.app(12, weight: .medium))
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 8) {
                             ForEach(model.workspace.settings.categories) { cat in
                                 HStack(spacing: 8) {
                                     Circle().fill(Color(red: cat.red, green: cat.green, blue: cat.blue)).frame(width: 12, height: 12)
-                                    Text(cat.name).font(.caption.weight(.medium))
+                                    Text(cat.name).font(.app(10, weight: .medium))
                                     Spacer()
                                     if !["Personal", "Contenido", "Estudio", "Tienda"].contains(cat.name) {
                                         Button {
                                             model.updateSettings { $0.categories.removeAll { $0.name == cat.name } }
                                         } label: { Image(systemName: "xmark") }
-                                        .buttonStyle(FocusIconButtonStyle(size: 20))
+                                        .buttonStyle(FocusIconButtonStyle(size: 22))
+                                        .accessibilityLabel("Borrar categoría \(cat.name)")
+                                        .help("Borrar la categoría «\(cat.name)»")
                                     }
                                 }.padding(8).background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
                             }
                         }
                         HStack {
                             TextField("Nueva categoría", text: $newCategoryName).textFieldStyle(.roundedBorder).frame(width: 180)
-                            ColorPicker("", selection: $newCategoryColor, supportsOpacity: false).labelsHidden()
+                            ColorPicker("Color de la categoría", selection: $newCategoryColor, supportsOpacity: false).labelsHidden()
                             Button("Añadir categoría") {
                                 let name = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
                                 guard !name.isEmpty else { return }
@@ -893,7 +969,7 @@ struct SettingsView: View {
                 }
             }
 
-            if selectedSection == .privacy || selectedSection == .all {
+            if section == .privacy || section == .all {
                 // Privacy & Observation Controls (Items 15 & 17)
                 Card {
                     VStack(alignment: .leading, spacing: 15) {
@@ -904,7 +980,7 @@ struct SettingsView: View {
                             set: { value in model.updateSettings { $0.observeTitles = value } }
                         ))
                         HStack {
-                            Chip(model.accessible ? "Accesibilidad concedida" : "Accesibilidad pendiente", icon: model.accessible ? "checkmark.circle.fill" : "circle", color: model.accessible ? Palette.mint : Palette.coral)
+                            Chip(model.accessible ? "Accesibilidad concedida" : "Accesibilidad pendiente", icon: model.accessible ? "checkmark.circle.fill" : "circle", color: model.accessible ? Palette.mint : Palette.warning)
                             Spacer()
                             Button("Conceder Accesibilidad") { MacActivity.requestAccessibility() }
                                 .buttonStyle(.focus(.secondary, compact: true))
@@ -913,24 +989,26 @@ struct SettingsView: View {
                         }
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
-                                Text("Excluir aplicaciones de la lectura de títulos").font(.callout.weight(.medium))
+                                Text("Excluir aplicaciones de la lectura de títulos").font(.app(12, weight: .medium))
                                 Spacer()
                                 Button("Añadir app excluida…") { addExcludedTitleApp() }
                                     .buttonStyle(.focus(.secondary, compact: true))
                             }
                             if model.workspace.settings.excludedTitleApps.isEmpty {
                                 Text("Ninguna app excluida. Añade gestores de contraseñas o mensajería si no quieres guardar sus títulos de ventana.")
-                                    .font(.caption)
+                                    .font(.app(10))
                                     .foregroundStyle(Palette.muted)
                             } else {
                                 ForEach(model.workspace.settings.excludedTitleApps) { app in
                                     HStack {
-                                        Text(app.name).font(.caption.weight(.medium))
+                                        Text(app.name).font(.app(10, weight: .medium))
                                         Spacer()
                                         Button {
                                             model.updateSettings { $0.excludedTitleApps.removeAll { a in a.id == app.id } }
                                         } label: { Image(systemName: "xmark") }
                                         .buttonStyle(FocusIconButtonStyle(size: 22))
+                                        .accessibilityLabel("Quitar \(app.name) de las apps excluidas")
+                                        .help("Volver a leer los títulos de \(app.name)")
                                     }
                                 }
                             }
@@ -941,19 +1019,19 @@ struct SettingsView: View {
                             set: { value in model.updateSettings { $0.observeBrave = value } }
                         ))
                         HStack {
-                            Text("Estado Brave: \(model.braveStatus)").font(.caption).foregroundStyle(Palette.muted)
+                            Text("Estado Brave: \(model.braveStatus)").font(.app(10)).foregroundStyle(Palette.muted)
                             Spacer()
                             Button("Ajustes de Automatización") { MacActivity.openAutomationSettings() }
                                 .buttonStyle(.focus(.ghost, compact: true))
                         }
                         Text("Solo se guarda el dominio (sin rutas ni parámetros). Si el navegador está cerrado, no tiene pestaña o falta permiso, se indica como desconocido.")
-                            .font(.caption)
+                            .font(.app(10))
                             .foregroundStyle(Palette.muted)
                     }
                 }
             }
 
-            if selectedSection == .data || selectedSection == .all {
+            if section == .data || section == .all {
                 // Data Retention, Backups & Recovery (Items 6, 17, 18)
                 Card {
                     VStack(alignment: .leading, spacing: 15) {
@@ -975,18 +1053,18 @@ struct SettingsView: View {
                             Spacer()
                         }
                         Text("Pasado ese plazo se limpia el detalle de actividad puntual y se conservan los resúmenes, notas y archivos confirmados.")
-                            .font(.caption)
+                            .font(.app(10))
                             .foregroundStyle(Palette.muted)
                         if model.hasUnsavedChanges {
                             HStack {
-                                Label("Hay cambios pendientes de guardar en disco.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(Palette.coral)
+                                Label("Hay cambios pendientes de guardar en disco.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(Palette.warning)
                                 Spacer()
                                 Button("Reintentar guardado ahora") { _ = model.retrySave() }.buttonStyle(FocusPrimaryButton(compact: true))
                             }
                         }
                         if model.corruptFileDetected {
                             HStack {
-                                Label("El archivo principal está dañado y protegido contra escritura accidental.", systemImage: "shield.lefthalf.filled").foregroundStyle(Palette.coral)
+                                Label("El archivo principal está dañado y protegido contra escritura accidental.", systemImage: "shield.lefthalf.filled").foregroundStyle(Palette.warning)
                                 Spacer()
                                 Button("Recuperar última copia automática") { model.recoverFromAutoBackup() }.buttonStyle(FocusPrimaryButton(compact: true))
                                 Button("Iniciar agenda limpia (conservando dañado)") { model.resetCorruptWorkspacePreservingFile() }
@@ -1011,6 +1089,19 @@ struct SettingsView: View {
             }
         }
         .disabled(model.preview)
+        .confirmationDialog(
+            "¿Borrar el perfil «\(profilePendingDeletion?.name ?? "")»?",
+            isPresented: Binding(get: { profilePendingDeletion != nil }, set: { if !$0 { profilePendingDeletion = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Borrar perfil", role: .destructive) {
+                if let profile = profilePendingDeletion { model.deleteProfile(profile.id) }
+                profilePendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) { profilePendingDeletion = nil }
+        } message: {
+            Text("Las tareas que ya lo usan conservan su configuración.")
+        }
         .sheet(item: $editingProfile) { profile in
             ProfileEditorSheet(model: model, draft: profile)
         }
@@ -1078,10 +1169,12 @@ struct ProfileEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Editar perfil reutilizable").font(.title2.weight(.semibold))
+                Text("Editar perfil reutilizable").font(.app(17, weight: .semibold))
                 Spacer()
                 Button { dismiss() } label: { Image(systemName: "xmark") }
                     .buttonStyle(FocusIconButtonStyle(size: 28))
+                    .help("Cerrar sin guardar (Esc)")
+                    .accessibilityLabel("Cerrar")
             }
             TextField("Nombre del perfil", text: $draft.name).textFieldStyle(.roundedBorder)
             HStack {
@@ -1093,7 +1186,7 @@ struct ProfileEditorSheet: View {
             Toggle("Modo estricto (volver a una app permitida)", isOn: $draft.strict)
             Toggle("Empezar sola a su hora", isOn: $draft.autoStart)
             HStack {
-                Text("Aplicaciones (\(draft.apps.count))").font(.callout.weight(.medium))
+                Text("Aplicaciones (\(draft.apps.count))").font(.app(12, weight: .medium))
                 Spacer()
                 Button("Añadir apps…") {
                     let panel = NSOpenPanel()
@@ -1111,17 +1204,18 @@ struct ProfileEditorSheet: View {
             }
             ForEach(draft.apps) { app in
                 HStack {
-                    Text(app.name).font(.caption)
+                    Text(app.name).font(.app(10))
                     Spacer()
                     Button { draft.apps.removeAll { $0.id == app.id } } label: { Image(systemName: "xmark") }
-                        .buttonStyle(FocusIconButtonStyle(size: 20))
+                        .buttonStyle(FocusIconButtonStyle(size: 22))
+                        .accessibilityLabel("Quitar \(app.name)")
                 }
             }
             TextField("Dominios (ej. chatgpt.com, claude.ai)", text: $draft.domains).textFieldStyle(.roundedBorder)
-            Text("Checklist (un paso por línea)").font(.caption).foregroundStyle(Palette.muted)
+            Text("Checklist (un paso por línea)").font(.app(10)).foregroundStyle(Palette.muted)
             TextEditor(text: $draft.checklist).frame(height: 70).overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.stroke))
             HStack {
-                Text(draft.folder ?? "Sin carpeta predeterminada").font(.caption).foregroundStyle(Palette.muted).lineLimit(1)
+                Text(draft.folder ?? "Sin carpeta predeterminada").font(.app(10)).foregroundStyle(Palette.muted).lineLimit(1)
                 Spacer()
                 Button("Carpeta…") {
                     let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
@@ -1148,6 +1242,5 @@ struct ProfileEditorSheet: View {
         .padding(24)
         .frame(width: 540)
         .background(Palette.background)
-        .preferredColorScheme(.dark)
     }
 }

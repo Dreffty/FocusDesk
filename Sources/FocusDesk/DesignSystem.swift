@@ -4,29 +4,102 @@ import SwiftUI
 
 // MARK: - Colors
 
+/// Colour tokens with a role each, resolved for the current appearance: dark, light, and the Increase Contrast
+/// variant of both. Text tokens reach at least 4.5:1 and control borders 3:1 on every surface (see
+/// docs/REVISION-DISENO.md for the figures). One colour, one meaning: the accent is for primary actions and the
+/// running session, `warning` for things that need attention, `danger` for destructive actions; category colours
+/// live apart and never stand in for a state.
 enum Palette {
-    static let background = Color(red: 0.050, green: 0.062, blue: 0.080)
-    static let sidebar = Color(red: 0.038, green: 0.047, blue: 0.062)
-    static let surface = Color(red: 0.085, green: 0.104, blue: 0.128)
-    static let elevated = Color(red: 0.112, green: 0.134, blue: 0.162)
-    static let stroke = Color.white.opacity(0.07)
-    static let text = Color(red: 0.93, green: 0.95, blue: 0.96)
-    static let muted = Color(red: 0.56, green: 0.61, blue: 0.64)
-    static let mint = Color(red: 0.64, green: 0.89, blue: 0.73)
-    static let mintBright = Color(red: 0.73, green: 0.95, blue: 0.81)
-    static let coral = Color(red: 1, green: 0.65, blue: 0.48)
-    static let danger = Color(red: 1.0, green: 0.45, blue: 0.45)
+    static let background = dynamic(dark: rgb(0.050, 0.062, 0.080), light: rgb(0.957, 0.961, 0.969), darkHC: rgb(0, 0, 0), lightHC: rgb(1, 1, 1))
+    static let sidebar = dynamic(dark: rgb(0.038, 0.047, 0.062), light: rgb(0.922, 0.929, 0.941), darkHC: rgb(0, 0, 0), lightHC: rgb(0.95, 0.95, 0.96))
+    static let surface = dynamic(dark: rgb(0.085, 0.104, 0.128), light: rgb(1, 1, 1), darkHC: rgb(0.07, 0.08, 0.10), lightHC: rgb(1, 1, 1))
+    static let elevated = dynamic(dark: rgb(0.112, 0.134, 0.162), light: rgb(0.945, 0.949, 0.957), darkHC: rgb(0.11, 0.12, 0.14), lightHC: rgb(0.93, 0.94, 0.95))
+    /// Decorative separators and card outlines.
+    static let stroke = dynamic(dark: NSColor(white: 1, alpha: 0.07), light: NSColor(white: 0, alpha: 0.09), darkHC: NSColor(white: 1, alpha: 0.30), lightHC: NSColor(white: 0, alpha: 0.35))
+    /// Outline of something you type into or press: 3:1 against its surface.
+    static let fieldStroke = dynamic(dark: NSColor(white: 1, alpha: 0.36), light: NSColor(white: 0, alpha: 0.42), darkHC: NSColor(white: 1, alpha: 0.60), lightHC: NSColor(white: 0, alpha: 0.65))
+    /// Quiet fills for secondary controls and hover states.
+    static let fill = dynamic(dark: NSColor(white: 1, alpha: 0.055), light: NSColor(white: 0, alpha: 0.045), darkHC: NSColor(white: 1, alpha: 0.12), lightHC: NSColor(white: 0, alpha: 0.10))
+    static let fillHover = dynamic(dark: NSColor(white: 1, alpha: 0.10), light: NSColor(white: 0, alpha: 0.08), darkHC: NSColor(white: 1, alpha: 0.20), lightHC: NSColor(white: 0, alpha: 0.16))
+    /// Hours outside the working day in the hourly grid.
+    static let offHours = dynamic(dark: NSColor(white: 0, alpha: 0.16), light: NSColor(white: 0, alpha: 0.035), darkHC: NSColor(white: 0, alpha: 0.30), lightHC: NSColor(white: 0, alpha: 0.08))
+    static let text = dynamic(dark: rgb(0.93, 0.95, 0.96), light: rgb(0.106, 0.122, 0.141), darkHC: rgb(1, 1, 1), lightHC: rgb(0, 0, 0))
+    static let muted = dynamic(dark: rgb(0.60, 0.65, 0.68), light: rgb(0.345, 0.376, 0.416), darkHC: rgb(0.78, 0.81, 0.84), lightHC: rgb(0.22, 0.24, 0.27))
+    /// The accent: primary actions and the running session.
+    static let mint = dynamic(dark: rgb(0.64, 0.89, 0.73), light: rgb(0.075, 0.45, 0.27), darkHC: rgb(0.70, 0.95, 0.79), lightHC: rgb(0.03, 0.33, 0.19))
+    static let mintBright = dynamic(dark: rgb(0.73, 0.95, 0.81), light: rgb(0.06, 0.38, 0.23), darkHC: rgb(0.80, 1.0, 0.86), lightHC: rgb(0.02, 0.26, 0.15))
+    /// Text and icons drawn on top of the accent.
+    static let onAccent = dynamic(dark: rgb(0.050, 0.062, 0.080), light: rgb(1, 1, 1), darkHC: rgb(0, 0, 0), lightHC: rgb(1, 1, 1))
+    /// Needs attention: overdue, overlapping, paused by the system, overtime.
+    static let warning = dynamic(dark: rgb(0.98, 0.78, 0.30), light: rgb(0.55, 0.32, 0.0), darkHC: rgb(1.0, 0.84, 0.40), lightHC: rgb(0.42, 0.24, 0.0))
+    static let danger = dynamic(dark: rgb(1.0, 0.50, 0.50), light: rgb(0.75, 0.15, 0.15), darkHC: rgb(1.0, 0.60, 0.60), lightHC: rgb(0.60, 0.08, 0.08))
 
     static func category(_ name: String, in categories: [CategoryItem] = CategoryItem.defaults) -> Color {
         if let found = categories.first(where: { $0.name == name }) {
             return Color(red: found.red, green: found.green, blue: found.blue)
         }
-        switch name {
-        case "Contenido": return coral
-        case "Estudio": return .init(red: 0.65, green: 0.69, blue: 0.98)
-        case "Tienda": return mint
-        default: return .init(red: 0.7, green: 0.78, blue: 0.87)
-        }
+        let fallback = CategoryItem.defaults.first { $0.name == name } ?? CategoryItem.defaults[0]
+        return Color(red: fallback.red, green: fallback.green, blue: fallback.blue)
+    }
+
+    /// `color` adjusted until it reads at 4.5:1 on the current surface: category colours are chosen freely
+    /// (a blue or violet "Universidad" became dark text on a dark background) and must still be legible as text.
+    static func readable(_ color: Color) -> Color {
+        let base = NSColor(color)
+        return Color(nsColor: NSColor(name: nil) { appearance in
+            var resolved = base
+            appearance.performAsCurrentDrawingAppearance { resolved = base.usingColorSpace(.sRGB) ?? base }
+            let dark = isDark(appearance)
+            let surface: (CGFloat, CGFloat, CGFloat) = dark ? (0.085, 0.104, 0.128) : (1, 1, 1)
+            let target: (CGFloat, CGFloat, CGFloat) = dark ? (1, 1, 1) : (0, 0, 0)
+            var value = (resolved.redComponent, resolved.greenComponent, resolved.blueComponent)
+            var steps = 0
+            while contrast(value, surface) < 4.8 && steps < 12 {
+                value = (value.0 + (target.0 - value.0) * 0.15, value.1 + (target.1 - value.1) * 0.15, value.2 + (target.2 - value.2) * 0.15)
+                steps += 1
+            }
+            return NSColor(srgbRed: value.0, green: value.1, blue: value.2, alpha: 1)
+        })
+    }
+
+    static func isDark(_ appearance: NSAppearance) -> Bool {
+        let match = appearance.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua])
+        return match == .darkAqua || match == .accessibilityHighContrastDarkAqua
+    }
+
+    private static func dynamic(dark: NSColor, light: NSColor, darkHC: NSColor? = nil, lightHC: NSColor? = nil) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            switch appearance.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua]) {
+            case .accessibilityHighContrastDarkAqua?: return darkHC ?? dark
+            case .accessibilityHighContrastAqua?: return lightHC ?? light
+            case .darkAqua?: return dark
+            default: return light
+            }
+        })
+    }
+
+    private static func rgb(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> NSColor {
+        NSColor(srgbRed: red, green: green, blue: blue, alpha: 1)
+    }
+
+    private static func contrast(_ a: (CGFloat, CGFloat, CGFloat), _ b: (CGFloat, CGFloat, CGFloat)) -> CGFloat {
+        func channel(_ c: CGFloat) -> CGFloat { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        func luminance(_ c: (CGFloat, CGFloat, CGFloat)) -> CGFloat { 0.2126 * channel(c.0) + 0.7152 * channel(c.1) + 0.0722 * channel(c.2) }
+        let (high, low) = (max(luminance(a), luminance(b)), min(luminance(a), luminance(b)))
+        return (high + 0.05) / (low + 0.05)
+    }
+}
+
+/// One place for every font size, so the text can grow with the "Tamaño del texto" setting (macOS has no Dynamic
+/// Type: `typography.md › Desktop`) and never drops below the 10-point macOS minimum (`accessibility.md › Vision`).
+enum TextScale {
+    static var factor: CGFloat = 1
+    static let options: [(label: String, value: Double)] = [("Normal", 1.0), ("Grande", 1.15), ("Muy grande", 1.3)]
+}
+
+extension Font {
+    static func app(_ size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {
+        .system(size: max(10, (size * TextScale.factor).rounded()), weight: weight, design: design)
     }
 }
 
@@ -54,7 +127,7 @@ enum AppPage: String, CaseIterable, Identifiable {
         case .today: return "⌘1"
         case .week: return "⌘2"
         case .history: return "⌘3"
-        case .settings: return "⌘4"
+        case .settings: return "⌘,"
         }
     }
 
@@ -84,7 +157,7 @@ private struct FocusButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(.system(size: compact ? 12 : 13, weight: .semibold))
+            .font(.app(compact ? 12 : 13, weight: .semibold))
             .lineLimit(1)
             .padding(.horizontal, compact ? 10 : 14)
             .padding(.vertical, compact ? 5 : 8)
@@ -103,10 +176,10 @@ private struct FocusButtonBody: View {
 
     private var foreground: Color {
         switch kind {
-        case .primary: return Palette.background
+        case .primary: return Palette.onAccent
         case .secondary: return Palette.text
         case .ghost: return hovering ? Palette.text : Palette.muted
-        case .warning: return Palette.coral
+        case .warning: return Palette.warning
         case .destructive: return Palette.danger
         }
     }
@@ -114,9 +187,9 @@ private struct FocusButtonBody: View {
     private var fill: Color {
         switch kind {
         case .primary: return hovering ? Palette.mintBright : Palette.mint
-        case .secondary: return Color.white.opacity(hovering ? 0.11 : 0.06)
-        case .ghost: return Color.white.opacity(hovering ? 0.06 : 0)
-        case .warning: return Palette.coral.opacity(hovering ? 0.18 : 0.10)
+        case .secondary: return hovering ? Palette.fillHover : Palette.fill
+        case .ghost: return hovering ? Palette.fill : .clear
+        case .warning: return Palette.warning.opacity(hovering ? 0.18 : 0.10)
         case .destructive: return Palette.danger.opacity(hovering ? 0.18 : 0.09)
         }
     }
@@ -124,8 +197,8 @@ private struct FocusButtonBody: View {
     private var border: Color {
         switch kind {
         case .primary, .ghost: return .clear
-        case .secondary: return Color.white.opacity(0.08)
-        case .warning: return Palette.coral.opacity(0.28)
+        case .secondary: return Palette.stroke
+        case .warning: return Palette.warning.opacity(0.28)
         case .destructive: return Palette.danger.opacity(0.28)
         }
     }
@@ -165,10 +238,10 @@ private struct FocusIconBody: View {
 
     var body: some View {
         configuration.label
-            .font(.system(size: size * 0.42, weight: .semibold))
+            .font(.app(size * 0.42, weight: .semibold))
             .frame(width: size, height: size)
             .foregroundStyle(hovering ? Palette.text : tint)
-            .background(Color.white.opacity(hovering ? 0.10 : 0.045), in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
+            .background(hovering ? Palette.fillHover : Palette.fill, in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
             .contentShape(Rectangle())
             .scaleEffect(configuration.isPressed ? 0.92 : 1)
             .opacity(enabled ? 1 : 0.35)
@@ -200,19 +273,21 @@ private struct SelectableChipBody: View {
 
     var body: some View {
         configuration.label
-            .font(.system(size: 12, weight: .semibold))
+            .font(.app(12, weight: .semibold))
             .lineLimit(1)
             .padding(.horizontal, 11)
             .padding(.vertical, 6)
-            .foregroundStyle(selected ? Palette.background : (hovering ? Palette.text : Palette.muted))
-            .background(selected ? tint : Color.white.opacity(hovering ? 0.10 : 0.05), in: Capsule())
-            .overlay(Capsule().strokeBorder(selected ? Color.clear : Color.white.opacity(0.07), lineWidth: 1))
+            .foregroundStyle(selected ? Palette.onAccent : (hovering ? Palette.text : Palette.muted))
+            .background(selected ? tint : (hovering ? Palette.fillHover : Palette.fill), in: Capsule())
+            .overlay(Capsule().strokeBorder(selected ? Color.clear : Palette.stroke, lineWidth: 1))
             .contentShape(Capsule())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .opacity(enabled ? 1 : 0.4)
             .onHover { hovering = enabled && $0 }
             .animation(.easeOut(duration: 0.12), value: hovering)
             .animation(.easeOut(duration: 0.12), value: selected)
+            // Selection was only visible as a colour change: VoiceOver now says "seleccionado".
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -241,23 +316,28 @@ struct Card<Content: View>: View {
 struct SectionHeader<Trailing: View>: View {
     let title: String
     let icon: String?
+    let tint: Color
     let trailing: Trailing
 
-    init(_ title: String, icon: String? = nil, @ViewBuilder trailing: () -> Trailing) {
+    init(_ title: String, icon: String? = nil, tint: Color = Palette.mint, @ViewBuilder trailing: () -> Trailing) {
         self.title = title
         self.icon = icon
+        self.tint = tint
         self.trailing = trailing()
     }
 
     var body: some View {
         HStack(spacing: 8) {
             if let icon {
-                Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.mint)
+                Image(systemName: icon).font(.app(11, weight: .semibold)).foregroundStyle(tint).accessibilityHidden(true)
             }
             Text(title.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(.app(11, weight: .semibold))
                 .tracking(1.3)
                 .foregroundStyle(Palette.muted)
+                // A heading for the VoiceOver rotor, read in normal case rather than spelled out.
+                .accessibilityLabel(title)
+                .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
             trailing
         }
@@ -265,8 +345,44 @@ struct SectionHeader<Trailing: View>: View {
 }
 
 extension SectionHeader where Trailing == EmptyView {
-    init(_ title: String, icon: String? = nil) {
-        self.init(title, icon: icon) { EmptyView() }
+    init(_ title: String, icon: String? = nil, tint: Color = Palette.mint) {
+        self.init(title, icon: icon, tint: tint) { EmptyView() }
+    }
+}
+
+/// The countdown changes every second: no rolling-digit motion when Reduce Motion is on (`motion.md`).
+struct CountdownTransition: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        if reduceMotion { content } else { content.contentTransition(.numericText()) }
+    }
+}
+
+/// A duration in words for VoiceOver: "24 minutos", "1 hora y 5 minutos". Rounded to the minute so the spoken
+/// value does not change every second.
+func spokenDuration(_ seconds: TimeInterval) -> String {
+    let minutes = Int((abs(seconds) / 60).rounded())
+    if minutes < 1 { return "menos de un minuto" }
+    let hours = minutes / 60, rest = minutes % 60
+    let h = hours == 1 ? "1 hora" : "\(hours) horas"
+    let m = rest == 1 ? "1 minuto" : "\(rest) minutos"
+    if hours == 0 { return m }
+    return rest == 0 ? h : "\(h) y \(m)"
+}
+
+/// Due date that has passed says so in words and with its own icon, not only by turning orange.
+struct DueChip: View {
+    let due: Date
+    let now: Date
+    var prefix = "Límite"
+
+    var body: some View {
+        let date = due.formatted(date: .abbreviated, time: .shortened)
+        if due < now {
+            Chip("Vencida · \(date)", icon: "exclamationmark.circle.fill", color: Palette.warning)
+        } else {
+            Chip("\(prefix) \(date)", icon: "flag", color: Palette.muted)
+        }
     }
 }
 
@@ -286,10 +402,11 @@ struct Chip: View {
             if let icon { Image(systemName: icon) }
             Text(text).lineLimit(1)
         }
-        .font(.system(size: 10, weight: .semibold))
+        .font(.app(11, weight: .semibold))
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .foregroundStyle(color)
+        // Category colours are picked freely; the text always reaches 4.5:1, the hue stays in the capsule.
+        .foregroundStyle(Palette.readable(color))
         .background(color.opacity(0.14), in: Capsule())
     }
 }
@@ -299,11 +416,11 @@ struct KeyHint: View {
     init(_ keys: String) { self.keys = keys }
     var body: some View {
         Text(keys)
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .font(.app(10, weight: .medium, design: .monospaced))
             .foregroundStyle(Palette.muted)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .background(Palette.fill, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 }
 
@@ -316,13 +433,13 @@ struct StatPill: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.app(13, weight: .semibold))
                 .foregroundStyle(tint)
                 .frame(width: 30, height: 30)
                 .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
-                Text(value).font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit()
-                Text(label).font(.system(size: 10, weight: .medium)).foregroundStyle(Palette.muted).lineLimit(1)
+                Text(value).font(.app(17, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text(label).font(.app(10, weight: .medium)).foregroundStyle(Palette.muted).lineLimit(1)
             }
             Spacer(minLength: 0)
         }
@@ -338,6 +455,7 @@ struct ProgressRing: View {
     let progress: Double
     let color: Color
     var lineWidth: CGFloat = 8
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -346,7 +464,7 @@ struct ProgressRing: View {
                 .trim(from: 0, to: max(0.001, min(1, progress)))
                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-                .animation(.linear(duration: 0.5), value: progress)
+                .animation(reduceMotion ? nil : .linear(duration: 0.5), value: progress)
         }
     }
 }
@@ -359,13 +477,13 @@ struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.system(size: 24, weight: .light))
+                .font(.app(24, weight: .regular))
                 .foregroundStyle(Palette.mint)
                 .frame(width: 54, height: 54)
                 .background(Palette.mint.opacity(0.08), in: Circle())
-            Text(title).font(.system(size: 15, weight: .semibold))
+            Text(title).font(.app(15, weight: .semibold))
             Text(detail)
-                .font(.callout)
+                .font(.app(12))
                 .foregroundStyle(Palette.muted)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
@@ -382,7 +500,7 @@ private struct HoverHighlight: ViewModifier {
     @State private var hovering = false
     func body(content: Content) -> some View {
         content
-            .background(Color.white.opacity(hovering ? 0.035 : 0), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .background(hovering ? Palette.fill : .clear, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.12), value: hovering)
     }
@@ -394,6 +512,6 @@ extension View {
     }
 
     func fieldLabelStyle() -> some View {
-        font(.system(size: 10, weight: .semibold)).tracking(1.2).foregroundStyle(Palette.muted)
+        font(.app(10, weight: .semibold)).tracking(1.2).foregroundStyle(Palette.muted)
     }
 }

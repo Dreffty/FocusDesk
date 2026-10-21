@@ -132,8 +132,11 @@ public struct CategoryItem: Codable, Equatable, Identifiable, Sendable {
         CategoryItem(name: "Personal", red: 0.70, green: 0.78, blue: 0.87),
         CategoryItem(name: "Contenido", red: 1.00, green: 0.65, blue: 0.48),
         CategoryItem(name: "Estudio", red: 0.65, green: 0.69, blue: 0.98),
-        CategoryItem(name: "Tienda", red: 0.64, green: 0.89, blue: 0.73)
+        CategoryItem(name: "Tienda", red: 0.40, green: 0.78, blue: 0.90)
     ]
+
+    /// The colour "Tienda" had while it matched the app's accent; migrated to the default above.
+    public static let retiredTiendaColor = (red: 0.64, green: 0.89, blue: 0.73)
 }
 
 public struct BreakPeriod: Codable, Equatable, Identifiable, Sendable {
@@ -867,6 +870,10 @@ public struct Settings: Codable, Equatable, Sendable {
     public var workStartHour: Int
     public var workEndHour: Int
     public var breaks: [BreakPeriod]
+    /// Text size multiplier (1, 1.15, 1.3): macOS has no Dynamic Type, so the app offers its own.
+    public var textScale: Double
+    /// Whether the countdown lives in the menu bar; people decide that, not the app.
+    public var showMenuBarItem: Bool
 
     public init() {
         self.calendarID = nil
@@ -884,12 +891,14 @@ public struct Settings: Codable, Equatable, Sendable {
         self.workStartHour = 9
         self.workEndHour = 19
         self.breaks = [BreakPeriod(title: "Descanso / Comida", startHour: 14, startMinute: 0, durationMinutes: 60)]
+        self.textScale = 1
+        self.showMenuBarItem = true
     }
 
     enum CodingKeys: String, CodingKey {
         case calendarID, observeTitles, observeBrave, detailDays, excludedTitleApps
         case hotKeyEnabled, hotKeyCode, hotKeyModifiers, hotKeyLabel, hotKeyTarget
-        case categories, workdays, workStartHour, workEndHour, breaks
+        case categories, workdays, workStartHour, workEndHour, breaks, textScale, showMenuBarItem
     }
 
     public init(from decoder: Decoder) throws {
@@ -909,6 +918,8 @@ public struct Settings: Codable, Equatable, Sendable {
         workStartHour = try c.decodeIfPresent(Int.self, forKey: .workStartHour) ?? 9
         workEndHour = try c.decodeIfPresent(Int.self, forKey: .workEndHour) ?? 19
         breaks = try c.decodeIfPresent([BreakPeriod].self, forKey: .breaks) ?? [BreakPeriod(title: "Descanso / Comida", startHour: 14, startMinute: 0, durationMinutes: 60)]
+        textScale = min(1.3, max(1, try c.decodeIfPresent(Double.self, forKey: .textScale) ?? 1))
+        showMenuBarItem = try c.decodeIfPresent(Bool.self, forKey: .showMenuBarItem) ?? true
     }
 }
 
@@ -1027,7 +1038,11 @@ public enum FocusRules {
         "com.apple.Spotlight",
         "com.apple.screencaptureui",
         "com.apple.WindowManager",
-        "com.vorssaint.utils"
+        "com.vorssaint.utils",
+        // Assistive tools must never count as a distraction: adjusting your screen reader is not leaving the task.
+        "com.apple.VoiceOverUtility",
+        "com.apple.VoiceOver",
+        "com.apple.AccessibilityInspector"
     ]
 
     public static func clock(_ seconds: TimeInterval) -> String {
