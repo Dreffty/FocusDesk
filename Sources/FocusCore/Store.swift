@@ -23,7 +23,9 @@ public struct WorkspaceStore {
         return value
     }
 
-    public func save(_ workspace: Workspace) throws {
+    /// `rollingBackup: false` for an export: the copy goes where the user chose, with no `workspace.backup.json`
+    /// written (or overwritten) next to it.
+    public func save(_ workspace: Workspace, rollingBackup: Bool = true) throws {
         let dir = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
@@ -31,6 +33,7 @@ public struct WorkspaceStore {
         let data = try encoder.encode(workspace)
         try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        guard rollingBackup else { return }
         // Keep an automatic rolling backup so corrupt primary files can be recovered without data loss.
         try? data.write(to: backupURL, options: [.atomic, .completeFileProtectionUnlessOpen])
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)

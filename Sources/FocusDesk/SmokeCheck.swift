@@ -358,6 +358,70 @@ enum SmokeCheck {
             guard model.session == nil else { throw Failure.message("An auto-start task started a second time") }
             model.deleteTask(autoTask)
 
+            // 4g'. «Sigue pendiente» with «Empezar la siguiente» starts another task, not the one just worked on
+            // (still pending and the most imminent, it used to start all over again).
+            let pendingWork = FocusTask(title: "Sigue pendiente", scheduledAt: Date().addingTimeInterval(-1800), minutes: 45)
+            let afterIt = FocusTask(title: "La de después", scheduledAt: Date().addingTimeInterval(3000), minutes: 30)
+            model.saveTask(pendingWork)
+            model.saveTask(afterIt)
+            model.start(pendingWork)
+            try await settle(until: { model.session?.task.id == pendingWork.id }, tries: 200)
+            model.finish()
+            try await idle(model)
+            model.confirm(completed: false, note: "", transition: .startNextNow)
+            try await idle(model)
+            guard let startedNext = model.session, startedNext.task.id != pendingWork.id else {
+                throw Failure.message("«Sigue pendiente» + «Empezar la siguiente» started the same task again")
+            }
+            model.cancelSession(note: "Cierre tras prueba de la siguiente")
+            model.deleteTask(pendingWork)
+            model.deleteTask(afterIt)
+
+            // 4g''. Completing an occurrence keeps the days detached from the series in it: editing one still offers
+            // «toda la serie», and changing the whole series from it reaches the new head.
+            let keyCal = Calendar.current
+            let keySeries = FocusTask(title: "Serie con clave", scheduledAt: Date().addingTimeInterval(-600), minutes: 20, repeatRule: .daily)
+            model.saveTask(keySeries)
+            let laterDay = keyCal.date(byAdding: .day, value: 3, to: keySeries.scheduledAt)!
+            var laterDraft = keySeries
+            laterDraft.seriesID = keySeries.id
+            laterDraft.scheduledAt = laterDay
+            model.saveTask(laterDraft, detachFromSeriesID: keySeries.id, occurrenceDate: laterDay)
+            guard let keyDetached = model.workspace.tasks.first(where: { $0.seriesID == keySeries.id && $0.repeatRule == .never }) else {
+                throw Failure.message("Detaching a later day of a series failed")
+            }
+            model.start(keySeries)
+            try await settle(until: { model.session?.task.id == keySeries.id }, tries: 200)
+            model.finish()
+            try await idle(model)
+            model.confirm(completed: true, note: "", transition: .keepSchedule)
+            try await idle(model)
+            guard let newHead = model.workspace.tasks.first(where: { $0.seriesID == keySeries.id && $0.repeatRule == .daily && !$0.completed }),
+                  case .detached(let headID) = model.seriesEditKind(for: keyDetached), headID == newHead.id else {
+                throw Failure.message("After completing an occurrence, a detached day no longer belonged to its series")
+            }
+            var renamed = keyDetached
+            renamed.title = "Serie con clave renombrada"
+            model.saveEdited(renamed, originalOccurrenceDate: keyDetached.scheduledAt, onlyThisOccurrence: false)
+            guard model.workspace.tasks.first(where: { $0.id == newHead.id })?.title == "Serie con clave renombrada" else {
+                throw Failure.message("«Toda la serie» from a detached day did not reach the series after a completion")
+            }
+            for leftover in model.workspace.tasks where leftover.id == keySeries.id || leftover.seriesID == keySeries.id {
+                model.deleteTask(leftover)
+            }
+
+            // 4g'''. «Programar en el día seleccionado» lands on the 5-minute grid and after the day's tasks.
+            let inboxItem = FocusTask(title: "De la bandeja", isScheduled: false, minutes: 25)
+            model.saveTask(inboxItem)
+            let planDay = keyCal.date(byAdding: .day, value: 2, to: keyCal.startOfDay(for: Date()))!
+            model.scheduleInFirstFreeSlot(inboxItem, on: planDay)
+            guard let planned = model.workspace.tasks.first(where: { $0.id == inboxItem.id }), planned.isScheduled,
+                  keyCal.isDate(planned.scheduledAt, inSameDayAs: planDay),
+                  Int(planned.scheduledAt.timeIntervalSinceReferenceDate) % 300 == 0 else {
+                throw Failure.message("Scheduling an inbox task did not land on the day's 5-minute grid")
+            }
+            model.deleteTask(planned)
+
             // 4h. Agenda: one-step undo that never reverts a later edit, quick actions for slipped tasks, worked time,
             // and new tasks proposed in the first free slot.
             let calB = Calendar.current

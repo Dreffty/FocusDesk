@@ -29,7 +29,8 @@ extension AppModel {
 
     /// Starts a task from the agenda. Projected occurrences are detached from their series first.
     func startFromAgenda(_ task: FocusTask, isProjected: Bool) {
-        if isProjected, let seriesID = task.seriesID, let index = workspace.tasks.firstIndex(where: { $0.id == seriesID }) {
+        if isProjected, let seriesID = task.seriesID, let head = seriesHead(seriesID),
+           let index = workspace.tasks.firstIndex(where: { $0.id == head.id }) {
             let (updatedSeries, single) = workspace.tasks[index].detachOccurrence(at: task.scheduledAt, workdays: workspace.settings.workdays)
             saveTask(updatedSeries)
             saveTask(single)
@@ -932,7 +933,7 @@ private struct InboxRow: View {
             Menu {
                 Button { model.editingTask = task } label: { Label("Editar…", systemImage: "pencil") }
                 Button {
-                    model.shift(task, to: model.startOfWorkingDay(on: model.selectedDate))
+                    model.scheduleInFirstFreeSlot(task, on: model.selectedDate)
                 } label: { Label("Programar en el día seleccionado", systemImage: "calendar") }
                 Divider()
                 Button(role: .destructive) { onDelete(task) } label: { Label("Eliminar…", systemImage: "trash") }
@@ -1422,7 +1423,9 @@ struct HourlyDayTimelineView: View {
     private static let dragThreshold: CGFloat = 12
 
     private var startHour: Int {
-        let earliest = (realTasks + projectedTasks).map { Calendar.current.component(.hour, from: $0.scheduledAt) }.min() ?? model.workspace.settings.workStartHour
+        // The live session counts too: one started at 6:00 for a task planned later was drawn at the 7:00 row.
+        let starts = (realTasks + projectedTasks).map(\.scheduledAt) + [liveInterval?.start].compactMap { $0 }
+        let earliest = starts.map { Calendar.current.component(.hour, from: $0) }.min() ?? model.workspace.settings.workStartHour
         return max(0, min(earliest, model.workspace.settings.workStartHour - 1, 7))
     }
 

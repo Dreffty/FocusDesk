@@ -130,20 +130,7 @@ final class AppModel: ObservableObject {
                 // Only intervals persisted before termination can count after recovery.
                 workspace.session?.runningSince = nil
                 workspace.session?.runningUptime = nil
-                // The design promises to offer it back. A notice vanished after 7 s — often before the window was
-                // even looked at when FocusDesk opens at login — leaving only "Pausa" in the menu bar.
-                if let recovered = workspace.session, recovered.endedAt == nil {
-                    let remaining = FocusRules.clock(max(0, recovered.remaining(at: Date())))
-                    resumePrompt = "«\(recovered.task.title)» quedó a medias al cerrarse FocusDesk. Te quedan \(remaining). ¿Reanudamos?"
-                    pausedBySystem = true
-                }
-                if let recovered = workspace.session, recovered.endedAt != nil {
-                    changedFiles = recovered.finalChangedFiles ?? []
-                    selectedDeliverables = Set(recovered.selectedFiles)
-                    manualAttachments = recovered.manualFiles
-                    evidenceMessage = recovered.finalEvidenceMessage ?? (recovered.finalChangedFiles == nil ? "La revisión de archivos no llegó a guardarse. Confirma el resultado manualmente." : nil)
-                    showCompletion = true
-                }
+                offerLoadedSession(reason: "quedó a medias al cerrarse FocusDesk")
             }
         } catch {
             writable = false
@@ -246,6 +233,47 @@ final class AppModel: ObservableObject {
             }
         }
         schedule()
+    }
+
+    /// A session read from disk (at launch, or in a restored or recovered copy) never runs on its own. The design
+    /// promises to offer it back: a notice vanished after 7 s — often before the window was even looked at when
+    /// FocusDesk opens at login — leaving only "Pausa" in the menu bar. One waiting for its result gets the
+    /// confirmation back.
+    private func offerLoadedSession(reason: String) {
+        guard let recovered = workspace.session else { return }
+        if recovered.endedAt == nil {
+            let remaining = FocusRules.clock(max(0, recovered.remaining(at: Date())))
+            resumePrompt = "«\(recovered.task.title)» \(reason). Te quedan \(remaining). ¿Reanudamos?"
+            pausedBySystem = true
+        } else {
+            changedFiles = recovered.finalChangedFiles ?? []
+            selectedDeliverables = Set(recovered.selectedFiles)
+            manualAttachments = recovered.manualFiles
+            evidenceMessage = recovered.finalEvidenceMessage ?? (recovered.finalChangedFiles == nil ? "La revisión de archivos no llegó a guardarse. Confirma el resultado manualmente." : nil)
+            showCompletion = true
+        }
+    }
+
+    /// After the whole workspace is replaced by a restored or recovered copy: its text size, its session and its
+    /// Calendar queue apply, and nothing from the replaced agenda (undo steps, selection, a queued start) lingers.
+    private func adoptReplacedWorkspace(reason: String) {
+        TextScale.factor = CGFloat(workspace.settings.textScale)
+        calendar.pendingCount = workspace.pendingCalendarOps.count
+        hasInitialBaseline = workspace.session?.baselineValid ?? false
+        undoManager.removeAllActions()
+        selectedTaskID = nil
+        queuedStartTaskID = nil
+        handoffRequest = nil
+        resumePrompt = nil
+        promptApps = []
+        pausedBySystem = false
+        showCompletion = false
+        changedFiles = []
+        writingFiles = []
+        selectedDeliverables = []
+        manualAttachments = []
+        evidenceMessage = nil
+        offerLoadedSession(reason: reason)
     }
 
     var session: WorkSession? { workspace.session }
@@ -381,7 +409,8 @@ final class AppModel: ObservableObject {
         task.domains = FocusRules.normalizeDomains(task.domains)
 
         if let seriesID = detachFromSeriesID, let occDate = occurrenceDate,
-           let sIdx = workspace.tasks.firstIndex(where: { $0.id == seriesID }) {
+           let sIdx = workspace.tasks.firstIndex(where: { $0.id == seriesID })
+               ?? seriesHead(seriesID).flatMap({ head in workspace.tasks.firstIndex(where: { $0.id == head.id }) }) {
             let (updatedSeries, _) = workspace.tasks[sIdx].detachOccurrence(at: occDate, workdays: workspace.settings.workdays)
             workspace.tasks[sIdx] = updatedSeries
             enqueueProjectionForTask(updatedSeries)
@@ -389,7 +418,7 @@ final class AppModel: ObservableObject {
             task.repeatRule = .never
             task.repeatDays = []
             task.skippedDates = []
-            task.seriesID = seriesID
+            task.seriesID = updatedSeries.seriesID ?? updatedSeries.id
             task.calendarEventID = nil
             task.calendarSnapshot = nil
             workspace.tasks.append(task)
@@ -633,14 +662,7 @@ final class AppModel: ObservableObject {
 
     /// Overdue quick actions: back on today's agenda in the first free slot, or tomorrow at the same time.
     func moveToFirstFreeSlotToday(_ task: FocusTask) {
-        let slot = FocusRules.firstFreeSlot(
-            on: Date(),
-            tasks: workspace.tasks.filter { $0.id != task.id },
-            breaks: workspace.settings.breaks,
-            workStartHour: workspace.settings.workStartHour,
-            now: Date()
-        )
-        shift(task, to: slot)
+        scheduleInFirstFreeSlot(task, on: Date())
     }
 
     func moveToTomorrowSameTime(_ task: FocusTask) {
@@ -677,11 +699,16 @@ final class AppModel: ObservableObject {
     func seriesEditKind(for draft: FocusTask) -> SeriesEditKind {
         let stored = workspace.tasks.first { $0.id == draft.id }
         if let stored, stored.repeatRule != .never { return .head(stored.id) }
-        guard let seriesID = draft.seriesID,
-              workspace.tasks.contains(where: { $0.id == seriesID && $0.repeatRule != .never && !$0.completed }) else {
+        guard let seriesID = draft.seriesID, let head = seriesHead(seriesID) else {
             return .notInSeries
         }
-        return stored == nil ? .projected(seriesID: seriesID) : .detached(seriesID: seriesID)
+        return stored == nil ? .projected(seriesID: head.id) : .detached(seriesID: head.id)
+    }
+
+    /// The live head of the series `key` belongs to. Completing an occurrence creates a new head task with a new id,
+    /// so occurrences find their series by its key (`seriesID ?? id`), not by the id of the head they came from.
+    func seriesHead(_ key: UUID) -> FocusTask? {
+        workspace.tasks.first { $0.repeatRule != .never && !$0.completed && ($0.id == key || $0.seriesID == key) }
     }
 
     /// Saves an edit made in the task editor, applying the "toda la serie / solo esta ocurrencia" choice correctly.
@@ -765,16 +792,16 @@ final class AppModel: ObservableObject {
         return single
     }
 
-    /// First usable slot on `date`: the start of the working day, or the next free moment when that hour already passed today.
-    func startOfWorkingDay(on date: Date, calendar: Calendar = .current) -> Date {
-        let reference = Date()
-        let atWorkStart = calendar.date(bySettingHour: workspace.settings.workStartHour, minute: 0, second: 0, of: date) ?? date
-        guard calendar.isDate(date, inSameDayAs: reference), atWorkStart <= reference else { return atWorkStart }
-        // Never hand back a time already in the past: round up to the next 5 minutes from now.
-        let slot = reference.addingTimeInterval(300)
-        let minute = calendar.component(.minute, from: slot)
-        let rounded = calendar.date(bySetting: .second, value: 0, of: slot) ?? slot
-        return calendar.date(byAdding: .minute, value: (5 - minute % 5) % 5, to: rounded) ?? slot
+    /// Schedules an inbox task on `date` in its first free slot: after that day's tasks and breaks, never in the past.
+    func scheduleInFirstFreeSlot(_ task: FocusTask, on date: Date) {
+        let slot = FocusRules.firstFreeSlot(
+            on: date,
+            tasks: workspace.tasks.filter { $0.id != task.id },
+            breaks: workspace.settings.breaks,
+            workStartHour: workspace.settings.workStartHour,
+            now: Date()
+        )
+        shift(task, to: slot)
     }
 
     func snoozeTask(_ task: FocusTask, minutes: Int = 10) {
@@ -830,7 +857,8 @@ final class AppModel: ObservableObject {
         var projected: [FocusTask] = []
         for task in workspace.tasks where !task.completed && task.isScheduled && task.repeatRule != .never {
             let occurrences = task.upcomingOccurrences(in: interval, calendar: calendar, workdays: workspace.settings.workdays)
-            for occ in occurrences where !real.contains(where: { $0.seriesID == task.id && calendar.isDate($0.scheduledAt, inSameDayAs: occ.scheduledAt) }) {
+            let seriesKey = task.seriesID ?? task.id
+            for occ in occurrences where !real.contains(where: { $0.id != task.id && $0.seriesID == seriesKey && calendar.isDate($0.scheduledAt, inSameDayAs: occ.scheduledAt) }) {
                 if !calendar.isDate(task.scheduledAt, inSameDayAs: occ.scheduledAt) {
                     projected.append(occ)
                 }
@@ -1084,7 +1112,10 @@ final class AppModel: ObservableObject {
                 "Sesión en pausa · \(s.task.title)",
                 body: "Se pausó \(reason). Te quedan \(remaining). Reanuda cuando estés listo.",
                 category: ReminderService.pausedCategory,
-                userInfo: ["taskID": s.task.id.uuidString]
+                userInfo: ["taskID": s.task.id.uuidString],
+                // One per session: waking and then unlocking replace it instead of stacking two, and resuming or
+                // finishing retires it (`clearSessionNotifications`).
+                identifier: "paused-" + s.id.uuidString
             )
         }
     }
@@ -1232,7 +1263,9 @@ final class AppModel: ObservableObject {
         // A task queued by an accepted hand-off takes priority over the suggested next one: it is what the user asked for.
         let queued = queuedStartTask
         queuedStartTaskID = nil
-        let candidateNext = queued ?? next
+        // Never the task just worked on: after «Sigue pendiente» it is still pending and usually still the most
+        // imminent, so «Empezar la siguiente» used to start it all over again.
+        let candidateNext = queued ?? FocusRules.nextSuggestedTask(tasks: workspace.tasks, sessionTaskID: s.task.id, now: confirmInstant)
         switch transition {
         case .keepSchedule:
             if let queued {
@@ -1635,7 +1668,9 @@ final class AppModel: ObservableObject {
             observe()
         }
         // Replenish reminder queue when earlier reminders are consumed in a busy day (>60 reminders)
-        if ticks.isMultiple(of: 10), !preview,
+        // Only with permission: without it nothing gets scheduled, so the check always failed and rescheduled
+        // everything every 10 s for nothing.
+        if ticks.isMultiple(of: 10), !preview, [.authorized, .provisional].contains(reminders.status),
            ReminderPlan.needsReplenishment(scheduledIDs: reminders.scheduledIDs, tasks: workspace.tasks, sessionTaskID: session?.task.id, now: now) {
             schedule()
         }
@@ -1675,8 +1710,9 @@ final class AppModel: ObservableObject {
         let reference = Date()
         // Keyed by task and time, so a task snoozed to a new time starts on its own again at that time.
         func key(_ task: FocusTask) -> String { "\(task.id.uuidString)@\(Int(task.scheduledAt.timeIntervalSinceReferenceDate))" }
+        // Not the task already running: started by hand a few minutes early, it got «no ha empezado sola» at its time.
         guard let due = workspace.tasks.first(where: {
-            $0.autoStart && !$0.completed && $0.isScheduled && !autoStartHandled.contains(key($0)) &&
+            $0.autoStart && !$0.completed && $0.isScheduled && $0.id != session?.task.id && !autoStartHandled.contains(key($0)) &&
             $0.scheduledAt <= reference && reference.timeIntervalSince($0.scheduledAt) < 90
         }) else { return }
         autoStartHandled.insert(key(due))
@@ -1865,7 +1901,7 @@ final class AppModel: ObservableObject {
         panel.nameFieldStringValue = "FocusDesk-backup.json"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try WorkspaceStore(url: url).save(workspace)
+            try WorkspaceStore(url: url).save(workspace, rollingBackup: false)
             notice = "Copia exportada correctamente en \(url.lastPathComponent)."
         } catch {
             self.error = error.localizedDescription
@@ -1880,6 +1916,7 @@ final class AppModel: ObservableObject {
             hasUnsavedChanges = false
             corruptFileDetected = false
             error = nil
+            adoptReplacedWorkspace(reason: "estaba en marcha en la copia recuperada")
             notice = "Datos recuperados desde la última copia automática. El archivo anterior se ha conservado en la carpeta backups."
             schedule()
             syncCalendar()
@@ -1897,6 +1934,7 @@ final class AppModel: ObservableObject {
             hasUnsavedChanges = false
             corruptFileDetected = false
             error = nil
+            adoptReplacedWorkspace(reason: "")
             notice = "Agenda reiniciada. El archivo dañado original se ha conservado en \(savedCorrupt?.lastPathComponent ?? "backups")."
         } catch {
             self.error = "No se pudo reiniciar el archivo: \(error.localizedDescription)"
@@ -1911,7 +1949,7 @@ final class AppModel: ObservableObject {
         hasUnsavedChanges = false
         corruptFileDetected = false
         error = nil
-        calendar.pendingCount = workspace.pendingCalendarOps.count
+        adoptReplacedWorkspace(reason: "estaba en marcha en la copia restaurada")
         schedule()
         syncCalendar()
         let prevName = prevURL?.lastPathComponent ?? "backups"

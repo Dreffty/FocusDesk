@@ -431,4 +431,35 @@ final class RegressionTests: XCTestCase {
         XCTAssertEqual(planned.filter { $0.taskID == other.id }.map(\.kind).sorted { $0.rawValue < $1.rawValue },
                        [.before, .start])
     }
+
+    /// Completing an occurrence creates a new head with a new id. Its series key must not change, or the days
+    /// already detached from the series stop belonging to it.
+    func testSeriesKeepsItsKeyAcrossCompletedOccurrences() throws {
+        let calendar = Calendar.current
+        let start = try XCTUnwrap(calendar.date(bySettingHour: 9, minute: 0, second: 0, of: Date()))
+        let first = FocusTask(title: "Estudiar", scheduledAt: start, minutes: 30, repeatRule: .daily)
+        let (series, detached) = first.detachOccurrence(at: try XCTUnwrap(calendar.date(byAdding: .day, value: 3, to: start)))
+        let second = try XCTUnwrap(series.nextOccurrence(after: start.addingTimeInterval(60)))
+        let third = try XCTUnwrap(second.nextOccurrence(after: second.scheduledAt.addingTimeInterval(60)))
+        XCTAssertEqual(detached.seriesID, first.id)
+        XCTAssertNotEqual(second.id, first.id)
+        XCTAssertEqual(second.seriesID, first.id)
+        XCTAssertEqual(third.seriesID, first.id)
+        // A detached copy taken from a later head points at the same key.
+        XCTAssertEqual(third.detachOccurrence(at: third.scheduledAt).detachedTask.seriesID, first.id)
+    }
+
+    /// An export goes where the user chose it, without leaving a `workspace.backup.json` next to it.
+    func testExportDoesNotWriteARollingBackupBesideIt() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("focusdesk-export-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let store = WorkspaceStore(url: folder.appendingPathComponent("FocusDesk-backup.json"))
+        try store.save(Workspace(), rollingBackup: false)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.url.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.backupURL.path))
+        // The app's own file still keeps its rolling copy.
+        try store.save(Workspace())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.backupURL.path))
+    }
 }

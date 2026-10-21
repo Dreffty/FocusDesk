@@ -348,6 +348,9 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         guard let nextDate = candidate else { return nil }
         var next = self
         next.id = UUID()
+        // Completing an occurrence makes this the new head with a new id; the series key stays the same, so the
+        // occurrences already detached from it still belong to the series.
+        next.seriesID = seriesID ?? id
         next.scheduledAt = nextDate
         if let due = dueDate {
             let diff = due.timeIntervalSince(scheduledAt)
