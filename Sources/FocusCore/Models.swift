@@ -33,6 +33,7 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
     public var domains: String
     public var folder: String?
     public var checklist: String
+    public var autoStart: Bool
 
     public init(
         id: UUID = UUID(),
@@ -44,7 +45,8 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         apps: [AllowedApp] = [],
         domains: String = "",
         folder: String? = nil,
-        checklist: String = ""
+        checklist: String = "",
+        autoStart: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -56,6 +58,26 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         self.domains = FocusRules.normalizeDomains(domains)
         self.folder = folder
         self.checklist = checklist
+        self.autoStart = autoStart
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, category, minutes, leadMinutes, strict, apps, domains, folder, checklist, autoStart
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decode(String.self, forKey: .name)
+        category = try c.decodeIfPresent(String.self, forKey: .category) ?? "Personal"
+        minutes = try c.decodeIfPresent(Int.self, forKey: .minutes) ?? 60
+        leadMinutes = try c.decodeIfPresent(Int.self, forKey: .leadMinutes) ?? 10
+        strict = try c.decodeIfPresent(Bool.self, forKey: .strict) ?? false
+        apps = try c.decodeIfPresent([AllowedApp].self, forKey: .apps) ?? []
+        domains = try c.decodeIfPresent(String.self, forKey: .domains) ?? ""
+        folder = try c.decodeIfPresent(String.self, forKey: .folder)
+        checklist = try c.decodeIfPresent(String.self, forKey: .checklist) ?? ""
+        autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
     }
 
     public static let defaults: [FocusProfile] = [
@@ -153,6 +175,8 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
     public var completed: Bool
     public var calendarEventID: String?
     public var calendarSnapshot: CalendarSnapshot?
+    /// Starts the session by itself at `scheduledAt` (only on an unlocked Mac with no other session running).
+    public var autoStart: Bool
 
     public init(
         id: UUID = UUID(),
@@ -176,7 +200,8 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         isFixedAppointment: Bool = false,
         completed: Bool = false,
         calendarEventID: String? = nil,
-        calendarSnapshot: CalendarSnapshot? = nil
+        calendarSnapshot: CalendarSnapshot? = nil,
+        autoStart: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -200,12 +225,13 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         self.completed = completed
         self.calendarEventID = calendarEventID
         self.calendarSnapshot = calendarSnapshot
+        self.autoStart = autoStart
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, category, scheduledAt, isScheduled, dueDate, minutes, leadMinutes, strict
         case apps, domains, folder, checklist, repeatRule, repeatDays, skippedDates, seriesID
-        case profileID, isFixedAppointment, completed, calendarEventID, calendarSnapshot
+        case profileID, isFixedAppointment, completed, calendarEventID, calendarSnapshot, autoStart
     }
 
     public init(from decoder: Decoder) throws {
@@ -232,6 +258,7 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         completed = try c.decodeIfPresent(Bool.self, forKey: .completed) ?? false
         calendarEventID = try c.decodeIfPresent(String.self, forKey: .calendarEventID)
         calendarSnapshot = try c.decodeIfPresent(CalendarSnapshot.self, forKey: .calendarSnapshot)
+        autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
     }
 
     public var end: Date { scheduledAt.addingTimeInterval(Double(minutes) * 60) }
@@ -268,6 +295,7 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         domains = profile.domains
         if let folder = profile.folder { self.folder = folder }
         checklist = profile.checklist
+        autoStart = profile.autoStart
         profileID = profile.id
     }
 
@@ -579,6 +607,16 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         endedAt = now
     }
 
+    /// Undoes `finish`: the session runs again from where it stopped. Worked time is kept; the stop is not counted.
+    public mutating func reopen(at now: Date, uptime: TimeInterval? = nil) {
+        guard endedAt != nil else { return }
+        endedAt = nil
+        finalChangedFiles = nil
+        finalEvidenceMessage = nil
+        selectedFiles = []
+        resume(at: now, uptime: uptime)
+    }
+
     public mutating func add(minutes: Int) {
         budget += Double(max(0, minutes)) * 60
     }
@@ -686,7 +724,7 @@ public struct StrictRedirectTracker: Equatable, Sendable {
     }
 }
 
-public struct AppUsageSummary: Equatable, Identifiable, Sendable {
+public struct AppUsageSummary: Codable, Equatable, Identifiable, Sendable {
     public var id: String { appID }
     public var appID: String
     public var name: String
@@ -702,6 +740,10 @@ public struct SessionRecord: Codable, Equatable, Identifiable, Sendable {
     public var changedFiles: [String]
     public var confirmedFiles: [String]
     public var manualFiles: [String]
+    /// Per-app totals kept after the detailed activity is pruned (30 days by default), so the history keeps
+    /// "CapCut · 34 min" and its observed time instead of silently dropping to zero.
+    public var savedSummaries: [AppUsageSummary]?
+    public var savedObservedSeconds: TimeInterval?
 
     public init(
         session: WorkSession,
@@ -720,10 +762,14 @@ public struct SessionRecord: Codable, Equatable, Identifiable, Sendable {
         self.changedFiles = changedFiles
         self.confirmedFiles = confirmedFiles
         self.manualFiles = manualFiles
+        self.savedSummaries = nil
+        self.savedObservedSeconds = nil
+        preserveSummary()
     }
 
     enum CodingKeys: String, CodingKey {
         case id, session, completed, cancelled, note, changedFiles, confirmedFiles, manualFiles
+        case savedSummaries, savedObservedSeconds
     }
 
     public init(from decoder: Decoder) throws {
@@ -737,13 +783,33 @@ public struct SessionRecord: Codable, Equatable, Identifiable, Sendable {
         changedFiles = try c.decodeIfPresent([String].self, forKey: .changedFiles) ?? []
         confirmedFiles = try c.decodeIfPresent([String].self, forKey: .confirmedFiles) ?? []
         manualFiles = try c.decodeIfPresent([String].self, forKey: .manualFiles) ?? []
+        savedSummaries = try c.decodeIfPresent([AppUsageSummary].self, forKey: .savedSummaries)
+        savedObservedSeconds = try c.decodeIfPresent(TimeInterval.self, forKey: .savedObservedSeconds)
+    }
+
+    /// Stores the per-app totals while the detailed activity still exists. Call before clearing activities.
+    public mutating func preserveSummary() {
+        guard !session.activities.isEmpty else { return }
+        savedSummaries = liveSummaries
+        savedObservedSeconds = session.activities.reduce(0) { $0 + $1.duration }
     }
 
     public var observedSeconds: TimeInterval {
-        session.activities.reduce(0) { $0 + $1.duration }
+        session.activities.isEmpty ? (savedObservedSeconds ?? 0) : session.activities.reduce(0) { $0 + $1.duration }
     }
 
     public var appSummaries: [AppUsageSummary] {
+        session.activities.isEmpty ? (savedSummaries ?? []) : liveSummaries
+    }
+
+    /// The checklist as it stood when the session was confirmed: each step and whether it was ticked.
+    public var checklistSteps: [(text: String, done: Bool)] {
+        session.task.checklist.split(separator: "\n").map(String.init).enumerated().map { index, text in
+            (text, session.checked.contains(String(index)))
+        }
+    }
+
+    private var liveSummaries: [AppUsageSummary] {
         var totals: [String: (name: String, seconds: TimeInterval)] = [:]
         for act in session.activities where act.duration > 0 {
             let current = totals[act.appID] ?? (act.name, 0)
@@ -771,11 +837,18 @@ public struct HotKeyPreset: Equatable, Identifiable, Sendable {
     public var modifiers: UInt32
 
     public static let presets: [HotKeyPreset] = [
+        // Only three-modifier combinations: a global shortcut is captured before the frontmost app sees it, so ⇧⌘F
+        // or ⌥⌘F silently broke "Find in files" in VS Code and Xcode. None of these clashes with ⌃⌥⌘P/T/S/M/A.
         HotKeyPreset(label: "⌃⌥⌘F", keyCode: 3, modifiers: 4096 | 2048 | 256),       // controlKey | optionKey | cmdKey + F
         HotKeyPreset(label: "⌃⌥⌘Espacio", keyCode: 49, modifiers: 4096 | 2048 | 256), // controlKey | optionKey | cmdKey + Space
-        HotKeyPreset(label: "⇧⌘F", keyCode: 3, modifiers: 512 | 256),                 // shiftKey | cmdKey + F
-        HotKeyPreset(label: "⌥⌘F", keyCode: 3, modifiers: 2048 | 256)                 // optionKey | cmdKey + F
+        HotKeyPreset(label: "⌃⌥⌘J", keyCode: 38, modifiers: 4096 | 2048 | 256),      // controlKey | optionKey | cmdKey + J
+        HotKeyPreset(label: "⌃⌥⌘K", keyCode: 40, modifiers: 4096 | 2048 | 256)       // controlKey | optionKey | cmdKey + K
     ]
+
+    /// True for combinations the app no longer offers because they override shortcuts of other apps.
+    public static func isRetired(modifiers: UInt32) -> Bool {
+        modifiers & (4096 | 2048 | 256) != (4096 | 2048 | 256)
+    }
 }
 
 public struct Settings: Codable, Equatable, Sendable {
@@ -918,6 +991,7 @@ public struct Workspace: Codable, Equatable, Sendable {
         let days = max(1, settings.detailDays)
         let cutoff = now.addingTimeInterval(-Double(days) * 86400)
         for index in history.indices where (history[index].session.endedAt ?? now) < cutoff {
+            history[index].preserveSummary()
             history[index].session.activities = []
             history[index].session.baseline = [:]
         }
@@ -1037,6 +1111,14 @@ public enum FocusRules {
         guard rowHeight > 0, step > 0, step < 60, offset.isFinite else { return 0 }
         let fraction = max(0, min(59, Int((offset / rowHeight) * 60)))
         return min(60 - step, (fraction / step) * step)
+    }
+
+    /// Durations the planner offers: 5-minute steps from 5 minutes to 12 hours. Older tasks below 5 minutes stay
+    /// valid (see `FocusTask.valid`), but every control proposes and clamps to this range.
+    public static let minutesRange = 5...720
+
+    public static func clampedMinutes(_ minutes: Int) -> Int {
+        max(minutesRange.lowerBound, min(minutesRange.upperBound, minutes))
     }
 
     public static func dayKey(for date: Date, calendar: Calendar = .current) -> String {

@@ -81,7 +81,8 @@ struct TaskEditor: View {
                                             apps: draft.apps,
                                             domains: draft.domains,
                                             folder: draft.folder,
-                                            checklist: draft.checklist
+                                            checklist: draft.checklist,
+                                            autoStart: draft.autoStart
                                         )
                                         model.saveProfile(profile)
                                         draft.profileID = profile.id
@@ -137,7 +138,8 @@ struct TaskEditor: View {
                                         HStack(spacing: 6) {
                                             Button("Ahora +10m") { draft.scheduledAt = Date().addingTimeInterval(600) }
                                                 .buttonStyle(.focus(.secondary, compact: true))
-                                            Button("+1h") { draft.scheduledAt = Date().addingTimeInterval(3600) }
+                                            // From the time already chosen: on a task for tomorrow it used to jump to today.
+                                            Button("+1h") { draft.scheduledAt = draft.scheduledAt.addingTimeInterval(3600) }
                                                 .buttonStyle(.focus(.ghost, compact: true))
                                         }
                                     }
@@ -204,6 +206,12 @@ struct TaskEditor: View {
                                         Text("Selecciona al menos un día para la repetición.").font(.caption).foregroundStyle(Palette.coral)
                                     }
                                 }
+                            }
+
+                            if draft.isScheduled {
+                                Toggle("Empezar sola a su hora", isOn: $draft.autoStart)
+                                    .toggleStyle(.switch)
+                                    .help("Si el Mac está desbloqueado y no hay otra sesión en marcha, la sesión empieza sola a la hora prevista.")
                             }
 
                             if draft.isScheduled {
@@ -407,6 +415,7 @@ struct CompletionView: View {
     @ObservedObject var model: AppModel
     @State private var note = ""
     @State private var transition: NextTransitionAction = .keepSchedule
+    @State private var confirmCancel = false
 
     private var allEvidenceFiles: [String] {
         var combined = model.changedFiles
@@ -450,6 +459,20 @@ struct CompletionView: View {
                             Chip("\(s.checked.count) pasos", icon: "checklist")
                             Chip("\(model.selectedDeliverables.count)/\(allEvidenceFiles.count) entregables", icon: "doc.badge.checkmark", color: Palette.mint)
                         }
+                    }
+                }
+            }
+            // The steps can be ticked here too: work done in CapCut or Brave usually ends with "0 pasos" otherwise.
+            if let s = model.session, !s.task.checklist.isEmpty {
+                let steps = s.task.checklist.split(separator: "\n").map(String.init)
+                VStack(alignment: .leading, spacing: 6) {
+                    SectionHeader("Checklist · \(s.checked.count) de \(steps.count)", icon: "checklist")
+                    ForEach(Array(steps.enumerated()), id: \.offset) { index, text in
+                        Toggle(text, isOn: Binding(
+                            get: { model.session?.checked.contains(String(index)) == true },
+                            set: { model.setCheck(String(index), value: $0) }
+                        ))
+                        .toggleStyle(.checkbox)
                     }
                 }
             }
@@ -554,13 +577,20 @@ struct CompletionView: View {
             }
 
             HStack(spacing: 10) {
-                Button("Cancelar sesión") {
-                    model.cancelSession(note: note.isEmpty ? "Sesión cancelada al confirmar" : note)
-                }.buttonStyle(.focusDestructive)
+                // Same question as the session controls: cancelling throws the session away.
+                Button("Cancelar sesión") { confirmCancel = true }
+                    .buttonStyle(.focusDestructive)
+                Button("Volver a la sesión") { model.reopenSession() }
+                    .buttonStyle(.focusGhost)
+                    .keyboardShortcut(.cancelAction)
+                    .help("Deshace «He terminado» y sigue con el tiempo que te quedaba (Esc)")
                 Spacer()
                 Button("Sigue pendiente") {
                     model.confirm(completed: false, note: note, transition: transition)
-                }.buttonStyle(.focusSecondary)
+                }
+                .buttonStyle(.focusSecondary)
+                .keyboardShortcut(.return, modifiers: .option)
+                .help("Guardar la sesión sin dar la tarea por terminada (⌥↩)")
                 Button("Sí, he terminado") {
                     model.confirm(completed: true, note: note, transition: transition)
                 }
@@ -574,6 +604,16 @@ struct CompletionView: View {
         .preferredColorScheme(.dark)
         .tint(Palette.mint)
         .interactiveDismissDisabled()
+        .confirmationDialog(
+            "¿Cancelar esta sesión? La tarea seguirá pendiente y la sesión quedará registrada como cancelada.",
+            isPresented: $confirmCancel,
+            titleVisibility: .visible
+        ) {
+            Button("Cancelar sesión", role: .destructive) {
+                model.cancelSession(note: note.isEmpty ? "Sesión cancelada al confirmar" : note)
+            }
+            Button("Volver", role: .cancel) {}
+        }
     }
 
     private func attachFileManually() {
@@ -1051,6 +1091,7 @@ struct ProfileEditorSheet: View {
                 Stepper("Duración: \(draft.minutes) min", value: $draft.minutes, in: 5...720, step: 5)
             }
             Toggle("Modo estricto (volver a una app permitida)", isOn: $draft.strict)
+            Toggle("Empezar sola a su hora", isOn: $draft.autoStart)
             HStack {
                 Text("Aplicaciones (\(draft.apps.count))").font(.callout.weight(.medium))
                 Spacer()
@@ -1091,13 +1132,16 @@ struct ProfileEditorSheet: View {
                 }
             }
             HStack {
-                Button("Cancelar") { dismiss() }.buttonStyle(.focusSecondary)
+                Button("Cancelar") { dismiss() }
+                    .buttonStyle(.focusSecondary)
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Guardar perfil") {
                     model.saveProfile(draft)
                     dismiss()
                 }
                 .buttonStyle(FocusPrimaryButton())
+                .keyboardShortcut(.defaultAction)
                 .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }

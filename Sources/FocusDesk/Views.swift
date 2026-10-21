@@ -13,9 +13,13 @@ extension AppModel {
 
     func newTaskDraft(for date: Date? = nil) -> FocusTask {
         let day = date ?? selectedDate
-        let start = Calendar.current.isDateInToday(day)
-            ? Date().addingTimeInterval(600)
-            : (Calendar.current.date(bySettingHour: workspace.settings.workStartHour, minute: 0, second: 0, of: day) ?? day)
+        let start = FocusRules.firstFreeSlot(
+            on: day,
+            tasks: workspace.tasks,
+            breaks: workspace.settings.breaks,
+            workStartHour: workspace.settings.workStartHour,
+            now: Date()
+        )
         return FocusTask(scheduledAt: start)
     }
 
@@ -114,8 +118,12 @@ struct MainView: View {
             Text("Solo puede haber un temporizador en marcha. Terminarás la de ahora y confirmarás su resultado antes de empezar la nueva, así no se pierde el tiempo ya trabajado.")
         }
         .task(id: model.notice) {
-            // Informational notices disappear on their own; errors stay until resolved.
+            // Informational notices disappear on their own; errors and prompts stay until resolved. The 7 seconds
+            // only count while FocusDesk is in front — a notice should never vanish before anyone could read it.
             guard let current = model.notice else { return }
+            while !Task.isCancelled, !NSApp.isActive {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
             try? await Task.sleep(nanoseconds: 7_000_000_000)
             if !Task.isCancelled, model.notice == current { model.notice = nil }
         }
@@ -192,8 +200,12 @@ struct SidebarView: View {
 
     private func badge(for item: AppPage) -> Int {
         switch item {
-        case .settings: return model.calendar.pendingCount + (model.hasUnsavedChanges || model.corruptFileDetected ? 1 : 0)
-        case .today: return model.unscheduledTasks.filter { ($0.dueDate ?? .distantFuture) < model.now }.count
+        case .settings:
+            return model.calendar.pendingCount + model.calendar.issues.count + (model.hasUnsavedChanges || model.corruptFileDetected ? 1 : 0)
+        case .today:
+            let startOfToday = Calendar.current.startOfDay(for: model.now)
+            let overdue = model.scheduledTasks.filter { $0.scheduledAt < startOfToday }.count
+            return overdue + model.unscheduledTasks.filter { ($0.dueDate ?? .distantFuture) < model.now }.count
         default: return 0
         }
     }
@@ -370,8 +382,13 @@ private struct BannerStack: View {
                     Image(systemName: "pause.circle.fill")
                     Text(prompt).font(.callout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
+                    // Strict pause with no allowed app open: open one and the session resumes by itself.
+                    ForEach(model.promptApps.prefix(3)) { app in
+                        Button("Abrir \(app.name)") { model.openAllowedAppAndResume(app) }
+                            .buttonStyle(FocusPrimaryButton(compact: true))
+                    }
                     Button("Reanudar") { model.resume() }
-                        .buttonStyle(FocusPrimaryButton(compact: true))
+                        .buttonStyle(model.promptApps.isEmpty ? FocusButtonStyle(kind: .primary, compact: true) : FocusButtonStyle(kind: .secondary, compact: true))
                     Button("Terminar") { model.dismissResumePrompt(); model.finish() }
                         .buttonStyle(.focus(.secondary, compact: true))
                     Button { model.dismissResumePrompt() } label: { Image(systemName: "xmark") }
@@ -412,6 +429,11 @@ private struct BannerStack: View {
                     Image(systemName: "info.circle.fill")
                     Text(notice).font(.callout).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
+                    if model.canUndoAgenda {
+                        Button("Deshacer") { model.undoAgendaChange() }
+                            .buttonStyle(.focus(.secondary, compact: true))
+                            .help("Deshacer el último cambio en la agenda (⌥⌘Z)")
+                    }
                     Button { model.notice = nil } label: { Image(systemName: "xmark") }
                         .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.mint))
                         .help("Ocultar")
@@ -432,6 +454,7 @@ private struct TodayPage: View {
     @ObservedObject var model: AppModel
     var onDelete: (FocusTask) -> Void
     @AppStorage("FocusDesk.dayLayoutHourly") private var hourly = true
+    @State private var overdueExpanded = true
 
     var body: some View {
         let bundle = model.tasksForDay(model.selectedDate)
@@ -457,6 +480,21 @@ private struct TodayPage: View {
                 StatPill(label: "Tiempo previsto", value: "\(plannedMinutes) min", icon: "hourglass", tint: Palette.category("Estudio"))
                 StatPill(label: "Sin horario", value: "\(model.unscheduledTasks.count)", icon: "tray", tint: Palette.coral)
                 StatPill(label: "Completadas", value: "\(real.filter(\.completed).count)", icon: "checkmark.circle")
+                StatPill(label: "Trabajado", value: Self.workedText(model.workedSeconds(on: model.selectedDate)), icon: "timer", tint: Palette.mint)
+            }
+
+            // What slipped from earlier days goes first and open: at the bottom and folded it was easy to miss.
+            if !overdue.isEmpty {
+                Card(padding: 16) {
+                    DisclosureGroup(isExpanded: $overdueExpanded) {
+                        VStack(spacing: 8) {
+                            ForEach(overdue) { task in TaskRowView(model: model, task: task, onDelete: onDelete) }
+                        }
+                        .padding(.top, 10)
+                    } label: {
+                        SectionHeader("Atrasadas de otros días · \(overdue.count)", icon: "exclamationmark.circle")
+                    }
+                }
             }
 
             dayToolbar
@@ -476,20 +514,12 @@ private struct TodayPage: View {
             }
 
             UnscheduledInbox(model: model, onDelete: onDelete)
-
-            if !overdue.isEmpty {
-                Card(padding: 16) {
-                    DisclosureGroup {
-                        VStack(spacing: 8) {
-                            ForEach(overdue) { task in TaskRowView(model: model, task: task, onDelete: onDelete) }
-                        }
-                        .padding(.top, 10)
-                    } label: {
-                        SectionHeader("Atrasadas de otros días · \(overdue.count)", icon: "exclamationmark.circle")
-                    }
-                }
-            }
         }
+    }
+
+    static func workedText(_ seconds: TimeInterval) -> String {
+        let minutes = Int(seconds / 60)
+        return minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) min" : "\(minutes) min"
     }
 
     private var dayToolbar: some View {
@@ -679,6 +709,10 @@ struct TaskRowView: View {
                     if task.strict { Chip("Estricto", icon: "scope") }
                     if task.isFixedAppointment { Chip("Cita fija", icon: "lock.fill") }
                     if overlaps { Chip("Solapada", icon: "exclamationmark.triangle.fill", color: Palette.coral) }
+                    if let issue = model.calendar.issues[task.id] {
+                        Chip("Calendar: revisar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.coral)
+                            .help("Vorssaint no mostrará esta cuenta atrás: \(issue) Resuélvelo en Ajustes.")
+                    }
                     if let due = task.dueDate {
                         Chip("Límite \(due.formatted(date: .abbreviated, time: .shortened))", icon: "flag", color: due < model.now ? Palette.coral : Palette.muted)
                     }
@@ -744,6 +778,9 @@ struct TaskRowView: View {
                 Button { model.snoozeTask(task, minutes: 10) } label: { Label("Posponer 10 minutos", systemImage: "clock.arrow.circlepath") }
                 Button { model.shift(task, to: task.scheduledAt, durationMinutes: task.minutes + 15) } label: { Label("Alargar 15 minutos", systemImage: "plus.circle") }
                 Button { model.moveToInbox(task) } label: { Label("Mover a la bandeja sin hora", systemImage: "tray.and.arrow.down") }
+                Divider()
+                Button { model.moveToFirstFreeSlotToday(task) } label: { Label("Hoy en el primer hueco", systemImage: "calendar.badge.clock") }
+                Button { model.moveToTomorrowSameTime(task) } label: { Label("Mañana a la misma hora", systemImage: "sunrise") }
             }
             if !isProjected {
                 Divider()
@@ -1036,9 +1073,10 @@ private struct HistoryPage: View {
     @State private var category = "Todas"
     @State private var status = "Todas"
     @State private var range = "Todo"
+    @State private var visibleLimit = 50
 
     private var records: [SessionRecord] {
-        let now = model.now
+        let now = Date()
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return model.workspace.history.filter { record in
             if category != "Todas" && record.session.task.category != category { return false }
@@ -1046,6 +1084,7 @@ private struct HistoryPage: View {
             if status == "Incompletas" && (record.completed || record.cancelled) { return false }
             if status == "Canceladas" && !record.cancelled { return false }
             if range == "Hoy" && !Calendar.current.isDateInToday(record.session.startedAt) { return false }
+            if range == "Ayer" && !Calendar.current.isDateInYesterday(record.session.startedAt) { return false }
             if range == "7 días" && record.session.startedAt < now.addingTimeInterval(-7 * 86400) { return false }
             if range == "30 días" && record.session.startedAt < now.addingTimeInterval(-30 * 86400) { return false }
             if !query.isEmpty {
@@ -1090,10 +1129,10 @@ private struct HistoryPage: View {
                         }
                         .frame(maxWidth: 200)
                         Picker("Periodo", selection: $range) {
-                            ForEach(["Todo", "Hoy", "7 días", "30 días"], id: \.self) { Text($0).tag($0) }
+                            ForEach(["Todo", "Hoy", "Ayer", "7 días", "30 días"], id: \.self) { Text($0).tag($0) }
                         }
                         .pickerStyle(.segmented)
-                        .frame(maxWidth: 260)
+                        .frame(maxWidth: 320)
                         Spacer(minLength: 0)
                         if search != "" || category != "Todas" || status != "Todas" || range != "Todo" {
                             Button("Quitar filtros") { search = ""; category = "Todas"; status = "Todas"; range = "Todo" }
@@ -1118,10 +1157,42 @@ private struct HistoryPage: View {
                 )
             }
 
-            ForEach(list) { record in
-                HistoryRecordCard(record: record) { onDeleteRecord(record.id) }
+            // Grouped by day with that day's totals: "what did I do yesterday" is one glance, not a hunt through dates.
+            let shown = Array(list.prefix(visibleLimit))
+            let days = Dictionary(grouping: shown) { Calendar.current.startOfDay(for: $0.session.startedAt) }
+                .sorted { $0.key > $1.key }
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(days, id: \.key) { day, dayRecords in
+                    let minutes = Int(dayRecords.reduce(0) { $0 + $1.session.accumulated } / 60)
+                    let done = dayRecords.filter(\.completed).count
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(Self.dayHeader(day)).font(.system(size: 15, weight: .semibold))
+                        Text("\(dayRecords.count) sesiones · \(done) completadas · \(TodayPage.workedText(Double(minutes) * 60))")
+                            .font(.callout)
+                            .foregroundStyle(Palette.muted)
+                    }
+                    .padding(.top, 6)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
+                    ForEach(dayRecords) { record in
+                        HistoryRecordCard(record: record) { onDeleteRecord(record.id) }
+                    }
+                }
+            }
+            if list.count > visibleLimit {
+                Button("Mostrar \(min(50, list.count - visibleLimit)) sesiones más") { visibleLimit += 50 }
+                    .buttonStyle(.focusSecondary)
             }
         }
+        .onChange(of: search) { _, _ in visibleLimit = 50 }
+        .onChange(of: range) { _, _ in visibleLimit = 50 }
+    }
+
+    static func dayHeader(_ day: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(day) { return "Hoy" }
+        if calendar.isDateInYesterday(day) { return "Ayer" }
+        return day.formatted(.dateTime.weekday(.wide).day().month(.abbreviated)).capitalized(with: Locale(identifier: "es_ES"))
     }
 }
 
@@ -1143,9 +1214,20 @@ private struct HistoryRecordCard: View {
                         Text(record.session.task.title).font(.system(size: 16, weight: .semibold))
                         Chip(statusText, color: statusColor)
                     }
-                    Text("\(record.session.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(record.session.task.category)")
+                    let end = record.session.endedAt ?? record.session.startedAt.addingTimeInterval(record.session.accumulated)
+                    Text("\(record.session.startedAt.formatted(date: .omitted, time: .shortened))–\(end.formatted(date: .omitted, time: .shortened)) · \(Int(record.session.accumulated / 60)) min · \(record.session.task.category)")
                         .font(.caption)
                         .foregroundStyle(Palette.muted)
+                    let steps = record.checklistSteps
+                    if !steps.isEmpty {
+                        let ticked = steps.filter(\.done)
+                        HStack(spacing: 6) {
+                            Chip("Checklist \(ticked.count) de \(steps.count)", icon: "checklist", color: ticked.count == steps.count ? Palette.mint : Palette.muted)
+                            if !ticked.isEmpty {
+                                Text(ticked.map(\.text).joined(separator: " · ")).font(.caption).foregroundStyle(Palette.muted).lineLimit(1)
+                            }
+                        }
+                    }
                     if !record.note.isEmpty {
                         Text(record.note).font(.callout).foregroundStyle(Palette.text.opacity(0.85))
                     }
@@ -1231,6 +1313,7 @@ struct HourlyDayTimelineView: View {
 
     private let pixelsPerMinute: CGFloat = 1.0
     private let gutter: CGFloat = 58
+    private static let dragThreshold: CGFloat = 12
 
     private var startHour: Int {
         let earliest = (realTasks + projectedTasks).map { Calendar.current.component(.hour, from: $0.scheduledAt) }.min() ?? model.workspace.settings.workStartHour
@@ -1238,8 +1321,71 @@ struct HourlyDayTimelineView: View {
     }
 
     private var endHour: Int {
-        let latest = (realTasks + projectedTasks).map { Calendar.current.component(.hour, from: $0.end) + 1 }.max() ?? model.workspace.settings.workEndHour
+        // In minutes from the start of the day: a task from 23:00 to 00:30 used to read "ends at hour 0", cut the
+        // grid at 21:00 and vanish from this view.
+        let ends = (realTasks + projectedTasks).map(\.end) + [liveInterval?.end].compactMap { $0 }
+        let latest = ends.map { end -> Int in
+            let minutes = min(24 * 60, wallMinutes(of: end, onDayOf: date))
+            return Int((Double(minutes) / 60).rounded(.up))
+        }.max() ?? model.workspace.settings.workEndHour
         return min(24, max(latest, model.workspace.settings.workEndHour + 1, 21))
+    }
+
+    /// Wall-clock minutes since midnight of `day`, or past 24 h when `moment` falls on a later day.
+    private func wallMinutes(of moment: Date, onDayOf day: Date) -> Int {
+        let calendar = Calendar.current
+        let parts = calendar.dateComponents([.hour, .minute], from: moment)
+        let sameDay = calendar.isDate(moment, inSameDayAs: day)
+        let laterDay = moment > day && !sameDay
+        return (laterDay ? 24 * 60 : 0) + (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+    }
+
+    private static let liveBlockID = UUID(uuidString: "00000000-0000-0000-0000-00000000F0CD")!
+
+    /// The running session, drawn where it really is (started late, extended…) rather than in its planned slot.
+    private var liveInterval: (start: Date, end: Date)? {
+        guard let s = model.session, Calendar.current.isDate(s.startedAt, inSameDayAs: date) else { return nil }
+        let end = s.endedAt ?? CalendarProjection.deadline(for: s, now: model.now, uptime: model.uptime)
+        return (s.startedAt, max(end, s.startedAt.addingTimeInterval(60)))
+    }
+
+    private var visibleTasks: [FocusTask] {
+        let all = realTasks + projectedTasks
+        guard liveInterval != nil, let sessionTaskID = model.session?.task.id else { return all }
+        return all.filter { $0.id != sessionTaskID }
+    }
+
+    private var blockLayout: [UUID: TimelineLayout.Slot] {
+        var intervals = visibleTasks.map { TimelineLayout.Interval(id: $0.id, start: $0.scheduledAt, end: $0.end) }
+        if let live = liveInterval { intervals.append(.init(id: Self.liveBlockID, start: live.start, end: live.end)) }
+        return TimelineLayout.columns(for: intervals)
+    }
+
+    private struct BlockFrame {
+        var x: CGFloat
+        var y: CGFloat
+        var width: CGFloat
+        var height: CGFloat
+        var continuesTomorrow: Bool
+    }
+
+    /// Where a block goes: its column inside its cluster of overlapping blocks, clipped at midnight.
+    private func blockFrame(start: Date, minutes: Double, width: CGFloat, slot: TimelineLayout.Slot?) -> BlockFrame {
+        let startMinutes = Double(wallMinutes(of: start, onDayOf: date))
+        let fromTop = max(0, startMinutes - Double(startHour * 60))
+        let untilMidnight = max(0, 24 * 60 - startMinutes)
+        let shown = min(minutes, untilMidnight)
+        let lane = max(120, width - gutter - 10)
+        let slot = slot ?? TimelineLayout.Slot(column: 0, columns: 1)
+        let columnWidth = lane / CGFloat(max(1, slot.columns))
+        let gap: CGFloat = slot.columns > 1 ? 3 : 0
+        return BlockFrame(
+            x: gutter + 4 + columnWidth * CGFloat(slot.column),
+            y: CGFloat(fromTop) * pixelsPerMinute,
+            width: columnWidth - gap,
+            height: max(30, CGFloat(shown) * pixelsPerMinute),
+            continuesTomorrow: minutes > untilMidnight + 0.5
+        )
     }
 
     private var initialHour: Int {
@@ -1262,13 +1408,22 @@ struct HourlyDayTimelineView: View {
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
-                        ZStack(alignment: .topLeading) {
-                            hourGrid
-                            breaks
-                            ForEach(realTasks + projectedTasks) { task in
-                                timelineBlock(for: task, isProjected: projectedTasks.contains(where: { $0.id == task.id }))
+                        GeometryReader { geometry in
+                            let layout = blockLayout
+                            ZStack(alignment: .topLeading) {
+                                hourGrid
+                                breaks
+                                ForEach(visibleTasks) { task in
+                                    timelineBlock(
+                                        for: task,
+                                        isProjected: projectedTasks.contains(where: { $0.id == task.id }),
+                                        width: geometry.size.width,
+                                        slot: layout[task.id]
+                                    )
+                                }
+                                liveSessionBlock(width: geometry.size.width, slot: layout[Self.liveBlockID])
+                                nowLine
                             }
-                            nowLine
                         }
                         .frame(height: CGFloat(endHour - startHour) * 60 * pixelsPerMinute)
                     }
@@ -1343,17 +1498,48 @@ struct HourlyDayTimelineView: View {
         let moveMinutes = Int(((moveOffsets[task.id] ?? 0) / pixelsPerMinute / 5.0).rounded()) * 5
         let resizeMinutes = Int(((resizeDeltas[task.id] ?? 0) / pixelsPerMinute / 5.0).rounded()) * 5
         if moveMinutes != 0 { copy.scheduledAt = task.scheduledAt.addingTimeInterval(Double(moveMinutes) * 60) }
-        if resizeMinutes != 0 { copy.minutes = max(10, min(720, task.minutes + resizeMinutes)) }
+        if resizeMinutes != 0 { copy.minutes = FocusRules.clampedMinutes(task.minutes + resizeMinutes) }
         return copy
     }
 
-    private func timelineBlock(for task: FocusTask, isProjected: Bool) -> some View {
+    /// The running session's block: started late or extended, it shows where the time really goes.
+    @ViewBuilder private func liveSessionBlock(width: CGFloat, slot: TimelineLayout.Slot?) -> some View {
+        if let live = liveInterval, let s = model.session {
+            let frame = blockFrame(start: live.start, minutes: live.end.timeIntervalSince(live.start) / 60, width: width, slot: slot)
+            let state = s.endedAt != nil ? "Por confirmar" : (s.paused ? "En pausa" : "En directo")
+            let range = "\(live.start.formatted(date: .omitted, time: .shortened))–\(live.end.formatted(date: .omitted, time: .shortened))"
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(range).font(.system(size: 10, weight: .semibold, design: .monospaced)).foregroundStyle(Palette.text)
+                    Text(s.task.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Chip(state, icon: s.paused ? "pause.fill" : "dot.radiowaves.left.and.right", color: Palette.mint)
+                    Spacer(minLength: 0)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+            .background(Palette.mint.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(Palette.mint, style: StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
+            )
+            .offset(x: frame.x, y: frame.y)
+            .zIndex(2)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(state): \(s.task.title), de \(range)")
+            .help("La sesión tal y como va: empezó a las \(live.start.formatted(date: .omitted, time: .shortened)) y, a este ritmo, acaba a las \(live.end.formatted(date: .omitted, time: .shortened)).")
+        }
+    }
+
+    private func timelineBlock(for task: FocusTask, isProjected: Bool, width: CGFloat, slot: TimelineLayout.Slot?) -> some View {
         let preview = previewTask(for: task)
-        let parts = Calendar.current.dateComponents([.hour, .minute], from: preview.scheduledAt)
-        let minutesFromStart = max(0, ((parts.hour ?? startHour) - startHour) * 60 + (parts.minute ?? 0))
-        let topY = CGFloat(minutesFromStart) * pixelsPerMinute
-        let blockHeight = max(30, CGFloat(preview.minutes) * pixelsPerMinute)
+        let frame = blockFrame(start: preview.scheduledAt, minutes: Double(preview.minutes), width: width, slot: slot)
+        let topY = frame.y
+        let blockHeight = frame.height
         let color = model.color(for: task)
+        let calendarIssue = model.calendar.issues[task.id]
         let others = (realTasks + projectedTasks).map { $0.id == task.id ? preview : $0 }
         let overlaps = others.contains { FocusRules.overlaps(preview, $0) }
         let isActive = model.session?.task.id == task.id
@@ -1369,6 +1555,11 @@ struct HourlyDayTimelineView: View {
                 if isProjected { Image(systemName: "repeat").font(.system(size: 10)).foregroundStyle(Palette.mint) }
                 if isActive { Chip("En sesión", color: Palette.mint) }
                 if overlaps { Chip("Solapa", icon: "exclamationmark.triangle.fill", color: Palette.coral) }
+                if frame.continuesTomorrow { Chip("Sigue mañana", icon: "arrow.turn.down.right") }
+                if let calendarIssue {
+                    Chip("Calendar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.coral)
+                        .help("Vorssaint no mostrará esta cuenta atrás: \(calendarIssue) Resuélvelo en Ajustes.")
+                }
                 Spacer(minLength: 4)
                 if !task.completed && !isActive {
                     Button { model.startFromAgenda(task, isProjected: isProjected) } label: { Image(systemName: "play.fill") }
@@ -1397,9 +1588,10 @@ struct HourlyDayTimelineView: View {
                             DragGesture()
                                 .onChanged { value in resizeDeltas[task.id] = value.translation.height }
                                 .onEnded { value in
-                                    let delta = Int((value.translation.height / pixelsPerMinute / 5.0).rounded()) * 5
                                     resizeDeltas[task.id] = nil
-                                    if delta != 0 { model.shift(task, to: task.scheduledAt, durationMinutes: max(10, min(720, task.minutes + delta))) }
+                                    guard abs(value.translation.height) >= Self.dragThreshold else { return }
+                                    let delta = Int((value.translation.height / pixelsPerMinute / 5.0).rounded()) * 5
+                                    if delta != 0 { model.shift(task, to: task.scheduledAt, durationMinutes: FocusRules.clampedMinutes(task.minutes + delta)) }
                                 }
                         )
                     Spacer()
@@ -1408,8 +1600,7 @@ struct HourlyDayTimelineView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .frame(height: blockHeight)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(width: frame.width, height: blockHeight, alignment: .topLeading)
         .background(color.opacity(isProjected ? 0.10 : (dragging ? 0.30 : 0.20)), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 3).padding(.vertical, 5)
@@ -1421,9 +1612,7 @@ struct HourlyDayTimelineView: View {
         )
         .shadow(color: .black.opacity(dragging ? 0.35 : 0), radius: 8, y: 3)
         .opacity(task.completed ? 0.5 : 1)
-        .padding(.leading, gutter + 4)
-        .padding(.trailing, 6)
-        .offset(y: topY)
+        .offset(x: frame.x, y: topY)
         .zIndex(dragging ? 1 : 0)
         .gesture(
             DragGesture(minimumDistance: 4)
@@ -1433,8 +1622,11 @@ struct HourlyDayTimelineView: View {
                 }
                 .onEnded { value in
                     guard isEditable else { return }
-                    let delta = Int((value.translation.height / pixelsPerMinute / 5.0).rounded()) * 5
                     moveOffsets[task.id] = nil
+                    // At least half a 5-minute step of real movement: a click with a little jitter must not
+                    // silently move the task and rewrite its reminder and Calendar event.
+                    guard abs(value.translation.height) >= Self.dragThreshold else { return }
+                    let delta = Int((value.translation.height / pixelsPerMinute / 5.0).rounded()) * 5
                     if delta != 0 { model.shift(task, to: task.scheduledAt.addingTimeInterval(Double(delta) * 60)) }
                 }
         )
@@ -1488,6 +1680,21 @@ private struct HourRow: View {
                 .fill(targeted ? Palette.mint.opacity(0.10) : (isWorkHour ? Color.white.opacity(0.012) : Color.black.opacity(0.16)))
                 .padding(.leading, gutter)
         )
+        .gesture(
+            SpatialTapGesture(count: 2).onEnded { value in
+                guard !model.readOnly, model.editingTask == nil, !model.showCompletion, value.location.x > gutter,
+                      let target = Calendar.current.date(
+                        bySettingHour: hour,
+                        minute: FocusRules.dropMinute(offset: Double(value.location.y), rowHeight: Double(height)),
+                        second: 0,
+                        of: date
+                      ) else { return }
+                var draft = model.newTaskDraft(for: date)
+                draft.scheduledAt = target
+                model.editingTask = draft
+            }
+        )
+        .help("Doble clic en un hueco para crear una tarea a esa hora")
         .dropDestination(for: String.self) { values, location in
             guard !model.readOnly, !model.busy, let raw = values.first, let id = UUID(uuidString: raw),
                   let task = model.workspace.tasks.first(where: { $0.id == id && !$0.completed }),
@@ -1524,6 +1731,10 @@ struct SessionHero: View {
                              color: session.paused && !ended ? Palette.coral : Palette.mint)
                         Chip(session.task.category, color: model.color(for: session.task))
                         if session.task.strict { Chip("Estricto", icon: "scope") }
+                        if let issue = model.calendar.issues[session.task.id] {
+                            Chip("Vorssaint sin sincronizar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.coral)
+                                .help("\(issue) Resuélvelo en Ajustes.")
+                        }
                     }
                     Text(session.task.title).font(.system(size: 26, weight: .semibold, design: .rounded)).lineLimit(2)
                     Text(session.task.strict ? "Te devolvemos a tus apps de trabajo si te distraes." : "Avisos suaves. Tú decides el ritmo.")
@@ -1604,6 +1815,24 @@ struct SessionButtons: View {
     }
 }
 
+/// Jot something down without opening the planner: Return files it in the inbox, without a time.
+private struct QuickCaptureField: View {
+    @ObservedObject var model: AppModel
+    @State private var text = ""
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "tray.and.arrow.down").foregroundStyle(Palette.muted)
+            TextField("Apuntar en la bandeja…", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { if model.quickCapture(text) { text = "" } }
+                .accessibilityLabel("Apuntar una tarea en la bandeja sin hora")
+                .help("Escribe y pulsa Intro: queda en la bandeja sin hora para planificarla luego")
+        }
+        .disabled(model.readOnly)
+    }
+}
+
 // MARK: - Menu bar panel
 
 struct MenuPanel: View {
@@ -1652,6 +1881,7 @@ struct MenuPanel: View {
                     .buttonStyle(FocusPrimaryButton())
             }
 
+            QuickCaptureField(model: model)
             Rectangle().fill(Palette.stroke).frame(height: 1)
             HStack {
                 Button { model.showWindow?() } label: { Label("Planificador", systemImage: "calendar") }
@@ -1673,8 +1903,9 @@ struct MenuPanel: View {
         Text(s.task.title).font(.system(size: 16, weight: .semibold)).lineLimit(2)
         if s.endedAt != nil {
             Text("Sesión terminada · confirma el resultado").font(.caption).foregroundStyle(Palette.mint)
-            if let nextTask = model.next {
-                Text("Siguiente: \(nextTask.title) · \(nextTask.minutes) min").font(.caption).foregroundStyle(Palette.muted).lineLimit(1)
+            if let nextTask = model.upcomingAfterSession {
+                Text("\(model.queuedStartTask != nil ? "Esperando para empezar" : "Siguiente"): \(nextTask.title) · \(nextTask.minutes) min")
+                    .font(.caption).foregroundStyle(Palette.muted).lineLimit(1)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Button { model.confirm(completed: true, note: "", transition: .startNextNow) } label: { Label("Terminada · empezar siguiente", systemImage: "forward.fill") }
@@ -1709,6 +1940,16 @@ struct MenuPanel: View {
                 if s.paused { Chip("En pausa", icon: "pause.fill", color: Palette.coral) }
             }
             SessionButtons(model: model, compact: true)
+            if !s.paused {
+                let ends = Date().addingTimeInterval(max(0, remaining))
+                Text("Termina a las \(ends.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(Palette.muted)
+            }
+            if let after = model.upcomingAfterSession {
+                Text("Después: \(after.title)\(after.isScheduled ? " · " + after.scheduledAt.formatted(date: .omitted, time: .shortened) : "")")
+                    .font(.caption)
+                    .foregroundStyle(Palette.muted)
+                    .lineLimit(1)
+            }
         }
     }
 }

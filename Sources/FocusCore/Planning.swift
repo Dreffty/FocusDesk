@@ -183,3 +183,99 @@ public enum SeriesRoller {
         return Result(tasks: result, rolledSeriesIDs: rolled, createdOverdueIDs: created)
     }
 }
+
+/// Side-by-side layout for the hourly view. Blocks were drawn full width on top of each other, so of two tasks at
+/// the same time the one underneath could not be read, clicked or dragged.
+public enum TimelineLayout {
+    public struct Slot: Equatable, Sendable {
+        public var column: Int
+        public var columns: Int
+        public init(column: Int, columns: Int) { self.column = column; self.columns = columns }
+    }
+
+    /// Assigns each interval a column inside its cluster of mutually overlapping intervals. `minimumMinutes` mirrors
+    /// the minimum height a block is drawn with, so two short tasks that touch visually also get their own columns.
+    public struct Interval: Equatable, Sendable {
+        public var id: UUID
+        public var start: Date
+        public var end: Date
+        public init(id: UUID, start: Date, end: Date) { self.id = id; self.start = start; self.end = end }
+    }
+
+    public static func columns(for intervals: [Interval], minimumMinutes: Double = 30) -> [UUID: Slot] {
+        let minimum: TimeInterval = minimumMinutes * 60
+        var items: [Interval] = intervals.map { interval in
+            Interval(id: interval.id, start: interval.start, end: max(interval.end, interval.start.addingTimeInterval(minimum)))
+        }
+        items.sort { lhs, rhs in
+            if lhs.start != rhs.start { return lhs.start < rhs.start }
+            return lhs.end > rhs.end
+        }
+        var result: [UUID: Slot] = [:]
+        var cluster: [(id: UUID, column: Int)] = []
+        var columnEnds: [Date] = []
+        var clusterEnd = Date.distantPast
+
+        func closeCluster() {
+            let width = max(1, columnEnds.count)
+            for member in cluster { result[member.id] = Slot(column: member.column, columns: width) }
+            cluster = []
+            columnEnds = []
+        }
+
+        for item in items {
+            if !cluster.isEmpty && item.start >= clusterEnd { closeCluster() }
+            // Reuse the first column that is already free at this start; otherwise open a new one.
+            if let free = columnEnds.firstIndex(where: { $0 <= item.start }) {
+                columnEnds[free] = item.end
+                cluster.append((item.id, free))
+            } else {
+                columnEnds.append(item.end)
+                cluster.append((item.id, columnEnds.count - 1))
+            }
+            clusterEnd = cluster.count == 1 ? item.end : max(clusterEnd, item.end)
+        }
+        closeCluster()
+        return result
+    }
+}
+
+public extension FocusRules {
+    /// Default start for a new task on `day`: right after the last pending task of that day (stepping over breaks),
+    /// or the start of the working day; on today, never earlier than ten minutes from now. Planning four tasks for
+    /// tomorrow used to put all four at 9:00, on top of each other.
+    static func firstFreeSlot(
+        on day: Date,
+        tasks: [FocusTask],
+        breaks: [BreakPeriod],
+        workStartHour: Int,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Date {
+        let dayStart = calendar.startOfDay(for: day)
+        let workStart = calendar.date(bySettingHour: workStartHour, minute: 0, second: 0, of: dayStart) ?? dayStart
+        var slot = workStart
+        let lastEnd = tasks
+            .filter { $0.isScheduled && !$0.completed && calendar.isDate($0.scheduledAt, inSameDayAs: dayStart) }
+            .map(\.end)
+            .max()
+        if let lastEnd, lastEnd > slot { slot = lastEnd }
+        if calendar.isDate(dayStart, inSameDayAs: now) { slot = max(slot, now.addingTimeInterval(600)) }
+
+        // Step over breaks (repeat in case one break ends where another starts).
+        for _ in 0..<breaks.count + 1 {
+            var moved = false
+            for brk in breaks {
+                guard let breakStart = calendar.date(bySettingHour: brk.startHour, minute: brk.startMinute, second: 0, of: dayStart) else { continue }
+                let breakEnd = breakStart.addingTimeInterval(Double(brk.durationMinutes) * 60)
+                if slot >= breakStart && slot < breakEnd { slot = breakEnd; moved = true }
+            }
+            if !moved { break }
+        }
+
+        // Round up to the next 5 minutes. Every current time-zone offset is a multiple of 15 minutes, so 5-minute
+        // steps of absolute time are also 5-minute steps on the local clock.
+        let step: TimeInterval = 300
+        return Date(timeIntervalSinceReferenceDate: (slot.timeIntervalSinceReferenceDate / step).rounded(.up) * step)
+    }
+}

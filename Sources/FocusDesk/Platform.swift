@@ -206,7 +206,18 @@ final class ReminderService: ObservableObject {
         }
     }
 
-    func notify(_ title: String, body: String, category: String? = nil, userInfo: [AnyHashable: Any] = [:]) {
+    /// Retires reminders already shown for a task that started, moved or was deleted, so a stale «Es el momento»
+    /// does not sit in Notification Center offering to start it again.
+    func removeDelivered(forTaskID id: UUID) {
+        removeDelivered(identifiers: [id.uuidString + "before", id.uuidString + "start"])
+    }
+
+    func removeDelivered(identifiers: [String]) {
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
+
+    /// `identifier` lets a notification replace the previous one with the same id instead of piling up.
+    func notify(_ title: String, body: String, category: String? = nil, userInfo: [AnyHashable: Any] = [:], identifier: String? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -215,7 +226,7 @@ final class ReminderService: ObservableObject {
         if !userInfo.isEmpty { content.userInfo = userInfo }
         Task {
             do {
-                try await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+                try await center.add(UNNotificationRequest(identifier: identifier ?? UUID().uuidString, content: content, trigger: nil))
             } catch {
                 message = "No se pudo mostrar el aviso: \(error.localizedDescription)"
             }

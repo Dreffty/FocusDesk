@@ -86,6 +86,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 exit(0)
             }
         }
+        if model.preview, let index = CommandLine.arguments.firstIndex(of: "--snapshots"), index + 1 < CommandLine.arguments.count {
+            let folder = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+            Task {
+                let report = await SnapshotTool.run(model, to: folder)
+                print(report)
+                fflush(stdout)
+                exit(report.hasPrefix("SNAPSHOTS:") ? 0 : 1)
+            }
+        }
         if CommandLine.arguments.contains("--verify-calendar") && !model.preview {
             model.page = "Ajustes"
             Task {
@@ -212,7 +221,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         show()
     }
     // Same draft as the sidebar button: respects the day you are looking at and the start of your working day.
-    @objc private func newTask() { model.editingTask = model.newTaskDraft(); show() }
+    @objc private func newTask() {
+        // Replacing the open sheet would throw away what was being typed, without asking.
+        guard model.editingTask == nil, !model.showCompletion else {
+            NSSound.beep()
+            model.notice = model.showCompletion
+                ? "Confirma primero el resultado de la sesión."
+                : "Guarda o cancela la tarea que estás editando antes de crear otra."
+            show()
+            return
+        }
+        model.editingTask = model.newTaskDraft()
+        show()
+    }
     @objc private func menuStartNext() {
         // No silent no-op with a session running: `start` either resumes, asks for the hand-off, or explains.
         if let next = model.next {
@@ -233,6 +254,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     @objc private func menuFinishSession() {
         if model.session != nil { model.finish() }
+    }
+    @objc private func menuUndoAgenda() {
+        if model.canUndoAgenda { model.undoAgendaChange() } else { NSSound.beep() }
     }
     @objc private func menuAddTenMinutes() {
         if model.session?.endedAt == nil { model.addTime(minutes: 10) }
@@ -279,6 +303,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for (title, action, key) in [("Deshacer", "undo:", "z"), ("Cortar", "cut:", "x"), ("Copiar", "copy:", "c"), ("Pegar", "paste:", "v"), ("Seleccionar todo", "selectAll:", "a")] {
             editItem.submenu!.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
         }
+        editItem.submenu!.addItem(.separator())
+        // ⌘Z stays with text fields; the agenda has its own undo so the two never get mixed up.
+        let undoAgenda = editItem.submenu!.addItem(withTitle: "Deshacer cambio en la agenda", action: #selector(menuUndoAgenda), keyEquivalent: "z")
+        undoAgenda.keyEquivalentModifierMask = [.command, .option]; undoAgenda.target = self
         NSApp.mainMenu = bar
     }
 

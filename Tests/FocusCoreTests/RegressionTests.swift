@@ -249,6 +249,154 @@ final class RegressionTests: XCTestCase {
         XCTAssertEqual(cal.component(.day, from: dailyRolled.scheduledAt), 22)
     }
 
+    /// «He terminado» pulsado sin querer se puede deshacer: vuelve la cuenta atrás con lo ya trabajado, y el rato
+    /// que estuvo parada no cuenta.
+    func testReopeningAFinishedSessionKeepsWorkedTimeAndSkipsTheStop() {
+        let start = Date()
+        var session = WorkSession(task: FocusTask(title: "Grabar", minutes: 60), now: start, uptime: 100)
+        session.finish(at: start.addingTimeInterval(600), uptime: 700)
+        XCTAssertEqual(session.accumulated, 600, accuracy: 0.5)
+
+        session.reopen(at: start.addingTimeInterval(900), uptime: 1000) // 5 minutes looking at the confirmation sheet
+        XCTAssertNil(session.endedAt)
+        XCTAssertFalse(session.paused)
+        XCTAssertEqual(session.elapsed(at: start.addingTimeInterval(960), uptime: 1060), 660, accuracy: 0.5)
+        XCTAssertEqual(session.remaining(at: start.addingTimeInterval(960), uptime: 1060), 3600 - 660, accuracy: 0.5)
+
+        // Reopening a session that is still running does nothing.
+        let before = session
+        session.reopen(at: start.addingTimeInterval(1000), uptime: 1100)
+        XCTAssertEqual(session, before)
+    }
+
+    /// New fields must never make older files unreadable: one unknown key used to be enough to lock the whole agenda.
+    func testOlderFilesWithoutAutoStartStillDecode() throws {
+        let profileJSON = #"{"id":"11111111-1111-1111-1111-111111111101","name":"Grabar vídeo","category":"Contenido","minutes":60,"leadMinutes":10,"strict":false,"apps":[],"domains":"claude.ai","checklist":""}"#
+        let profile = try JSONDecoder().decode(FocusProfile.self, from: Data(profileJSON.utf8))
+        XCTAssertFalse(profile.autoStart)
+        XCTAssertEqual(profile.domains, "claude.ai")
+
+        let taskJSON = #"{"id":"22222222-2222-2222-2222-222222222222","title":"Estudiar","scheduledAt":782000000,"minutes":45}"#
+        let task = try JSONDecoder().decode(FocusTask.self, from: Data(taskJSON.utf8))
+        XCTAssertFalse(task.autoStart)
+
+        var withAuto = task
+        withAuto.autoStart = true
+        let roundTrip = try JSONDecoder().decode(FocusTask.self, from: JSONEncoder().encode(withAuto))
+        XCTAssertTrue(roundTrip.autoStart)
+
+        var target = FocusTask(title: "x")
+        target.apply(FocusProfile(name: "Auto", autoStart: true))
+        XCTAssertTrue(target.autoStart, "aplicar un perfil con inicio automático debe activarlo en la tarea")
+    }
+
+    /// Overlapping tasks are laid out side by side instead of hiding each other.
+    func testOverlappingBlocksGetTheirOwnColumns() {
+        let base = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        func at(_ minutes: Double) -> Date { base.addingTimeInterval(minutes * 60) }
+        let a = UUID(), b = UUID(), c = UUID(), d = UUID(), e = UUID()
+        let slots = TimelineLayout.columns(for: [
+            .init(id: a, start: at(0), end: at(60)),     // 9:00-10:00
+            .init(id: b, start: at(0), end: at(30)),     // 9:00-9:30, same start as a
+            .init(id: c, start: at(30), end: at(90)),    // 9:30-10:30, reuses b's column
+            .init(id: d, start: at(120), end: at(150)),  // 11:00, alone
+            .init(id: e, start: at(150), end: at(155)),  // 11:30 for 5 min: touches d only through d's end
+        ])
+        XCTAssertEqual(slots[a]?.columns, 2)
+        XCTAssertEqual(slots[b]?.columns, 2)
+        XCTAssertEqual(slots[c]?.columns, 2)
+        XCTAssertNotEqual(slots[a]?.column, slots[b]?.column)
+        XCTAssertEqual(slots[c]?.column, slots[b]?.column, "c empieza cuando b acaba: comparte su columna")
+        XCTAssertEqual(slots[d], TimelineLayout.Slot(column: 0, columns: 1))
+        XCTAssertEqual(slots[e], TimelineLayout.Slot(column: 0, columns: 1))
+
+        // A 10-minute task is drawn 30 minutes tall: another one 15 minutes later would be covered, so it gets a column.
+        let short = UUID(), next = UUID()
+        let tight = TimelineLayout.columns(for: [.init(id: short, start: at(0), end: at(10)), .init(id: next, start: at(15), end: at(45))])
+        XCTAssertEqual(tight[short]?.columns, 2)
+        XCTAssertEqual(tight[next]?.columns, 2)
+        XCTAssertTrue(TimelineLayout.columns(for: []).isEmpty)
+    }
+
+    /// New tasks go to the first free slot of the day instead of all landing on 9:00.
+    func testFirstFreeSlotFollowsTheDayAndStepsOverBreaks() {
+        let cal = madrid()
+        let tomorrow = cal.date(from: DateComponents(year: 2026, month: 10, day: 22, hour: 0))!
+        let now = cal.date(from: DateComponents(year: 2026, month: 10, day: 21, hour: 18, minute: 7))!
+        let lunch = BreakPeriod(title: "Comida", startHour: 14, startMinute: 0, durationMinutes: 60)
+        func slot(_ tasks: [FocusTask]) -> DateComponents {
+            cal.dateComponents([.day, .hour, .minute, .second], from:
+                FocusRules.firstFreeSlot(on: tomorrow, tasks: tasks, breaks: [lunch], workStartHour: 9, now: now, calendar: cal))
+        }
+        // Empty day: start of the working day.
+        XCTAssertEqual(slot([]).hour, 9)
+        XCTAssertEqual(slot([]).minute, 0)
+        // After the last pending task of that day.
+        let first = FocusTask(title: "A", scheduledAt: cal.date(from: DateComponents(year: 2026, month: 10, day: 22, hour: 9))!, minutes: 50)
+        XCTAssertEqual(slot([first]).hour, 9)
+        XCTAssertEqual(slot([first]).minute, 50)
+        // Completed tasks and other days do not count.
+        var done = first; done.completed = true
+        let otherDay = FocusTask(title: "B", scheduledAt: now, minutes: 600)
+        XCTAssertEqual(slot([done, otherDay]).hour, 9)
+        // Inside a break: moved to its end.
+        let morning = FocusTask(title: "C", scheduledAt: cal.date(from: DateComponents(year: 2026, month: 10, day: 22, hour: 12, minute: 30))!, minutes: 90)
+        XCTAssertEqual(slot([morning]).hour, 15)
+        XCTAssertEqual(slot([morning]).minute, 0)
+        // Odd minutes are rounded up to the next 5.
+        let odd = FocusTask(title: "D", scheduledAt: cal.date(from: DateComponents(year: 2026, month: 10, day: 22, hour: 10, minute: 3))!, minutes: 31)
+        XCTAssertEqual(slot([odd]).minute, 35)
+        XCTAssertEqual(slot([odd]).second, 0)
+        // Today: never before ten minutes from now (18:07 + 10 = 18:17, rounded to 18:20).
+        let today = cal.dateComponents([.hour, .minute], from:
+            FocusRules.firstFreeSlot(on: now, tasks: [], breaks: [lunch], workStartHour: 9, now: now, calendar: cal))
+        XCTAssertEqual(today.hour, 18)
+        XCTAssertEqual(today.minute, 20)
+    }
+
+    /// Pruning the detailed activity after 30 days used to drop the per-app summary and the observed time to zero.
+    func testHistoryKeepsAppSummariesAfterPruningAndShowsTheChecklist() throws {
+        let old = Date().addingTimeInterval(-40 * 86400)
+        var session = WorkSession(task: FocusTask(title: "Grabar", minutes: 60, checklist: "Guion\nTomas\nGuardar"), now: old, uptime: 0)
+        session.record(Activity(at: old, appID: "com.lemon.lvoverseas", name: "CapCut"), at: old, uptime: 0)
+        session.record(Activity(at: old.addingTimeInterval(1200), appID: "com.brave.Browser", name: "Brave"), at: old.addingTimeInterval(1200), uptime: 1200)
+        session.checkpoint(at: old.addingTimeInterval(1500), uptime: 1500)
+        session.checked = ["0", "2"]
+        session.finish(at: old.addingTimeInterval(1500), uptime: 1500)
+        var workspace = Workspace()
+        workspace.history = [SessionRecord(session: session, completed: true, note: "", changedFiles: [])]
+        let before = workspace.history[0].appSummaries
+
+        workspace.prune(at: Date())
+        let record = workspace.history[0]
+        XCTAssertTrue(record.session.activities.isEmpty, "el detalle se borra pasados los días configurados")
+        XCTAssertEqual(record.appSummaries, before, "pero el resumen por app se conserva")
+        XCTAssertEqual(record.appSummaries.first?.name, "CapCut")
+        XCTAssertEqual(record.observedSeconds, 1500, accuracy: 1)
+
+        // It survives saving and loading, and older files without the new fields still decode.
+        let reloaded = try JSONDecoder().decode(SessionRecord.self, from: JSONEncoder().encode(record))
+        XCTAssertEqual(reloaded.appSummaries, before)
+        var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as! [String: Any]
+        legacy.removeValue(forKey: "savedSummaries")
+        legacy.removeValue(forKey: "savedObservedSeconds")
+        let legacyRecord = try JSONDecoder().decode(SessionRecord.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertTrue(legacyRecord.appSummaries.isEmpty)
+
+        let steps = record.checklistSteps
+        XCTAssertEqual(steps.map(\.text), ["Guion", "Tomas", "Guardar"])
+        XCTAssertEqual(steps.map(\.done), [true, false, true])
+    }
+
+    /// Global shortcuts that override other apps' commands are retired; only three-modifier combinations remain.
+    func testOnlySafeGlobalShortcutsAreOffered() {
+        XCTAssertTrue(HotKeyPreset.presets.allSatisfy { !HotKeyPreset.isRetired(modifiers: $0.modifiers) })
+        XCTAssertTrue(HotKeyPreset.isRetired(modifiers: 512 | 256), "⇧⌘ anulaba atajos de otras apps")
+        XCTAssertTrue(HotKeyPreset.isRetired(modifiers: 2048 | 256), "⌥⌘ también")
+        XCTAssertFalse(HotKeyPreset.isRetired(modifiers: 4096 | 2048 | 256))
+        XCTAssertFalse(HotKeyPreset.presets.contains { $0.label == "⌃⌥⌘P" || $0.label == "⌃⌥⌘T" }, "no deben chocar con los atajos de sesión")
+    }
+
     /// Only one session can exist at a time, so a reminder must never offer to start the task already running.
     func testRunningTaskGetsNoReminderWhileOtherTasksKeepTheirs() {
         let now = Date()

@@ -319,6 +319,128 @@ enum SmokeCheck {
                 throw Failure.message("Disabled-reminders warning shows at the wrong time")
             }
 
+            // 4f. An accidental «He terminado» can be undone, and an unfinished session found at launch is offered back.
+            let reopenTask = FocusTask(title: "Volver atrás", scheduledAt: Date().addingTimeInterval(3600), minutes: 30)
+            model.saveTask(reopenTask)
+            model.start(reopenTask)
+            try await idle(model)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            model.finish()
+            try await idle(model)
+            let workedBeforeReopen = model.session?.accumulated ?? -1
+            guard model.showCompletion, model.session?.endedAt != nil else { throw Failure.message("Finish before reopen") }
+            model.reopenSession()
+            guard model.session?.endedAt == nil, model.session?.paused == false, !model.showCompletion,
+                  abs((model.session?.accumulated ?? 0) - workedBeforeReopen) < 0.5 else {
+                throw Failure.message("Reopening the session did not bring the countdown back with the worked time")
+            }
+            // Simulate an unexpected quit: a second model opening the same files finds the running session.
+            _ = model.persist()
+            let recoveryDir = model.store.url.deletingLastPathComponent().appendingPathComponent("recovery")
+            try FileManager.default.createDirectory(at: recoveryDir, withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: recoveryDir.appendingPathComponent("workspace.json"))
+            try FileManager.default.copyItem(at: model.store.url, to: recoveryDir.appendingPathComponent("workspace.json"))
+            let recovered = AppModel(directory: recoveryDir, preview: true)
+            guard let recoveryPrompt = recovered.resumePrompt, recoveryPrompt.contains("Volver atrás"),
+                  recovered.session?.paused == true else {
+                throw Failure.message("A session interrupted by a quit was not offered back with a lasting prompt")
+            }
+            model.cancelSession(note: "Cierre tras prueba de volver atrás")
+            model.deleteTask(reopenTask)
+
+            // 4g. A task marked to start on its own does so at its time (only once, and not on top of a session).
+            let autoTask = FocusTask(title: "Empieza sola", scheduledAt: Date().addingTimeInterval(-2), minutes: 20, autoStart: true)
+            model.saveTask(autoTask)
+            try await settle(until: { model.session?.task.id == autoTask.id }, tries: 200)
+            try await idle(model)
+            model.cancelSession(note: "Cierre tras prueba de inicio automático")
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+            guard model.session == nil else { throw Failure.message("An auto-start task started a second time") }
+            model.deleteTask(autoTask)
+
+            // 4h. Agenda: one-step undo that never reverts a later edit, quick actions for slipped tasks, worked time,
+            // and new tasks proposed in the first free slot.
+            let calB = Calendar.current
+            let movable = FocusTask(title: "Mover y deshacer", scheduledAt: Date().addingTimeInterval(5400), minutes: 30)
+            model.saveTask(movable)
+            model.shift(movable, to: movable.scheduledAt.addingTimeInterval(1800))
+            guard model.canUndoAgenda else { throw Failure.message("Undo not offered after moving a task") }
+            model.undoAgendaChange()
+            guard let undone = model.workspace.tasks.first(where: { $0.id == movable.id }),
+                  abs(undone.scheduledAt.timeIntervalSince(movable.scheduledAt)) < 1, !model.canUndoAgenda else {
+                throw Failure.message("Undo did not put the task back")
+            }
+            // A later, unrelated edit makes the older undo unavailable instead of reverting it.
+            model.shift(movable, to: movable.scheduledAt.addingTimeInterval(600))
+            var other = FocusTask(title: "Otra edición", scheduledAt: Date().addingTimeInterval(9000), minutes: 15)
+            model.saveTask(other)
+            other.title = "Otra edición cambiada"
+            model.saveTask(other)
+            guard !model.canUndoAgenda else { throw Failure.message("Undo stayed available after an unrelated edit") }
+            // Deleting can be undone.
+            model.deleteTask(other)
+            guard model.canUndoAgenda else { throw Failure.message("Undo not offered after deleting") }
+            model.undoAgendaChange()
+            guard model.workspace.tasks.contains(where: { $0.id == other.id && $0.title == "Otra edición cambiada" }) else {
+                throw Failure.message("Undo did not restore the deleted task")
+            }
+            // Undoing a snooze of a series removes the detached copy and restores the series exactly.
+            let undoSeries = FocusTask(title: "Serie deshacer", scheduledAt: Date().addingTimeInterval(4000), minutes: 20, repeatRule: .daily)
+            model.saveTask(undoSeries)
+            let tasksBeforeSnooze = model.workspace.tasks.count
+            model.snoozeTask(undoSeries, minutes: 10)
+            model.undoAgendaChange()
+            guard model.workspace.tasks.count == tasksBeforeSnooze,
+                  let seriesBack = model.workspace.tasks.first(where: { $0.id == undoSeries.id }),
+                  abs(seriesBack.scheduledAt.timeIntervalSince(undoSeries.scheduledAt)) < 1 else {
+                throw Failure.message("Undoing a series snooze left the detached copy or moved the series")
+            }
+            // Slipped task: back today in the first free slot, or tomorrow at the same time.
+            let slipped = FocusTask(title: "Atrasada", scheduledAt: calB.date(byAdding: .day, value: -2, to: Date())!, minutes: 25)
+            model.saveTask(slipped)
+            model.moveToFirstFreeSlotToday(slipped)
+            guard let today = model.workspace.tasks.first(where: { $0.id == slipped.id }),
+                  calB.isDateInToday(today.scheduledAt) || today.scheduledAt > Date(), today.scheduledAt > Date() else {
+                throw Failure.message("Overdue task was not placed in today's first free slot")
+            }
+            model.moveToTomorrowSameTime(today)
+            guard let tomorrow = model.workspace.tasks.first(where: { $0.id == slipped.id }), calB.isDateInTomorrow(tomorrow.scheduledAt),
+                  calB.component(.hour, from: tomorrow.scheduledAt) == calB.component(.hour, from: today.scheduledAt) else {
+                throw Failure.message("Overdue task was not moved to tomorrow at the same time")
+            }
+            // New task for a busy day: right after its last task, not on top of it.
+            let busyDay = calB.date(byAdding: .day, value: 3, to: calB.startOfDay(for: Date()))!
+            let morning = FocusTask(title: "Mañana ocupada", scheduledAt: calB.date(bySettingHour: model.workspace.settings.workStartHour, minute: 0, second: 0, of: busyDay)!, minutes: 45)
+            model.saveTask(morning)
+            guard model.newTaskDraft(for: busyDay).scheduledAt >= morning.end else {
+                throw Failure.message("New task draft was not placed after the day's last task")
+            }
+            // Worked time today includes the confirmed sessions of today.
+            guard model.workedSeconds(on: Date()) > 0 else { throw Failure.message("Worked time today is zero after sessions") }
+            for leftover in [movable.id, other.id, undoSeries.id, slipped.id, morning.id] {
+                if let task = model.workspace.tasks.first(where: { $0.id == leftover }) { model.deleteTask(task) }
+            }
+
+            // 4i. Quick capture from the panel files an inbox task; the checklist can be ticked while confirming.
+            guard model.quickCapture("Llamar al gestor"),
+                  let captured = model.workspace.tasks.first(where: { $0.title == "Llamar al gestor" }), !captured.isScheduled else {
+                throw Failure.message("Quick capture did not file an inbox task")
+            }
+            guard !model.quickCapture("   ") else { throw Failure.message("Quick capture accepted an empty title") }
+            model.deleteTask(captured)
+            let checklistTask = FocusTask(title: "Pasos al confirmar", scheduledAt: Date().addingTimeInterval(7200), minutes: 30, checklist: "Uno\nDos")
+            model.saveTask(checklistTask)
+            model.start(checklistTask)
+            try await idle(model)
+            model.finish()
+            try await idle(model)
+            model.setCheck("1", value: true)
+            guard model.session?.checked.contains("1") == true else { throw Failure.message("Checklist could not be ticked while confirming") }
+            model.confirm(completed: true, note: "")
+            guard model.workspace.history.first?.checklistSteps.map(\.done) == [false, true] else {
+                throw Failure.message("Ticked steps were not kept in the history")
+            }
+
             // 5. Session cancellation distinct from completion (Item 13)
             let nextTask = model.workspace.tasks.first(where: { !$0.completed && $0.title == restored.tasks.filter({ !$0.completed }).first!.title })
                 ?? restored.tasks.filter({ !$0.completed }).first!
@@ -377,7 +499,7 @@ enum SmokeCheck {
                 throw Failure.message("Auto-backup recovery after corruption")
             }
 
-            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery."
+            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery."
         } catch {
             return "FAIL: \(error.localizedDescription)"
         }

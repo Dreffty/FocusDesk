@@ -38,6 +38,23 @@ final class AppModel: ObservableObject {
     /// The Hoy banner about disabled reminders can be hidden for this launch.
     @Published var notificationBannerDismissed = false
     private var askedForNotifications = false
+    /// Allowed apps offered as "Abrir …" buttons next to `resumePrompt` (strict pause with no allowed app open).
+    @Published var promptApps: [AllowedApp] = []
+    private var lastDistractionNotifyAt = Date.distantPast
+    /// Host of the current visit outside the task's domains; one interruption and one notice per visit.
+    private var domainEpisodeHost: String?
+    private var screenIsLocked = false
+    /// Tasks already started on their own (or skipped because another session was running), so it happens once.
+    private var autoStartHandled: Set<String> = []
+
+    /// One step of undo for direct agenda edits (drag, snooze, inbox, delete). Only valid while nothing else changed
+    /// the agenda since, so it can never revert an unrelated edit made afterwards.
+    struct AgendaUndo {
+        let label: String
+        let before: [FocusTask]
+        var after: [FocusTask]
+    }
+    @Published private(set) var agendaUndo: AgendaUndo?
 
     let calendar = CalendarBridge()
     let reminders = ReminderService()
@@ -78,7 +95,13 @@ final class AppModel: ObservableObject {
                 // Only intervals persisted before termination can count after recovery.
                 workspace.session?.runningSince = nil
                 workspace.session?.runningUptime = nil
-                notice = "Sesión recuperada en pausa. Reanuda cuando estés preparado."
+                // The design promises to offer it back. A notice vanished after 7 s — often before the window was
+                // even looked at when FocusDesk opens at login — leaving only "Pausa" in the menu bar.
+                if let recovered = workspace.session, recovered.endedAt == nil {
+                    let remaining = FocusRules.clock(max(0, recovered.remaining(at: Date())))
+                    resumePrompt = "«\(recovered.task.title)» quedó a medias al cerrarse FocusDesk. Te quedan \(remaining). ¿Reanudamos?"
+                    pausedBySystem = true
+                }
                 if let recovered = workspace.session, recovered.endedAt != nil {
                     changedFiles = recovered.finalChangedFiles ?? []
                     selectedDeliverables = Set(recovered.selectedFiles)
@@ -93,6 +116,14 @@ final class AppModel: ObservableObject {
             self.error = "No se han podido leer tus datos. Se han conservado intactos en \(store.url.path). Puedes recuperar la última copia automática o importar un respaldo desde el aviso o Ajustes. (\(error.localizedDescription))"
         }
         hasInitialBaseline = workspace.session?.baselineValid ?? false
+        // Shortcuts like ⇧⌘F or ⌥⌘F are no longer offered: they hijacked other apps' commands system-wide.
+        if writable, workspace.settings.hotKeyEnabled, HotKeyPreset.isRetired(modifiers: workspace.settings.hotKeyModifiers) {
+            let previous = workspace.settings.hotKeyLabel
+            workspace.settings.hotKeyCode = 3
+            workspace.settings.hotKeyModifiers = 4096 | 2048 | 256
+            workspace.settings.hotKeyLabel = "⌃⌥⌘F"
+            notice = "El atajo \(previous) anulaba el mismo atajo en otras apps (por ejemplo, Buscar en VS Code). Ahora FocusDesk se abre con ⌃⌥⌘F."
+        }
         calendar.pendingCount = workspace.pendingCalendarOps.count
         if preview { notice = "DEMOSTRACIÓN · Datos separados de tu agenda. Notificaciones desactivadas." }
 
@@ -130,6 +161,9 @@ final class AppModel: ObservableObject {
             MainActor.assumeIsolated { self?.tick() }
         }
         timer = heartbeat; RunLoop.main.add(heartbeat, forMode: .common)
+        calendar.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &subscriptions)
         // Any change to tasks, settings or the session invalidates the projected-day cache. The clock (`now`)
         // is a separate publisher, so ticking does not throw the cache away.
         $workspace
@@ -352,6 +386,13 @@ final class AppModel: ObservableObject {
 
     func deleteTask(_ task: FocusTask) {
         guard writable, !busy, task.id != session?.task.id else { return }
+        let before = workspace.tasks
+        defer {
+            if error == nil, before.count != workspace.tasks.count {
+                rememberUndo("el borrado de «\(task.title)»", before: before)
+                notice = "«\(task.title)» eliminada."
+            }
+        }
         let existingOp = workspace.pendingCalendarOps.first(where: { $0.taskID == task.id })
         let knownEventID = task.calendarEventID ?? existingOp?.eventID
         let knownBaseline = task.calendarSnapshot ?? existingOp?.baselineSnapshot
@@ -369,6 +410,7 @@ final class AppModel: ObservableObject {
         }
         calendar.pendingCount = workspace.pendingCalendarOps.count
         workspace.tasks.removeAll { $0.id == task.id }
+        reminders.removeDelivered(forTaskID: task.id)
         _ = persist()
         schedule()
         syncCalendar()
@@ -376,17 +418,132 @@ final class AppModel: ObservableObject {
 
     func shift(_ task: FocusTask, to date: Date, durationMinutes: Int? = nil) {
         guard writable, !busy, task.id != session?.task.id else { return }
+        let before = workspace.tasks
         let detached = isSeriesHead(task)
         var updated = occurrenceForDirectEdit(task)
         updated.scheduledAt = date
         updated.isScheduled = true
         if let durationMinutes {
-            updated.minutes = max(5, min(720, durationMinutes))
+            updated.minutes = FocusRules.clampedMinutes(durationMinutes)
         }
         saveTask(updated)
-        if detached, error == nil {
-            notice = "Solo se ha cambiado esta ocurrencia de «\(updated.title)». La serie sigue a su hora; para cambiarla entera, edítala."
+        guard error == nil else { return }
+        let when = updated.scheduledAt.formatted(date: Calendar.current.isDateInToday(updated.scheduledAt) ? .omitted : .abbreviated, time: .shortened)
+        let what = durationMinutes != nil && Calendar.current.isDate(updated.scheduledAt, equalTo: task.scheduledAt, toGranularity: .minute)
+            ? "«\(updated.title)» ahora dura \(updated.minutes) min."
+            : "«\(updated.title)» movida a \(when)."
+        notice = detached ? what + " Solo esta ocurrencia; la serie sigue a su hora." : what
+        rememberUndo("el cambio de «\(updated.title)»", before: before)
+    }
+
+    private func rememberUndo(_ label: String, before: [FocusTask]) {
+        agendaUndo = AgendaUndo(label: label, before: before, after: workspace.tasks)
+    }
+
+    /// Calendar ids get filled in by the sync right after a change; they are not an edit by the user.
+    private static func agendaSignature(_ tasks: [FocusTask]) -> [FocusTask] {
+        tasks.map { task in
+            var copy = task
+            copy.calendarEventID = nil
+            copy.calendarSnapshot = nil
+            return copy
         }
+    }
+
+    var canUndoAgenda: Bool {
+        guard let undo = agendaUndo else { return false }
+        return Self.agendaSignature(undo.after) == Self.agendaSignature(workspace.tasks)
+    }
+
+    func undoAgendaChange() {
+        guard writable, !busy, let undo = agendaUndo else { return }
+        guard canUndoAgenda else {
+            agendaUndo = nil
+            notice = "Ya no se puede deshacer: la agenda cambió después."
+            return
+        }
+        let current = workspace.tasks
+        let reference = Date()
+        // Keep what Calendar knows now: a restored task must not point at an event that was already removed.
+        var restored = undo.before.map { task -> FocusTask in
+            var copy = task
+            let live = current.first { $0.id == task.id }
+            copy.calendarEventID = live?.calendarEventID
+            copy.calendarSnapshot = live?.calendarSnapshot
+            return copy
+        }
+        // Never touch the running session's task.
+        if let sessionTask = session?.task, let liveSession = current.first(where: { $0.id == sessionTask.id }) {
+            restored.removeAll { $0.id == sessionTask.id }
+            restored.append(liveSession)
+        }
+        // Tasks the change created (e.g. a detached occurrence) go away, with their Calendar events.
+        for gone in current where !restored.contains(where: { $0.id == gone.id }) {
+            if workspace.settings.calendarID != nil, let eventID = gone.calendarEventID {
+                workspace.enqueueCalendarOp(PendingCalendarOp(taskID: gone.id, action: .remove, eventID: eventID, baselineSnapshot: gone.calendarSnapshot))
+            } else {
+                workspace.clearCalendarOp(for: gone.id)
+            }
+            reminders.removeDelivered(forTaskID: gone.id)
+        }
+        workspace.tasks = restored
+        for task in restored where current.first(where: { $0.id == task.id }) != task {
+            workspace.clearCalendarOp(for: task.id)
+            enqueueProjectionForTask(task, now: reference)
+        }
+        calendar.pendingCount = workspace.pendingCalendarOps.count
+        agendaUndo = nil
+        _ = persist()
+        schedule()
+        syncCalendar()
+        notice = "Deshecho \(undo.label)."
+    }
+
+    /// Jots something down from the menu-bar panel without leaving the current work: an inbox task, no time yet.
+    @discardableResult
+    func quickCapture(_ title: String) -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard writable, !busy, !trimmed.isEmpty else { return false }
+        let task = FocusTask(title: trimmed, isScheduled: false, minutes: 15)
+        saveTask(task)
+        guard error == nil else { return false }
+        notice = "«\(trimmed)» apuntada en la bandeja sin hora."
+        return true
+    }
+
+    /// The task coming after the current one: the one queued by a hand-off, else the suggested next.
+    var upcomingAfterSession: FocusTask? { queuedStartTask ?? next }
+
+    /// Overdue quick actions: back on today's agenda in the first free slot, or tomorrow at the same time.
+    func moveToFirstFreeSlotToday(_ task: FocusTask) {
+        let slot = FocusRules.firstFreeSlot(
+            on: Date(),
+            tasks: workspace.tasks.filter { $0.id != task.id },
+            breaks: workspace.settings.breaks,
+            workStartHour: workspace.settings.workStartHour,
+            now: Date()
+        )
+        shift(task, to: slot)
+    }
+
+    func moveToTomorrowSameTime(_ task: FocusTask) {
+        let calendar = Calendar.current
+        let time = calendar.dateComponents([.hour, .minute], from: task.isScheduled ? task.scheduledAt : Date())
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date())),
+              let target = calendar.date(bySettingHour: time.hour ?? workspace.settings.workStartHour, minute: time.minute ?? 0, second: 0, of: tomorrow) else { return }
+        shift(task, to: target)
+    }
+
+    /// Worked session time on `day`: confirmed and cancelled sessions plus the one running now.
+    func workedSeconds(on day: Date, calendar: Calendar = .current) -> TimeInterval {
+        var total = workspace.history
+            .filter { calendar.isDate($0.session.startedAt, inSameDayAs: day) }
+            .reduce(0) { $0 + $1.session.accumulated }
+        // The current session is not in the history yet (running, paused or waiting for its result).
+        if let s = session, calendar.isDate(s.startedAt, inSameDayAs: day) {
+            total += s.endedAt == nil ? currentElapsed(for: s) : s.accumulated
+        }
+        return total
     }
 
     /// What the editor is looking at when the task belongs to a recurring series.
@@ -504,8 +661,11 @@ final class AppModel: ObservableObject {
 
     func snoozeTask(_ task: FocusTask, minutes: Int = 10) {
         guard writable, !busy, task.id != session?.task.id else { return }
+        let before = workspace.tasks
+        defer { if error == nil { rememberUndo("el aplazamiento de «\(task.title)»", before: before) } }
         let detached = isSeriesHead(task)
         let updated = occurrenceForDirectEdit(task).snoozed(minutes: minutes, now: Date())
+        reminders.removeDelivered(forTaskID: task.id)
         saveTask(updated)
         if error == nil {
             let time = updated.scheduledAt.formatted(date: .omitted, time: .shortened)
@@ -518,13 +678,16 @@ final class AppModel: ObservableObject {
     /// Sends one task to the inbox. For a series that means this occurrence only; the series keeps its schedule.
     func moveToInbox(_ task: FocusTask) {
         guard writable, !busy, task.id != session?.task.id else { return }
+        let before = workspace.tasks
         let detached = isSeriesHead(task)
         var unscheduled = occurrenceForDirectEdit(task)
         unscheduled.isScheduled = false
         saveTask(unscheduled)
-        if detached, error == nil {
-            notice = "Esta ocurrencia de «\(unscheduled.title)» pasa a la bandeja. La serie sigue programada."
-        }
+        guard error == nil else { return }
+        notice = detached
+            ? "Esta ocurrencia de «\(unscheduled.title)» pasa a la bandeja. La serie sigue programada."
+            : "«\(unscheduled.title)» pasa a la bandeja sin hora."
+        rememberUndo("el paso a la bandeja de «\(unscheduled.title)»", before: before)
     }
 
     /// Returns real tasks on `date` plus projected future occurrences of recurring tasks for preview.
@@ -672,6 +835,9 @@ final class AppModel: ObservableObject {
             hasInitialBaseline = snapshot.valid
             workspace.session = s
             enqueueProjectionForTask(task, session: s, now: currentNow)
+            reminders.removeDelivered(forTaskID: task.id)
+            domainEpisodeHost = nil
+            lastDistractionNotifyAt = .distantPast
             evidenceMessage = snapshot.message
             now = currentNow
             overtimeNotified = false
@@ -723,6 +889,7 @@ final class AppModel: ObservableObject {
         guard writable, workspace.session != nil, workspace.session?.endedAt == nil else { return }
         pausedBySystem = false
         resumePrompt = nil
+        promptApps = []
         let currentNow = Date()
         workspace.session?.pause(at: currentNow, uptime: uptime)
         if let s = workspace.session {
@@ -737,6 +904,8 @@ final class AppModel: ObservableObject {
         guard workspace.session?.endedAt == nil else { showCompletion = true; return }
         pausedBySystem = false
         resumePrompt = nil
+        promptApps = []
+        if let s = workspace.session { reminders.removeDelivered(identifiers: ["paused-" + s.id.uuidString]) }
         now = Date()
         workspace.session?.resume(at: now, uptime: uptime)
         strictTracker = StrictRedirectTracker()
@@ -761,9 +930,13 @@ final class AppModel: ObservableObject {
         syncCalendar()
     }
 
-    @objc private func screenLocked() { pauseForSystem() }
+    @objc private func screenLocked() {
+        screenIsLocked = true
+        pauseForSystem()
+    }
 
     @objc private func screenUnlocked() {
+        screenIsLocked = false
         now = Date()
         offerResumeAfterSystemPause(reason: "mientras el Mac estaba bloqueado")
     }
@@ -799,7 +972,54 @@ final class AppModel: ObservableObject {
 
     func dismissResumePrompt() {
         resumePrompt = nil
+        promptApps = []
         pausedBySystem = false
+    }
+
+    /// Opens an allowed app from the strict-pause prompt and resumes the session once it is up.
+    func openAllowedAppAndResume(_ app: AllowedApp) {
+        let installed = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.id)
+            ?? (FileManager.default.fileExists(atPath: app.path) ? URL(fileURLWithPath: app.path) : nil)
+        guard let url = installed else {
+            notice = "No encuentro \(app.name) en este Mac. Ábrela a mano o quítala del perfil."
+            return
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        Task {
+            do {
+                _ = try await NSWorkspace.shared.openApplication(at: url, configuration: config)
+                resume()
+            } catch {
+                notice = "No se pudo abrir \(app.name): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Undoes an accidental «He terminado»: back to the running countdown with the time already worked.
+    func reopenSession() {
+        guard writable, !busy, var s = session, s.endedAt != nil else { return }
+        s.reopen(at: Date(), uptime: uptime)
+        workspace.session = s
+        showCompletion = false
+        changedFiles = []
+        writingFiles = []
+        selectedDeliverables = []
+        manualAttachments = []
+        evidenceMessage = nil
+        overtimeNotified = s.remaining(at: Date(), uptime: uptime) <= 0
+        strictTracker = StrictRedirectTracker()
+        if let queued = queuedStartTask {
+            notice = "«\(queued.title)» ya no empezará a continuación: sigues con «\(s.task.title)»."
+        } else {
+            notice = "De vuelta a «\(s.task.title)». Te quedan \(FocusRules.clock(max(0, s.remaining(at: Date(), uptime: uptime))))."
+        }
+        queuedStartTaskID = nil
+        enqueueProjectionForTask(s.task, session: s, now: Date())
+        if persist() {
+            syncCalendar()
+            observe()
+        }
     }
 
     func finish() {
@@ -876,6 +1096,7 @@ final class AppModel: ObservableObject {
             }
         }
         workspace.session = nil
+        clearSessionNotifications(s)
         // "Sigue pendiente" on an occurrence from an earlier day must not freeze its series there.
         rollMissedSeries(now: confirmInstant)
         showCompletion = false
@@ -935,6 +1156,7 @@ final class AppModel: ObservableObject {
         )
         workspace.history.insert(record, at: 0)
         workspace.session = nil
+        clearSessionNotifications(s)
         // A cancelled occurrence from an earlier day must not freeze its series there either.
         rollMissedSeries(now: cancelInstant)
         if let index = workspace.tasks.firstIndex(where: { $0.id == s.task.id }) {
@@ -976,7 +1198,8 @@ final class AppModel: ObservableObject {
     }
 
     func setCheck(_ key: String, value: Bool) {
-        guard writable, session?.endedAt == nil else { return }
+        // Also while the result is being confirmed: work done in another app gets ticked off here, at the end.
+        guard writable, session != nil else { return }
         if value { workspace.session?.checked.insert(key) } else { workspace.session?.checked.remove(key) }
         _ = persist()
     }
@@ -1261,6 +1484,9 @@ final class AppModel: ObservableObject {
         ticks += 1
         let today = Calendar.current.startOfDay(for: now)
         if today != lastPrunedDay {
+            // With the app open overnight, Hoy kept showing yesterday and new tasks were born yesterday, overdue.
+            // Follow the day only if the user was on the day that just ended, not on a date chosen on purpose.
+            if Calendar.current.isDate(selectedDate, inSameDayAs: lastPrunedDay) { selectedDate = now }
             lastPrunedDay = today
             // A dated copy per day, so a bad save or a mistake is recoverable from Ajustes → Restaurar copia.
             if !preview { try? store.createDailySnapshotIfNeeded(at: now) }
@@ -1270,6 +1496,7 @@ final class AppModel: ObservableObject {
             schedule()
             if rolled { syncCalendar() }
         }
+        startDueAutoStartTasks()
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility
             observe()
@@ -1286,7 +1513,8 @@ final class AppModel: ObservableObject {
                     "Tiempo previsto agotado",
                     body: "\(s.task.title) sigue activa. Termina, amplía +10 min o pausa desde el aviso o FocusDesk.",
                     category: ReminderService.overtimeCategory,
-                    userInfo: ["taskID": s.task.id.uuidString]
+                    userInfo: ["taskID": s.task.id.uuidString],
+                    identifier: "overtime-" + s.id.uuidString
                 )
             }
         }
@@ -1304,6 +1532,36 @@ final class AppModel: ObservableObject {
                workspace.pendingCalendarOps.contains(where: { $0.attempts < 5 }) {
                 syncCalendar()
             }
+        }
+    }
+
+    /// Per-task auto-start from the design: only on an unlocked Mac, never retroactively (a start time that passed
+    /// while the Mac slept stays a reminder), and never on top of another session.
+    private func startDueAutoStartTasks() {
+        guard writable, !busy else { return }
+        let reference = Date()
+        // Keyed by task and time, so a task snoozed to a new time starts on its own again at that time.
+        func key(_ task: FocusTask) -> String { "\(task.id.uuidString)@\(Int(task.scheduledAt.timeIntervalSinceReferenceDate))" }
+        guard let due = workspace.tasks.first(where: {
+            $0.autoStart && !$0.completed && $0.isScheduled && !autoStartHandled.contains(key($0)) &&
+            $0.scheduledAt <= reference && reference.timeIntervalSince($0.scheduledAt) < 90
+        }) else { return }
+        autoStartHandled.insert(key(due))
+        if let current = session {
+            if !preview {
+                reminders.notify(
+                    "«\(due.title)» no ha empezado sola",
+                    body: "«\(current.task.title)» sigue en marcha. Empiézala cuando termines.",
+                    category: ReminderService.taskCategory,
+                    userInfo: ["taskID": due.id.uuidString]
+                )
+            }
+            return
+        }
+        guard !screenIsLocked else { return }
+        start(due)
+        if !preview {
+            reminders.notify("Empezada a su hora · \(due.title)", body: "Tienes \(due.minutes) minutos. Puedes pausarla con ⌃⌥⌘P.")
         }
     }
 
@@ -1337,11 +1595,11 @@ final class AppModel: ObservableObject {
             uptime: currentUptime
         ) ?? false
 
+        if allowed, id != "com.brave.Browser" { domainEpisodeHost = nil }
+
         if isNewInterruption {
             notice = "\(fg.app.localizedName ?? id) está fuera del perfil de esta tarea."
-            if !s.task.strict && !preview {
-                reminders.notify("Vuelve a tu tarea", body: notice ?? "")
-            }
+            if !s.task.strict && !preview { notifyDistraction(notice ?? "", session: s) }
         }
 
         if !allowed && s.task.strict {
@@ -1364,8 +1622,21 @@ final class AppModel: ObservableObject {
                 }
             case .pauseSession(let reason):
                 pause()
+                // pause() clears any prompt; this one has to wait for an answer and offer the allowed apps,
+                // otherwise «Reanudar» just pauses again a few seconds later.
+                resumePrompt = reason
+                promptApps = s.task.apps
+                pausedBySystem = true
+                if !preview {
+                    reminders.notify(
+                        "Sesión en pausa · \(s.task.title)",
+                        body: reason,
+                        category: ReminderService.pausedCategory,
+                        userInfo: ["taskID": s.task.id.uuidString],
+                        identifier: "paused-" + s.id.uuidString
+                    )
+                }
                 showWindow?()
-                notice = reason
                 return
             }
         }
@@ -1385,13 +1656,18 @@ final class AppModel: ObservableObject {
                     self.braveStatus = "Dominio activo: \(host)"
                     if self.workspace.session?.activities.last?.domain != host {
                         let outside = !FocusRules.domainAllowed(host, list: current.task.domains)
+                        // One interruption per visit outside the task's domains, like apps; the notice also reaches
+                        // the user, who is looking at Brave and not at FocusDesk's window.
+                        let newVisit = outside && self.domainEpisodeHost == nil
+                        self.domainEpisodeHost = outside ? (self.domainEpisodeHost ?? host) : nil
                         self.workspace.session?.record(
-                            Activity(appID: id, name: "Brave", domain: host),
+                            Activity(appID: id, name: "Brave", domain: host, interruption: newVisit),
                             at: Date(),
                             uptime: self.uptime
                         )
                         if outside {
                             self.notice = "\(host) no está en los dominios de la tarea. El control de webs es informativo."
+                            if newVisit, !self.preview { self.notifyDistraction(self.notice ?? "", session: current) }
                         }
                     }
                 case .permissionDenied:
@@ -1414,6 +1690,17 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// "Vuelve a tu tarea" replaces the previous one instead of piling up, and sounds at most every 3 minutes.
+    private func notifyDistraction(_ body: String, session s: WorkSession) {
+        guard Date().timeIntervalSince(lastDistractionNotifyAt) >= 180 else { return }
+        lastDistractionNotifyAt = Date()
+        reminders.notify("Vuelve a tu tarea", body: body, identifier: "distraction-" + s.id.uuidString)
+    }
+
+    private func clearSessionNotifications(_ s: WorkSession) {
+        reminders.removeDelivered(identifiers: ["distraction-", "overtime-", "paused-"].map { $0 + s.id.uuidString })
     }
 
     func deleteHistoryRecord(_ id: UUID) {
@@ -1483,6 +1770,7 @@ final class AppModel: ObservableObject {
     func removeDetailedHistory() {
         guard writable else { return }
         for index in workspace.history.indices {
+            workspace.history[index].preserveSummary()
             workspace.history[index].session.activities = []
             workspace.history[index].session.baseline = [:]
         }
