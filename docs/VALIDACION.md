@@ -270,3 +270,18 @@ con las guías de Apple de `REVISION-DISENO.md`. Después, un repaso entero busc
 - **El diálogo de permiso de avisos de macOS**: el modo demostración no usa notificaciones.
 - **Calendar real**: que la isla de Vorssaint deje de mostrar las tareas que empezarían durante una sesión está
   comprobado en la lógica, no con EventKit y Vorssaint delante.
+
+---
+
+# Revisión final de fallos · 22 de octubre de 2026
+
+Nueve fallos encontrados leyendo todo el código (commit `0638717`): «Sigue pendiente» + «Empezar la siguiente»
+rearrancaba la misma tarea; avisos de pausa duplicados y sin retirar; aviso falso del inicio automático; un
+`workspace.backup.json` de más al exportar; la serie perdía el enlace con sus días separados al completar una
+ocurrencia; horas fuera de la rejilla al programar desde la bandeja; la sesión temprana mal dibujada en la vista por
+horas; restaurar una copia sin su tamaño de texto; y reprogramar avisos cada 10 s sin permiso.
+
+Comprobado: `swift test` con **43 pruebas, 0 fallos**; chequeo integrado en **PASS** con tres bloques nuevos, y los
+de los fallos 1 y 5 fallan al deshacer su arreglo. Instalada y abierta con los datos reales intactos (4 tareas,
+6 sesiones, 3 perfiles). Sin comprobar en pantalla: los avisos de pausa y del inicio automático (el modo demostración
+no envía notificaciones).
