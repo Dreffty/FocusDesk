@@ -124,6 +124,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 }
             }
         }
+        // Proves, in the signed app, that the pieces that defend a session actually work on this Mac.
+        if CommandLine.arguments.contains("--verify-guard") && !model.preview {
+            let keychain = KeychainWitness.selfCheck()
+            let probe = AccessibilityProbe.actuallyGranted()
+            let switchSays = MacActivity.accessibility
+            let axLine: String
+            if !switchSays {
+                axLine = "PENDIENTE: Accesibilidad sin conceder; el bloqueo de apps no puede actuar todavía."
+            } else if probe {
+                axLine = "OK: Accesibilidad concedida y funcionando (sonda contra el Dock)."
+            } else {
+                axLine = "FAIL: macOS dice que hay permiso pero la sonda falla. " + AccessibilityProbe.brokenPermissionAdvice
+            }
+            let guardLine = model.relaunchGuard.available
+                ? "OK: el vigilante de relanzado se puede instalar (\(model.relaunchGuard.installed ? "ya activo" : "apagado"))."
+                : "PENDIENTE: ejecuta la app instalada, no el binario suelto, para poder activar el vigilante."
+            let visible = ScreenWindows.visibleOwnerPIDs().count
+            let windowsLine = visible > 0
+                ? "OK: se ven \(visible) apps con ventana en pantalla (vigilancia de segundo plano)."
+                : "FAIL: no se pudo listar ninguna ventana en pantalla."
+            // A sample of the page a blocked tab lands on, so it can be looked at without blocking anything.
+            let sample = BlockPage.write(
+                taskTitle: "Montar el vídeo del lunes",
+                host: "youtube.com",
+                remaining: 2_715,
+                endsAt: Date().addingTimeInterval(2_715),
+                allowedDomains: ["claude.ai", "chatgpt.com"],
+                in: FileManager.default.temporaryDirectory.appendingPathComponent("FocusDesk-muestra")
+            )
+            let pageLine = sample.map { "OK: página de bloqueo de muestra en \($0.path)" }
+                ?? "FAIL: no se pudo escribir la página de bloqueo."
+            let report = [keychain, axLine, guardLine, windowsLine, pageLine].joined(separator: "\n")
+            print(report)
+            fflush(stdout)
+            if CommandLine.arguments.contains("--quit-after-verify") {
+                exit(report.contains("FAIL") ? 1 : 0)
+            }
+        }
         if CommandLine.arguments.contains("--connect-calendar") && !model.preview {
             showSettings(.connections)
             Task { await model.calendar.request() }

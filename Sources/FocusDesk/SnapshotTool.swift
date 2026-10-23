@@ -67,6 +67,53 @@ enum SnapshotTool {
                 try await settle()
             }
 
+            // The editor of a task that locks itself, so the protection section can be looked at.
+            var guarded = FocusTask(
+                title: "Montar el vídeo del lunes",
+                category: "Contenido",
+                scheduledAt: Date().addingTimeInterval(3600),
+                minutes: 90,
+                strict: true,
+                apps: model.workspace.tasks.first(where: { !$0.apps.isEmpty })?.apps ?? [],
+                domains: "claude.ai, chatgpt.com",
+                protection: .challenge,
+                unlockChars: 32,
+                blockAction: .close,
+                webBlockAction: .redirect
+            )
+            if guarded.apps.isEmpty {
+                guarded.apps = [AllowedApp(id: "com.apple.dt.Xcode", name: "Xcode", path: "/Applications/Xcode.app")]
+            }
+            model.editingTask = guarded
+            try await settle(0.8)
+            try capture(window.attachedSheet?.contentView, name: "editor-proteccion", in: folder)
+            written.append("editor-proteccion")
+            if let page = largestScrollContent(in: window.attachedSheet?.contentView) {
+                try capture(page, name: "editor-proteccion-completa", in: folder)
+                written.append("editor-proteccion-completa")
+            }
+            model.editingTask = nil
+            try await settle()
+
+            // The code you have to type to leave a protected session.
+            model.pendingStop = PendingStopChallenge(
+                reason: .pause,
+                expected: UnlockChallenge.make(length: 32),
+                typed: String(UnlockChallenge.make(length: 32).prefix(0))
+            )
+            if let expected = model.pendingStop?.expected {
+                model.pendingStop?.typed = String(expected.prefix(11))
+            }
+            let unlock = NSHostingView(rootView: UnlockSheet(model: model).environment(\.locale, Locale(identifier: "es_ES")))
+            unlock.frame = NSRect(x: 0, y: 0, width: 520, height: 420)
+            let unlockWindow = NSWindow(contentRect: unlock.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            unlockWindow.contentView = unlock
+            try await settle(0.6)
+            try capture(unlock, name: "codigo-desbloqueo", in: folder)
+            written.append("codigo-desbloqueo")
+            model.pendingStop = nil
+            try await settle()
+
             // Menu-bar panel, during the session.
             let panel = NSHostingView(rootView: MenuPanel(model: model).environment(\.locale, Locale(identifier: "es_ES")))
             panel.frame = NSRect(x: 0, y: 0, width: 360, height: 520)

@@ -58,6 +58,28 @@ enum KeychainWitness {
         ]
         SecItemDelete(query as CFDictionary)
     }
+
+    /// Writes, reads back and removes a throwaway witness, so `--verify-guard` can prove the Keychain really
+    /// works in the signed app — and, above all, that it never puts a password prompt in the way.
+    static func selfCheck() -> String {
+        let existing = load()
+        defer {
+            clear()
+            if let existing { save(existing) }
+        }
+        let probe = SessionWitness(
+            sessionID: UUID(),
+            taskTitle: "Comprobación",
+            protection: .challenge,
+            deadline: TrustedDeadline(seconds: 120)
+        )
+        save(probe)
+        guard let read = load() else { return "FAIL: el Llavero no devolvió el testigo recién guardado." }
+        guard read == probe, read.intact else { return "FAIL: el testigo leído no coincide con el guardado." }
+        clear()
+        guard load() == nil else { return "FAIL: el testigo no se borró del Llavero." }
+        return "OK: guardar, leer y borrar en el Llavero, sin pedir contraseña."
+    }
 }
 
 // MARK: - Is Accessibility really granted?
