@@ -31,10 +31,28 @@ if pgrep -x FocusDesk >/dev/null; then
   exit 1
 fi
 
-install_root="$HOME/Applications"
+# Install where it already lives; otherwise /Applications, which is the Aplicaciones folder people actually
+# look in (and Spotlight finds). ~/Applications is the fallback when /Applications is not writable.
+if [[ -d "/Applications/FocusDesk.app" ]]; then
+  install_root="/Applications"
+elif [[ -d "$HOME/Applications/FocusDesk.app" ]]; then
+  install_root="$HOME/Applications"
+elif [[ -w "/Applications" ]]; then
+  install_root="/Applications"
+else
+  install_root="$HOME/Applications"
+fi
 mkdir -p "$install_root"
 target="$install_root/FocusDesk.app"
 backup=""
+
+# Two copies in the two Aplicaciones folders is how you end up running yesterday's build without noticing.
+for other in "/Applications/FocusDesk.app" "$HOME/Applications/FocusDesk.app"; do
+  if [[ "$other" != "$target" && -d "$other" ]]; then
+    echo "Quitando la copia duplicada de $other"
+    rm -rf "$other"
+  fi
+done
 
 if [[ -d "$target" ]]; then
   if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$target/Contents/Info.plist" 2>/dev/null || true)" != 'local.focusdesk.app' ]]; then
@@ -63,6 +81,10 @@ if ! (ditto dist/FocusDesk.app "$target" && codesign --verify --deep --strict "$
   rollback
   exit 1
 fi
+
+# Without this the freshly installed bundle can stay invisible to Spotlight for a while.
+/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$target" 2>/dev/null || true
+mdimport "$target" 2>/dev/null || true
 
 if [[ "${1:-}" != "--no-open" ]]; then
   open "$target" --args "$@"

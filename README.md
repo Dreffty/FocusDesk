@@ -4,7 +4,7 @@ Tu plan del día y el tiempo de cada tarea, accesibles desde la barra de menús 
 
 ## Abrir
 
-Abre `~/Applications/FocusDesk.app` con doble clic, búscala en Spotlight o usa su icono del Dock. La copia compilada también está en `dist/FocusDesk.app`. Cerrar su ventana deja la app funcionando en la barra. El atajo global (**Control + Opción + Comando + F** por defecto, configurable en **Ajustes**, que se abren con `⌘,` en su propia ventana) vuelve a abrir el planificador o el panel compacto. Para cerrarla completamente, usa **Salir** en su menú.
+Abre `/Applications/FocusDesk.app` con doble clic, búscala en Spotlight escribiendo **FocusDesk** (todo junto: «Focus Desk» con espacio no la encuentra) o usa su icono del Dock. La copia compilada también está en `dist/FocusDesk.app`. Cerrar su ventana deja la app funcionando en la barra. El atajo global (**Control + Opción + Comando + F** por defecto, configurable en **Ajustes**, que se abren con `⌘,` en su propia ventana) vuelve a abrir el planificador o el panel compacto. Para cerrarla completamente, usa **Salir** en su menú.
 
 Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma estable local (`Apple Development`) cuando está disponible en el llavero (con respaldo ad-hoc `-`), conservando los permisos de macOS entre recompilaciones.
 
@@ -98,7 +98,8 @@ En `backups/` hay además **una copia con fecha por cada día de uso** (`daily-A
 ```sh
 swift test
 ./build.command
-# Con la app cerrada: verifica el nuevo bundle, respalda la versión previa e instala en ~/Applications
+# Con la app cerrada: verifica el nuevo bundle, respalda la versión previa e instala en /Applications
+# (donde ya esté instalada; quita la copia duplicada de la otra carpeta Aplicaciones)
 ./scripts/install.command
 ```
 
