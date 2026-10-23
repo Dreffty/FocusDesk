@@ -1,0 +1,375 @@
+import AppKit
+import ApplicationServices
+import FocusCore
+
+// Seeing the distraction is most of the work. The app in front is only one of the places a blocked site can be:
+// it can sit in a window on the other monitor, inside a "web app" with its own icon, or inside Discord or Notion.
+// This file finds it; AppModel decides what to do about it.
+
+// MARK: - Windows that are on screen without the keyboard focus
+
+enum ScreenWindows {
+    /// Process ids with a real window drawn on any monitor right now, focused or not. Needs no permission:
+    /// window titles would, the owners do not.
+    static func visibleOwnerPIDs() -> Set<pid_t> {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+        var pids: Set<pid_t> = []
+        for window in list {
+            // Layer 0 is a normal document window: this skips menu bar extras, the Dock and overlays.
+            guard (window[kCGWindowLayer as String] as? Int) == 0,
+                  (window[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
+                  let pid = window[kCGWindowOwnerPID as String] as? pid_t else { continue }
+            let bounds = window[kCGWindowBounds as String] as? [String: Any]
+            let width = bounds?["Width"] as? Double ?? 0
+            let height = bounds?["Height"] as? Double ?? 0
+            // Tiny helper windows are not a distraction anyone can watch.
+            guard width >= 120, height >= 90 else { continue }
+            pids.insert(pid)
+        }
+        return pids
+    }
+
+    /// Running applications with a visible window that are not in `allowed` and may be acted on.
+    static func visibleUnallowedApps(allowedBundleIDs: Set<String>, exempt: Set<String>) -> [NSRunningApplication] {
+        let pids = visibleOwnerPIDs()
+        guard !pids.isEmpty else { return [] }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return NSWorkspace.shared.runningApplications.filter { app in
+            guard !app.isTerminated, app.processIdentifier != ownPID, pids.contains(app.processIdentifier),
+                  let id = app.bundleIdentifier, !exempt.contains(id), !allowedBundleIDs.contains(id) else { return false }
+            return app.activationPolicy == .regular
+        }
+    }
+}
+
+// MARK: - What a window is really showing
+
+/// What FocusDesk managed to find out about the app in front (or a visible one behind it).
+struct AppSurface {
+    let app: NSRunningApplication
+    let bundleID: String
+    /// Host of the site this app is on, when it could be read: a browser tab, a Chromium web app, or a page
+    /// embedded in an Electron app.
+    var host: String?
+    /// Where the host came from, for the history and for honest messages.
+    var source: Source = .none
+
+    enum Source: String {
+        case none
+        case browserTab
+        case chromiumWebApp
+        case embeddedPage
+    }
+}
+
+enum AppInspector {
+    /// A Chromium "web app" (YouTube installed from Chrome, say) is a real `.app` with its own bundle id, and its
+    /// `Info.plist` keeps the site it wraps. Without this, installing a blocked site as an app walks past the rules.
+    static func chromiumWebAppHost(for app: NSRunningApplication) -> String? {
+        guard let bundleURL = app.bundleURL else { return nil }
+        guard let info = Bundle(url: bundleURL)?.infoDictionary else { return nil }
+        guard let raw = info["CrAppModeShortcutURL"] as? String ?? info["CrAppModeShortcutURLString"] as? String else { return nil }
+        return URL(string: raw)?.host?.lowercased()
+    }
+
+    /// Hosts of the web pages open inside an Electron app (Discord, Slack, Notion, Obsidian…). Chromium keeps its
+    /// accessibility tree switched off until something asks for it, so this asks, then reads the web areas.
+    /// Called off the main thread's critical path: it walks a tree and can take a few milliseconds.
+    static func embeddedHosts(for app: NSRunningApplication, limit: Int = 6) -> [String] {
+        guard isElectron(app) else { return [] }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        var hosts: [String] = []
+        collectWebAreaHosts(element, into: &hosts, depth: 0, maxDepth: 6, limit: limit)
+        return hosts
+    }
+
+    static func isElectron(_ app: NSRunningApplication) -> Bool {
+        guard let bundleURL = app.bundleURL else { return false }
+        let framework = bundleURL
+            .appendingPathComponent("Contents/Frameworks/Electron Framework.framework")
+        return FileManager.default.fileExists(atPath: framework.path)
+    }
+
+    private static func collectWebAreaHosts(_ element: AXUIElement, into hosts: inout [String], depth: Int, maxDepth: Int, limit: Int) {
+        guard depth <= maxDepth, hosts.count < limit else { return }
+        var roleValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
+           (roleValue as? String) == "AXWebArea" {
+            var urlValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXURLAttribute as CFString, &urlValue) == .success {
+                let raw = (urlValue as? URL) ?? (urlValue as? String).flatMap(URL.init(string:))
+                if let host = raw?.host?.lowercased(), !hosts.contains(host) {
+                    hosts.append(host)
+                }
+            }
+        }
+        var childrenValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+              let children = childrenValue as? [AXUIElement] else { return }
+        for child in children.prefix(40) {
+            collectWebAreaHosts(child, into: &hosts, depth: depth + 1, maxDepth: maxDepth, limit: limit)
+            if hosts.count >= limit { return }
+        }
+    }
+}
+
+// MARK: - Reading and steering browser tabs
+
+enum WebReadResult: Sendable, Equatable {
+    case page(host: String)
+    case noWindowOrTab
+    case notRunning
+    case permissionDenied
+    case timeout
+    /// An internal page (`chrome://`, a new tab) or one whose address could not be parsed.
+    case unknown
+}
+
+/// Runs AppleScript against the browsers FocusDesk knows, one call at a time per browser. Every script is fixed
+/// text; nothing read from a page is ever put back into something that runs.
+final class WebInspector {
+    private var busy: Set<String> = []
+
+    func read(bundleID: String, completion: @escaping (WebReadResult) -> Void) {
+        guard let kind = WebRules.browserKind(for: bundleID) else { completion(.unknown); return }
+        guard isRunning(bundleID) else { completion(.notRunning); return }
+        guard !busy.contains(bundleID) else { return }
+        busy.insert(bundleID)
+        let script: String
+        switch kind {
+        case .safari:
+            script = """
+            with timeout of 2 seconds
+             tell application id "\(bundleID)"
+              if (count of windows) is 0 then return "__NO_WINDOW__"
+              return URL of front document
+             end tell
+            end timeout
+            """
+        case .chromium:
+            script = """
+            with timeout of 2 seconds
+             tell application id "\(bundleID)"
+              if (count of windows) is 0 then return "__NO_WINDOW__"
+              return URL of active tab of front window
+             end tell
+            end timeout
+            """
+        }
+        run(script, timeout: 3) { [weak self] output, errorText, status, timedOut in
+            self?.busy.remove(bundleID)
+            completion(Self.interpret(output: output, errorText: errorText, status: status, timedOut: timedOut))
+        }
+    }
+
+    /// Sends only the offending tab to `url`, leaving every other tab and window where they were.
+    func redirectActiveTab(bundleID: String, to url: URL, completion: @escaping (Bool) -> Void) {
+        guard let kind = WebRules.browserKind(for: bundleID), isRunning(bundleID) else { completion(false); return }
+        let target = url.absoluteString
+        // The address is one FocusDesk built (its own blocked page); nothing from the web reaches this text.
+        let script: String
+        switch kind {
+        case .safari:
+            script = """
+            with timeout of 3 seconds
+             tell application id "\(bundleID)"
+              if (count of windows) is 0 then return "__NO_WINDOW__"
+              set URL of front document to "\(target)"
+             end tell
+            end timeout
+            """
+        case .chromium:
+            script = """
+            with timeout of 3 seconds
+             tell application id "\(bundleID)"
+              if (count of windows) is 0 then return "__NO_WINDOW__"
+              set URL of active tab of front window to "\(target)"
+             end tell
+            end timeout
+            """
+        }
+        run(script, timeout: 4) { _, _, status, timedOut in
+            completion(status == 0 && !timedOut)
+        }
+    }
+
+    /// Closes only the active tab. With a single tab open the browser closes its window, which is the same thing
+    /// the user would get pressing ⌘W.
+    func closeActiveTab(bundleID: String, completion: @escaping (Bool) -> Void) {
+        guard let kind = WebRules.browserKind(for: bundleID), isRunning(bundleID) else { completion(false); return }
+        let script: String
+        switch kind {
+        case .safari:
+            script = """
+            with timeout of 3 seconds
+             tell application id "\(bundleID)"
+              if (count of windows) is 0 then return "__NO_WINDOW__"
+              close current tab of front window
+             end tell
+            end timeout
+            """
+        case .chromium:
+            script = """
+            with timeout of 3 seconds
+             tell application id "\(bundleID)"
+              if (count of windows) is 0 then return "__NO_WINDOW__"
+              close active tab of front window
+             end tell
+            end timeout
+            """
+        }
+        run(script, timeout: 4) { _, _, status, timedOut in
+            completion(status == 0 && !timedOut)
+        }
+    }
+
+    private func isRunning(_ bundleID: String) -> Bool {
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleID && !$0.isTerminated }
+    }
+
+    static func interpret(output: String, errorText: String, status: Int32, timedOut: Bool) -> WebReadResult {
+        let lowered = errorText.lowercased()
+        if timedOut || lowered.contains("timed out") || lowered.contains("-1712") { return .timeout }
+        if lowered.contains("-1743") || lowered.contains("not authorized") || lowered.contains("no está autorizado") {
+            return .permissionDenied
+        }
+        if output == "__NO_WINDOW__" || output.isEmpty { return .noWindowOrTab }
+        guard status == 0, let url = URL(string: output),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host?.lowercased() else { return .unknown }
+        return .page(host: host)
+    }
+
+    /// One `osascript` process, killed if it hangs: a frozen browser must never freeze FocusDesk.
+    private func run(_ source: String, timeout: TimeInterval, completion: @escaping (String, String, Int32, Bool) -> Void) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", source]
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        var timedOut = false
+        process.terminationHandler = { finished in
+            let out = String(decoding: outPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let err = String(decoding: errPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            DispatchQueue.main.async {
+                completion(out, err, finished.terminationStatus, timedOut)
+            }
+        }
+        do {
+            try process.run()
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+                if process.isRunning {
+                    timedOut = true
+                    process.terminate()
+                }
+            }
+        } catch {
+            DispatchQueue.main.async { completion("", error.localizedDescription, -1, false) }
+        }
+    }
+}
+
+// MARK: - The page a blocked tab lands on
+
+/// FocusDesk writes its own page and sends the tab there. It says what blocked it, how long is left and what the
+/// task was for — the thing the user wrote while they were calm, read back at the moment it is needed.
+enum BlockPage {
+    static func url(in directory: URL) -> URL { directory.appendingPathComponent("bloqueada.html") }
+
+    /// Writes the page and returns its address. Rewritten on each block so the countdown is right.
+    @discardableResult
+    static func write(
+        taskTitle: String,
+        host: String,
+        remaining: TimeInterval,
+        endsAt: Date,
+        allowedDomains: [String],
+        in directory: URL
+    ) -> URL? {
+        let target = url(in: directory)
+        let safeTitle = escape(taskTitle)
+        let safeHost = escape(host)
+        let clock = FocusRules.clock(max(0, remaining))
+        let ends = endsAt.formatted(date: .omitted, time: .shortened)
+        let allowed = allowedDomains.isEmpty
+            ? ""
+            : "<p class=\"allowed\">Para esta tarea sí: \(escape(allowedDomains.joined(separator: " · ")))</p>"
+        let html = """
+        <!doctype html>
+        <html lang="es">
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Ahora no · FocusDesk</title>
+        <style>
+          :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --ink:#1c1d22; --muted:#6b6f7a; --mint:#1f9c72; --line:#e3e5ea; }
+          @media (prefers-color-scheme: dark) {
+            :root { --bg:#131417; --card:#1c1e22; --ink:#f2f3f5; --muted:#9aa0ab; --mint:#4fd0a0; --line:#2b2e34; }
+          }
+          * { box-sizing: border-box; }
+          body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px;
+                 background:var(--bg); color:var(--ink);
+                 font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+          .card { width:min(560px,100%); background:var(--card); border:1px solid var(--line);
+                  border-radius:18px; padding:40px 36px; text-align:center;
+                  box-shadow:0 16px 48px rgba(0,0,0,.08); }
+          .dot { width:44px; height:44px; margin:0 auto 20px; border-radius:50%;
+                 background:color-mix(in srgb, var(--mint) 16%, transparent);
+                 display:grid; place-items:center; font-size:21px; }
+          h1 { font-size:25px; margin:0 0 10px; letter-spacing:-.02em; }
+          p { margin:0 0 8px; color:var(--muted); font-size:14px; line-height:1.55; }
+          .host { font-family: ui-monospace, SFMono-Regular, monospace; color:var(--ink); }
+          .clock { font-family: ui-monospace, SFMono-Regular, monospace; font-size:42px;
+                   color:var(--mint); margin:26px 0 4px; font-variant-numeric: tabular-nums; }
+          .label { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+          .allowed { margin-top:22px; padding-top:18px; border-top:1px solid var(--line); font-size:12px; }
+        </style>
+        </head>
+        <body>
+          <main class="card">
+            <div class="dot">◎</div>
+            <h1>Ahora no.</h1>
+            <p>Estás con <strong>\(safeTitle)</strong>, y <span class="host">\(safeHost)</span> no entra en esa tarea.</p>
+            <div class="clock" id="clock">\(clock)</div>
+            <div class="label">para terminar · \(ends)</div>
+            \(allowed)
+          </main>
+          <script>
+            let left = \(Int(max(0, remaining)));
+            const node = document.getElementById("clock");
+            setInterval(() => {
+              if (left <= 0) { node.textContent = "00:00"; return; }
+              left -= 1;
+              const h = Math.floor(left / 3600), m = Math.floor(left / 60) % 60, s = left % 60;
+              const pad = (n) => String(n).padStart(2, "0");
+              node.textContent = h > 0 ? h + ":" + pad(m) + ":" + pad(s) : pad(m) + ":" + pad(s);
+            }, 1000);
+          </script>
+        </body>
+        </html>
+        """
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try html.write(to: target, atomically: true, encoding: .utf8)
+            return target
+        } catch {
+            return nil
+        }
+    }
+
+    /// The page shows a task title and a host the user typed or visited: escaped, never injected as markup.
+    private static func escape(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+}

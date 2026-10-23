@@ -240,6 +240,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) { model.shutdown() }
 
+    /// Quitting is the shortest way out of a block, so a protected session asks for the same thing pausing does.
+    /// Everything else quits as usual.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        model.canQuitNow() ? .terminateNow : .terminateCancel
+    }
+
     @objc private func settings() { showSettings(nil) }
 
     /// Ajustes in its own window, opened with ⌘, from the app menu: a non-customizable toolbar with one pane per

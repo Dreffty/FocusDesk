@@ -622,14 +622,114 @@ enum SmokeCheck {
                 throw Failure.message("Deleted task left pending upsert op in queue")
             }
 
-            // 8. Auto-backup recovery when primary file is corrupted (Item 6 & Item 18)
+            // 8. Protected sessions: the code, the wait, «hasta el final» and the ratchet, end to end.
+            let guarded = FocusTask(
+                title: "Sesión con código",
+                scheduledAt: Date().addingTimeInterval(300),
+                minutes: 30,
+                protection: .challenge,
+                unlockChars: 12
+            )
+            model.saveTask(guarded)
+            model.start(guarded)
+            try await idle(model)
+            guard model.session?.task.id == guarded.id else { throw Failure.message("Protected session did not start") }
+
+            model.pause()
+            guard let challenge = model.pendingStop, challenge.reason == .pause,
+                  challenge.expected.count == 12, model.session?.paused == false else {
+                throw Failure.message("Pausing a protected session asked for no code, or paused anyway")
+            }
+            // A wrong code hands out a fresh one instead of letting the attempt stand.
+            model.pendingStop?.typed = String(challenge.expected.dropLast()) + "@"
+            model.submitStopChallenge()
+            guard let second = model.pendingStop, second.attempts == 1, second.expected != challenge.expected,
+                  model.session?.paused == false else {
+                throw Failure.message("A wrong code did not reset the challenge")
+            }
+            model.pendingStop?.typed = second.expected
+            model.submitStopChallenge()
+            guard model.pendingStop == nil, model.session?.paused == true else {
+                throw Failure.message("The right code did not pause the session")
+            }
+            model.resume()
+
+            // The ratchet: a running protected session can be made longer, never shorter or looser.
+            var shorter = guarded
+            shorter.minutes = 5
+            model.saveTask(shorter)
+            guard model.session?.task.minutes == 30 else { throw Failure.message("The ratchet let a running session be shortened") }
+            var longer = guarded
+            longer.minutes = 45
+            model.saveTask(longer)
+            guard model.session?.task.minutes == 45, model.session?.budget == 45 * 60 else {
+                throw Failure.message("The ratchet refused a legitimate extension")
+            }
+            var looser = longer
+            looser.protection = .none
+            model.saveTask(looser)
+            guard model.session?.task.protection == .challenge else {
+                throw Failure.message("The ratchet let the protection be removed mid-session")
+            }
+            model.authorizedStop = .cancel
+            model.cancelSession(note: "Cierre tras prueba de código")
+            guard model.session == nil else { throw Failure.message("Authorized cancel did not go through") }
+
+            // A wait instead of a code: the session keeps running while it counts down, and can be called off.
+            let waited = FocusTask(
+                title: "Sesión con espera",
+                scheduledAt: Date().addingTimeInterval(300),
+                minutes: 30,
+                protection: .delay,
+                stopDelayMinutes: 7
+            )
+            model.saveTask(waited)
+            model.start(waited)
+            try await idle(model)
+            model.pause()
+            guard let request = model.session?.stopRequest, request.reason == .pause,
+                  model.session?.paused == false, request.remaining() > 6 * 60 else {
+                throw Failure.message("The wait was not armed, or the session paused anyway")
+            }
+            model.cancelStopRequest()
+            guard model.session?.stopRequest == nil, model.session?.paused == false else {
+                throw Failure.message("The wait could not be called off")
+            }
+            model.authorizedStop = .cancel
+            model.cancelSession(note: "Cierre tras prueba de espera")
+
+            // «Hasta el final»: refused outright, with an emergency way out that costs sixty characters.
+            let sealed = FocusTask(
+                title: "Sesión hasta el final",
+                scheduledAt: Date().addingTimeInterval(300),
+                minutes: 30,
+                protection: .forced
+            )
+            model.saveTask(sealed)
+            model.start(sealed)
+            try await idle(model)
+            model.pause()
+            guard model.session?.paused == false, model.pendingStop == nil else {
+                throw Failure.message("A forced session could be paused")
+            }
+            model.requestEmergencyExit()
+            guard let escape = model.pendingStop, escape.emergency, escape.expected.count == 60 else {
+                throw Failure.message("The emergency way out was not offered")
+            }
+            model.pendingStop?.typed = escape.expected
+            model.submitStopChallenge()
+            guard model.session == nil, model.workspace.settings.emergencyUses.count == 1 else {
+                throw Failure.message("The emergency exit did not end the session or left no trace")
+            }
+
+            // 9. Auto-backup recovery when primary file is corrupted (Item 6 & Item 18)
             try Data("corrupt-json".utf8).write(to: model.store.url)
             model.recoverFromAutoBackup()
             guard !model.readOnly, model.error == nil, !model.workspace.tasks.isEmpty else {
                 throw Failure.message("Auto-backup recovery after corruption")
             }
 
-            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo and redo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; keyboard selection, move and resize; tolerant reading with the original kept; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery."
+            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo and redo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; keyboard selection, move and resize; tolerant reading with the original kept; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery; protected sessions (code with a fresh one on each miss, wait that can be called off, «hasta el final» plus emergency exit) and the ratchet on a running session."
         } catch {
             return "FAIL: \(error.localizedDescription)"
         }

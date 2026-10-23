@@ -289,8 +289,81 @@ struct TaskEditor: View {
                                         .font(.app(10))
                                         .foregroundStyle(Palette.mint)
                                 }
-                                Text("Sirven para avisar y registrar en Brave. No bloquean páginas. Activa su lectura en Ajustes.").font(.app(10)).foregroundStyle(Palette.muted)
+                                Picker("Si abres otra web", selection: $draft.webBlockAction) {
+                                    ForEach(WebBlockAction.allCases, id: \.self) { action in
+                                        Text(action.label).tag(action)
+                                    }
+                                }
+                                .pickerStyle(.radioGroup)
+                                if draft.webBlockAction != .warn && domainParse.valid.isEmpty {
+                                    Text("Para bloquear webs hace falta decir cuáles sí. Sin lista, se bloquearía todo.")
+                                        .font(.app(10))
+                                        .foregroundStyle(Palette.warning)
+                                } else {
+                                    Text(webHint).font(.app(10)).foregroundStyle(Palette.muted)
+                                }
                             }
+                        }
+                    }
+
+                    // How firmly this session defends itself
+                    Card(padding: 18) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            SectionHeader("Si quieres dejarlo a medias", icon: "lock.shield")
+                            Text("Lo decides ahora, con la cabeza fría, para el momento en que no la tengas.")
+                                .font(.app(11))
+                                .foregroundStyle(Palette.muted)
+                            Picker("Protección", selection: $draft.protection) {
+                                ForEach(SessionProtection.allCases, id: \.self) { level in
+                                    Text(level.label).tag(level)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            Text(draft.protection.explanation).font(.app(11)).foregroundStyle(Palette.muted)
+
+                            if draft.protection == .challenge {
+                                Stepper("Código de \(draft.unlockChars) caracteres", value: $draft.unlockChars, in: UnlockChallenge.lengthRange, step: 4)
+                                    .font(.app(12))
+                                Text(draft.unlockChars >= 32 ? "Teclearlo cuesta cerca de un minuto. Suficiente para que se pase el impulso." : "Unos \(max(10, draft.unlockChars * 2)) segundos de teclear sin poder pegar.")
+                                    .font(.app(10))
+                                    .foregroundStyle(Palette.muted)
+                            }
+                            if draft.protection == .delay {
+                                Stepper("Esperar \(draft.stopDelayMinutes) minutos", value: $draft.stopDelayMinutes, in: 1...60)
+                                    .font(.app(12))
+                                Text("La sesión sigue durante la espera: muchas veces se te pasan las ganas antes de que acabe.")
+                                    .font(.app(10))
+                                    .foregroundStyle(Palette.muted)
+                            }
+                            if draft.protection == .forced {
+                                Text("Queda la salida de emergencia: 60 caracteres y una anotación en el historial. Úsala si de verdad pasa algo.")
+                                    .font(.app(10))
+                                    .foregroundStyle(Palette.warning)
+                            }
+
+                            if draft.strict {
+                                Divider().overlay(Palette.stroke)
+                                Text("QUÉ HACER CON LAS APPS QUE NO TOCAN").fieldLabelStyle()
+                                Picker("Acción", selection: $draft.blockAction) {
+                                    ForEach(AppBlockAction.allCases, id: \.self) { action in
+                                        Text(action.label).tag(action)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                                Text(draft.blockAction.explanation).font(.app(10)).foregroundStyle(Palette.muted)
+                            }
+
+                            Divider().overlay(Palette.stroke)
+                            Toggle("Endurecer si insistes", isOn: $draft.punisherEnabled).toggleStyle(.switch)
+                            Text("Tras cuatro intentos seguidos en pocos minutos, durante un rato FocusDesk cierra esas apps en vez de ocultarlas.")
+                                .font(.app(10))
+                                .foregroundStyle(Palette.muted)
+                            Toggle("Proteger los ajustes que desarman el bloqueo", isOn: $draft.guardSystemPanes).toggleStyle(.switch)
+                            Text("Cierra «Privacidad y seguridad», «Fecha y hora» y «Usuarios y grupos» mientras dura la sesión. El resto de Ajustes del Sistema sigue a mano.")
+                                .font(.app(10))
+                                .foregroundStyle(Palette.muted)
                         }
                     }
 
@@ -412,6 +485,17 @@ struct TaskEditor: View {
         draft.profileID = profile.id
         showSaveProfile = false
         focusedField = .title
+    }
+
+    private var webHint: String {
+        switch draft.webBlockAction {
+        case .warn:
+            return "Solo se anota y se avisa; la página sigue abierta. Activa la lectura del navegador en Ajustes."
+        case .redirect:
+            return "Esa pestaña irá a una página de FocusDesk con el tiempo que queda. Las demás pestañas no se tocan."
+        case .closeTab:
+            return "Se cierra solo esa pestaña, como con ⌘W. El resto del navegador sigue igual."
+        }
     }
 
     private var seriesHint: String {
@@ -1101,19 +1185,59 @@ struct SettingsView: View {
                             }
                         }
                         Divider().overlay(Palette.stroke)
-                        Toggle("Observar el dominio de la pestaña activa en Brave", isOn: Binding(
+                        Toggle("Observar el dominio de la pestaña activa del navegador", isOn: Binding(
                             get: { model.workspace.settings.observeBrave },
                             set: { value in model.updateSettings { $0.observeBrave = value } }
                         ))
                         HStack {
-                            Text("Estado Brave: \(model.braveStatus)").font(.app(10)).foregroundStyle(Palette.muted)
+                            Text("Estado: \(model.braveStatus)").font(.app(10)).foregroundStyle(Palette.muted)
                             Spacer()
                             Button("Ajustes de Automatización") { MacActivity.openAutomationSettings() }
                                 .buttonStyle(.focus(.ghost, compact: true))
                         }
-                        Text("Solo se guarda el dominio (sin rutas ni parámetros). Si el navegador está cerrado, no tiene pestaña o falta permiso, se indica como desconocido.")
+                        Text("Safari, Brave, Chrome, Edge, Arc, Vivaldi y Chromium. Solo se guarda el dominio (sin rutas ni parámetros). Las tareas que bloquean webs lo leen aunque esto esté apagado.")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
+                        Divider().overlay(Palette.stroke)
+                        Toggle("Vigilar también las ventanas visibles sin foco", isOn: Binding(
+                            get: { model.workspace.settings.watchBackgroundWindows },
+                            set: { value in model.updateSettings { $0.watchBackgroundWindows = value } }
+                        ))
+                        Text("Un vídeo en una esquina o en el segundo monitor distrae igual aunque escribas en otra ventana. Se ocultan, nunca se cierran.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                        Toggle("Mirar dentro de apps con web incrustada", isOn: Binding(
+                            get: { model.workspace.settings.inspectEmbeddedPages },
+                            set: { value in model.updateSettings { $0.inspectEmbeddedPages = value } }
+                        ))
+                        Text("Páginas abiertas dentro de Discord, Slack o Notion, y webs instaladas como app desde Chrome o Brave. Solo se avisa: esas ventanas llevan conversaciones y documentos.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                    }
+                }
+
+                // The login item that brings FocusDesk back if it is killed mid-session.
+                Card {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SectionHeader("Si cierras FocusDesk a la fuerza", icon: "arrow.clockwise.circle")
+                        Toggle("Volver a abrirse si lo matan durante una sesión", isOn: Binding(
+                            get: { model.relaunchGuard.installed },
+                            set: { value in
+                                if value { model.relaunchGuard.install() } else { model.relaunchGuard.remove() }
+                                model.updateSettings { $0.relaunchGuard = model.relaunchGuard.installed }
+                            }
+                        ))
+                        .disabled(!model.relaunchGuard.available)
+                        Text(model.relaunchGuard.message).font(.app(10)).foregroundStyle(Palette.muted)
+                        Text("Es un elemento de inicio en tu propia cuenta: añade fricción, no es inviolable. Quien sepa usar launchctl puede apagarlo, y FocusDesk no pide contraseña de administrador para nada.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                        if !model.workspace.settings.emergencyUses.isEmpty {
+                            Divider().overlay(Palette.stroke)
+                            Text("Salidas de emergencia usadas: \(model.workspace.settings.emergencyUses.suffix(5).joined(separator: ", "))")
+                                .font(.app(10))
+                                .foregroundStyle(Palette.warning)
+                        }
                     }
                 }
             }

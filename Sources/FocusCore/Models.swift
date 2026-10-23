@@ -34,6 +34,13 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
     public var folder: String?
     public var checklist: String
     public var autoStart: Bool
+    public var protection: SessionProtection
+    public var unlockChars: Int
+    public var stopDelayMinutes: Int
+    public var blockAction: AppBlockAction
+    public var webBlockAction: WebBlockAction
+    public var guardSystemPanes: Bool
+    public var punisherEnabled: Bool
 
     public init(
         id: UUID = UUID(),
@@ -46,7 +53,14 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         domains: String = "",
         folder: String? = nil,
         checklist: String = "",
-        autoStart: Bool = false
+        autoStart: Bool = false,
+        protection: SessionProtection = .none,
+        unlockChars: Int = 24,
+        stopDelayMinutes: Int = 5,
+        blockAction: AppBlockAction = .hide,
+        webBlockAction: WebBlockAction = .warn,
+        guardSystemPanes: Bool = true,
+        punisherEnabled: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -59,10 +73,18 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         self.folder = folder
         self.checklist = checklist
         self.autoStart = autoStart
+        self.protection = protection
+        self.unlockChars = UnlockChallenge.clampedLength(unlockChars)
+        self.stopDelayMinutes = max(1, min(120, stopDelayMinutes))
+        self.blockAction = blockAction
+        self.webBlockAction = webBlockAction
+        self.guardSystemPanes = guardSystemPanes
+        self.punisherEnabled = punisherEnabled
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, category, minutes, leadMinutes, strict, apps, domains, folder, checklist, autoStart
+        case protection, unlockChars, stopDelayMinutes, blockAction, webBlockAction, guardSystemPanes, punisherEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,6 +100,13 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         folder = try c.decodeIfPresent(String.self, forKey: .folder)
         checklist = try c.decodeIfPresent(String.self, forKey: .checklist) ?? ""
         autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
+        protection = try c.decodeIfPresent(SessionProtection.self, forKey: .protection) ?? .none
+        unlockChars = UnlockChallenge.clampedLength(try c.decodeIfPresent(Int.self, forKey: .unlockChars) ?? 24)
+        stopDelayMinutes = max(1, min(120, try c.decodeIfPresent(Int.self, forKey: .stopDelayMinutes) ?? 5))
+        blockAction = try c.decodeIfPresent(AppBlockAction.self, forKey: .blockAction) ?? .hide
+        webBlockAction = try c.decodeIfPresent(WebBlockAction.self, forKey: .webBlockAction) ?? .warn
+        guardSystemPanes = try c.decodeIfPresent(Bool.self, forKey: .guardSystemPanes) ?? true
+        punisherEnabled = try c.decodeIfPresent(Bool.self, forKey: .punisherEnabled) ?? true
     }
 
     public static let defaults: [FocusProfile] = [
@@ -180,6 +209,20 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
     public var calendarSnapshot: CalendarSnapshot?
     /// Starts the session by itself at `scheduledAt` (only on an unlocked Mac with no other session running).
     public var autoStart: Bool
+    /// What FocusDesk asks for before letting this session stop early (`SessionProtection`).
+    public var protection: SessionProtection
+    /// Length of the random string `.challenge` asks you to type.
+    public var unlockChars: Int
+    /// Minutes `.delay` makes you wait between asking to stop and stopping.
+    public var stopDelayMinutes: Int
+    /// What happens to an app outside the list: hide it, close it or force it to quit.
+    public var blockAction: AppBlockAction
+    /// What happens to a tab on a site outside `domains`: warn, redirect it or close it.
+    public var webBlockAction: WebBlockAction
+    /// Closes System Settings on the panes that would end the block (Privacy, Date & Time, Users).
+    public var guardSystemPanes: Bool
+    /// Makes the block harder for a while after several attempts in a row.
+    public var punisherEnabled: Bool
 
     public init(
         id: UUID = UUID(),
@@ -204,7 +247,14 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         completed: Bool = false,
         calendarEventID: String? = nil,
         calendarSnapshot: CalendarSnapshot? = nil,
-        autoStart: Bool = false
+        autoStart: Bool = false,
+        protection: SessionProtection = .none,
+        unlockChars: Int = 24,
+        stopDelayMinutes: Int = 5,
+        blockAction: AppBlockAction = .hide,
+        webBlockAction: WebBlockAction = .warn,
+        guardSystemPanes: Bool = true,
+        punisherEnabled: Bool = true
     ) {
         self.id = id
         self.title = title
@@ -229,12 +279,20 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         self.calendarEventID = calendarEventID
         self.calendarSnapshot = calendarSnapshot
         self.autoStart = autoStart
+        self.protection = protection
+        self.unlockChars = UnlockChallenge.clampedLength(unlockChars)
+        self.stopDelayMinutes = max(1, min(120, stopDelayMinutes))
+        self.blockAction = blockAction
+        self.webBlockAction = webBlockAction
+        self.guardSystemPanes = guardSystemPanes
+        self.punisherEnabled = punisherEnabled
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, category, scheduledAt, isScheduled, dueDate, minutes, leadMinutes, strict
         case apps, domains, folder, checklist, repeatRule, repeatDays, skippedDates, seriesID
         case profileID, isFixedAppointment, completed, calendarEventID, calendarSnapshot, autoStart
+        case protection, unlockChars, stopDelayMinutes, blockAction, webBlockAction, guardSystemPanes, punisherEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -262,6 +320,13 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         calendarEventID = try c.decodeIfPresent(String.self, forKey: .calendarEventID)
         calendarSnapshot = try c.decodeIfPresent(CalendarSnapshot.self, forKey: .calendarSnapshot)
         autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
+        protection = try c.decodeIfPresent(SessionProtection.self, forKey: .protection) ?? .none
+        unlockChars = UnlockChallenge.clampedLength(try c.decodeIfPresent(Int.self, forKey: .unlockChars) ?? 24)
+        stopDelayMinutes = max(1, min(120, try c.decodeIfPresent(Int.self, forKey: .stopDelayMinutes) ?? 5))
+        blockAction = try c.decodeIfPresent(AppBlockAction.self, forKey: .blockAction) ?? .hide
+        webBlockAction = try c.decodeIfPresent(WebBlockAction.self, forKey: .webBlockAction) ?? .warn
+        guardSystemPanes = try c.decodeIfPresent(Bool.self, forKey: .guardSystemPanes) ?? true
+        punisherEnabled = try c.decodeIfPresent(Bool.self, forKey: .punisherEnabled) ?? true
     }
 
     public var end: Date { scheduledAt.addingTimeInterval(Double(minutes) * 60) }
@@ -271,8 +336,13 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         let validDuration = (1...720).contains(minutes) && (0...60).contains(leadMinutes)
         let validStrict = !strict || !apps.isEmpty
         let validRepeat = repeatRule != .customDays || !repeatDays.isEmpty
-        return hasTitle && validDuration && validStrict && validRepeat
+        // Blocking websites needs a list of what stays open; without one every page would be blocked.
+        let validWeb = webBlockAction == .warn || !FocusRules.parseDomains(domains).valid.isEmpty
+        return hasTitle && validDuration && validStrict && validRepeat && validWeb
     }
+
+    /// Whether this task defends itself at all: it blocks something, or it resists being stopped.
+    public var enforces: Bool { strict || webBlockAction != .warn || protection != .none }
 
     /// Snoozes an overdue or unscheduled task relative to `now`, or shifts a future task forward from `scheduledAt`.
     public func snoozed(minutes deltaMinutes: Int = 10, now: Date = Date()) -> FocusTask {
@@ -299,6 +369,13 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         if let folder = profile.folder { self.folder = folder }
         checklist = profile.checklist
         autoStart = profile.autoStart
+        protection = profile.protection
+        unlockChars = profile.unlockChars
+        stopDelayMinutes = profile.stopDelayMinutes
+        blockAction = profile.blockAction
+        webBlockAction = profile.webBlockAction
+        guardSystemPanes = profile.guardSystemPanes
+        punisherEnabled = profile.punisherEnabled
         profileID = profile.id
     }
 
@@ -493,8 +570,19 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
     public var finalEvidenceMessage: String?
     public var selectedFiles: [String]
     public var manualFiles: [String]
+    /// A pending "I want to stop" on a session protected with a wait. Kept on disk so quitting does not clear it.
+    public var stopRequest: StopRequest?
+    /// Counts repeated attempts at blocked apps and sites, and hardens the block for a while.
+    public var punisher: DistractionPunisher
+    /// How many times FocusDesk acted on a distracting app or tab during this session.
+    public var blocksApplied: Int
+    /// A forward jump of the Mac's clock seen while this session ran, in seconds (for the history).
+    public var clockJump: TimeInterval?
+    /// Anchors to tell a clock change from real time passing.
+    public var wallAnchor: Date
+    public var continuousAnchor: Double
 
-    public init(task: FocusTask, now: Date = Date(), uptime: TimeInterval? = nil) {
+    public init(task: FocusTask, now: Date = Date(), uptime: TimeInterval? = nil, continuous: Double = TrustedClock.continuousSeconds()) {
         self.id = UUID()
         self.task = task
         self.startedAt = now
@@ -515,6 +603,12 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         self.finalEvidenceMessage = nil
         self.selectedFiles = []
         self.manualFiles = []
+        self.stopRequest = nil
+        self.punisher = DistractionPunisher()
+        self.blocksApplied = 0
+        self.clockJump = nil
+        self.wallAnchor = now
+        self.continuousAnchor = continuous
     }
 
     enum CodingKeys: String, CodingKey {
@@ -522,6 +616,7 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         case baseline, baselineValid, activities, interruptionCount, inDistractionEpisode
         case lastActivityAt, lastActivityUptime, checked, endedAt
         case finalChangedFiles, finalEvidenceMessage, selectedFiles, manualFiles
+        case stopRequest, punisher, blocksApplied, clockJump, wallAnchor, continuousAnchor
     }
 
     public init(from decoder: Decoder) throws {
@@ -546,9 +641,39 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         finalEvidenceMessage = try c.decodeIfPresent(String.self, forKey: .finalEvidenceMessage)
         selectedFiles = try c.decodeIfPresent([String].self, forKey: .selectedFiles) ?? []
         manualFiles = try c.decodeIfPresent([String].self, forKey: .manualFiles) ?? []
+        stopRequest = try c.decodeIfPresent(StopRequest.self, forKey: .stopRequest)
+        punisher = try c.decodeIfPresent(DistractionPunisher.self, forKey: .punisher) ?? DistractionPunisher()
+        blocksApplied = try c.decodeIfPresent(Int.self, forKey: .blocksApplied) ?? 0
+        clockJump = try c.decodeIfPresent(TimeInterval.self, forKey: .clockJump)
+        wallAnchor = try c.decodeIfPresent(Date.self, forKey: .wallAnchor) ?? startedAt
+        continuousAnchor = try c.decodeIfPresent(Double.self, forKey: .continuousAnchor) ?? TrustedClock.continuousSeconds()
     }
 
     public var paused: Bool { runningSince == nil }
+
+    /// This session is defending itself right now: it is running, has time left and the task asks for it.
+    public func enforcing(at now: Date, uptime: TimeInterval? = nil) -> Bool {
+        !paused && endedAt == nil && task.enforces && remaining(at: now, uptime: uptime) > 0
+    }
+
+    /// The deadline the Keychain witness is built from, anchored to the clock the user cannot wind forward.
+    public func witnessDeadline(at now: Date, uptime: TimeInterval? = nil, continuous: Double = TrustedClock.continuousSeconds()) -> TrustedDeadline {
+        TrustedDeadline(seconds: max(0, remaining(at: now, uptime: uptime)), wall: now, continuous: continuous)
+    }
+
+    /// Records one applied block, letting the punisher decide whether it is time to make things harder.
+    /// Returns true the moment the punisher switches on.
+    @discardableResult
+    public mutating func registerBlock(at continuous: Double = TrustedClock.continuousSeconds()) -> Bool {
+        blocksApplied += 1
+        guard task.punisherEnabled else { return false }
+        return punisher.register(at: continuous)
+    }
+
+    /// The block action to apply right now: the one chosen for the task, one step harder while the punisher is on.
+    public func activeBlockAction(at continuous: Double = TrustedClock.continuousSeconds()) -> AppBlockAction {
+        task.punisherEnabled && punisher.isActive(at: continuous) ? task.blockAction.escalated : task.blockAction
+    }
 
     /// Computes elapsed session work time. Uses monotonic `uptime` when available so wall-clock adjustments cannot distort work duration.
     public func elapsed(at now: Date, uptime: TimeInterval? = nil) -> TimeInterval {
@@ -879,6 +1004,16 @@ public struct Settings: Codable, Equatable, Sendable {
     public var showMenuBarItem: Bool
     /// Turns Do Not Disturb on while a session blocks distracting apps (strict mode), through two shortcuts.
     public var focusDuringStrict: Bool
+    /// Also looks at windows that are on screen without the keyboard focus (a video in the corner, a second
+    /// monitor), not only at the app in front.
+    public var watchBackgroundWindows: Bool
+    /// Reads the address of web pages opened inside apps built on Electron (Discord, Slack, Notion…) and of
+    /// Chromium web apps, so a blocked site cannot come back in disguise.
+    public var inspectEmbeddedPages: Bool
+    /// Keeps a login item that brings FocusDesk back if it is killed while a protected session is running.
+    public var relaunchGuard: Bool
+    /// Emergency codes used, with the day they were used on: an escape hatch that leaves a trace.
+    public var emergencyUses: [String]
 
     public init() {
         self.calendarID = nil
@@ -899,12 +1034,17 @@ public struct Settings: Codable, Equatable, Sendable {
         self.textScale = 1
         self.showMenuBarItem = true
         self.focusDuringStrict = true
+        self.watchBackgroundWindows = true
+        self.inspectEmbeddedPages = true
+        self.relaunchGuard = false
+        self.emergencyUses = []
     }
 
     enum CodingKeys: String, CodingKey {
         case calendarID, observeTitles, observeBrave, detailDays, excludedTitleApps
         case hotKeyEnabled, hotKeyCode, hotKeyModifiers, hotKeyLabel, hotKeyTarget
         case categories, workdays, workStartHour, workEndHour, breaks, textScale, showMenuBarItem, focusDuringStrict
+        case watchBackgroundWindows, inspectEmbeddedPages, relaunchGuard, emergencyUses
     }
 
     public init(from decoder: Decoder) throws {
@@ -927,6 +1067,10 @@ public struct Settings: Codable, Equatable, Sendable {
         textScale = min(1.3, max(1, try c.decodeIfPresent(Double.self, forKey: .textScale) ?? 1))
         showMenuBarItem = try c.decodeIfPresent(Bool.self, forKey: .showMenuBarItem) ?? true
         focusDuringStrict = try c.decodeIfPresent(Bool.self, forKey: .focusDuringStrict) ?? true
+        watchBackgroundWindows = try c.decodeIfPresent(Bool.self, forKey: .watchBackgroundWindows) ?? true
+        inspectEmbeddedPages = try c.decodeIfPresent(Bool.self, forKey: .inspectEmbeddedPages) ?? true
+        relaunchGuard = try c.decodeIfPresent(Bool.self, forKey: .relaunchGuard) ?? false
+        emergencyUses = try c.decodeIfPresent([String].self, forKey: .emergencyUses) ?? []
     }
 }
 
@@ -1089,6 +1233,35 @@ public enum FocusRules {
         "com.apple.VoiceOver",
         "com.apple.AccessibilityInspector"
     ]
+
+    /// Apps FocusDesk may hide but must never close or force to quit. A wildcard rule that reached these would
+    /// leave the Mac unusable, so — like FocusMe's `isExcludedTargetProcess` — the list is fixed in code.
+    public static let neverTerminateBundleIDs: Set<String> = [
+        "local.focusdesk.app",
+        "com.apple.finder",
+        "com.apple.dock",
+        "com.apple.systemuiserver",
+        "com.apple.controlcenter",
+        "com.apple.notificationcenterui",
+        "com.apple.WindowManager",
+        "com.apple.loginwindow",
+        "com.apple.systempreferences",
+        "com.apple.Settings",
+        "com.apple.SecurityAgent",
+        "com.apple.Spotlight",
+        "com.apple.universalaccessAuthWarn",
+        "com.apple.VoiceOver",
+        "com.apple.VoiceOverUtility",
+        "com.apple.AccessibilityInspector",
+        "com.apple.Terminal",
+        "com.googlecode.iterm2"
+    ]
+
+    /// The action that may actually be applied to `bundleID`: anything on the list above is only ever hidden,
+    /// however hard the task asks.
+    public static func safeAction(_ action: AppBlockAction, for bundleID: String) -> AppBlockAction {
+        neverTerminateBundleIDs.contains(bundleID) ? .hide : action
+    }
 
     public static func clock(_ seconds: TimeInterval) -> String {
         // Truncate like every other timer: a countdown has to pass through 00:00 instead of jumping from 00:01 to +00:01.

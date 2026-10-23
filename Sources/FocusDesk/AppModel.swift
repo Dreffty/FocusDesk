@@ -35,7 +35,13 @@ final class AppModel: ObservableObject {
     @Published var editingTask: FocusTask?
     @Published var showCompletion = false
     @Published var accessible = MacActivity.accessibility
+    /// macOS says the permission is granted but every call fails: the block cannot act and has to say so.
+    @Published var accessibilityBroken = false
     @Published var braveStatus = "En espera"
+    /// The challenge or wait standing between the user and stopping a protected session.
+    @Published var pendingStop: PendingStopChallenge?
+    /// Somebody moved the Mac's clock forward during a protected session.
+    @Published var clockWarning: String?
     @Published var hasUnsavedChanges = false
     @Published var corruptFileDetected = false
     /// Task the user asked to start while another session was running. Drives the explicit hand-off question.
@@ -49,9 +55,9 @@ final class AppModel: ObservableObject {
     private var askedForNotifications = false
     /// Allowed apps offered as "Abrir …" buttons next to `resumePrompt` (strict pause with no allowed app open).
     @Published var promptApps: [AllowedApp] = []
-    private var lastDistractionNotifyAt = Date.distantPast
+    var lastDistractionNotifyAt = Date.distantPast
     /// Host of the current visit outside the task's domains; one interruption and one notice per visit.
-    private var domainEpisodeHost: String?
+    var domainEpisodeHost: String?
     private var screenIsLocked = false
     /// Tasks already started on their own (or skipped because another session was running), so it happens once.
     private var autoStartHandled: Set<String> = []
@@ -80,6 +86,10 @@ final class AppModel: ObservableObject {
     private var warnedMissingFocusShortcuts = false
     let scanner = EvidenceScanner()
     let brave = BraveReader()
+    /// Reads and steers tabs in every browser FocusDesk knows, not only Brave.
+    let webInspector = WebInspector()
+    /// The login item that brings FocusDesk back if it is killed mid-session.
+    let relaunchGuard = RelaunchGuard()
     let store: WorkspaceStore
     let preview: Bool
 
@@ -88,18 +98,32 @@ final class AppModel: ObservableObject {
     private var subscriptions = Set<AnyCancellable>()
     private var lastPrunedDay = Calendar.current.startOfDay(for: Date())
     private var writable = true
-    private var lastAllowed: NSRunningApplication?
-    private var strictTracker = StrictRedirectTracker()
+    var lastAllowed: NSRunningApplication?
+    var strictTracker = StrictRedirectTracker()
     /// Times an allowed app was opened because none was running; reset when one is seen in front.
-    private var strictLaunchAttempts = 0
-    private var strictRecheck: DispatchWorkItem?
+    var strictLaunchAttempts = 0
+    var strictRecheck: DispatchWorkItem?
+    /// Last read of each browser's address bar, so one `osascript` per browser does not pile up.
+    var lastWebReadAt: [String: Date] = [:]
+    /// Host of the current visit to a blocked site: one interruption and one action per visit.
+    var blockedHostEpisode: String?
+    /// Last sweep of windows visible without the keyboard focus.
+    var lastBackgroundSweepAt = Date.distantPast
+    /// Last look at which System Settings pane is open.
+    var lastSettingsGuardAt = Date.distantPast
+    /// Last scan of pages embedded in Electron apps (the costliest check, so the rarest).
+    var lastEmbeddedScanAt = Date.distantPast
+    /// A stop whose code was just typed correctly: lets it through the gate once, without asking again.
+    var authorizedStop: StopReason?
+    /// Whether the end of a pending wait has already been announced.
+    var stopReadyNotified = false
     private var ticks = 0
-    private var overtimeNotified = false
+    var overtimeNotified = false
     private var hasInitialBaseline = false
     /// Task to start once the current session's result is confirmed (set by an accepted hand-off).
     private var queuedStartTaskID: UUID?
     /// True when the pause came from the Mac (sleep, lock, user switch) and not from the user pressing Pausar.
-    private var pausedBySystem = false
+    var pausedBySystem = false
     private var dayCache: [String: (real: [FocusTask], projected: [FocusTask])] = [:]
     var showWindow: (() -> Void)?
     var toggleCompactPanel: (() -> Void)?
@@ -253,6 +277,9 @@ final class AppModel: ObservableObject {
             }
         }
         schedule()
+        // A protected session the data file no longer knows about: the file was edited while FocusDesk was closed.
+        checkWitnessAtLaunch()
+        relaunchGuard.refresh()
     }
 
     /// A session read from disk (at launch, or in a restored or recovered copy) never runs on its own. The design
@@ -312,6 +339,12 @@ final class AppModel: ObservableObject {
         s.remaining(at: now, uptime: uptime)
     }
 
+    /// Whether the running session still has time on the clock (the views ask before offering a way out).
+    var currentRemainingIsPositive: Bool {
+        guard let s = session else { return false }
+        return currentRemaining(for: s) > 0
+    }
+
     func currentElapsed(for s: WorkSession) -> TimeInterval {
         s.elapsed(at: now, uptime: uptime)
     }
@@ -350,6 +383,8 @@ final class AppModel: ObservableObject {
                 error = nil
             }
             corruptFileDetected = false
+            // The Keychain copy follows every save, so deleting the file does not quietly end a protected session.
+            refreshWitness()
             return true
         } catch {
             if workspace.session != nil, workspace.session?.endedAt == nil, workspace.session?.paused == false {
@@ -423,7 +458,12 @@ final class AppModel: ObservableObject {
     }
 
     func saveTask(_ input: FocusTask, detachFromSeriesID: UUID? = nil, occurrenceDate: Date? = nil) {
-        guard writable, !busy, input.valid, input.id != session?.task.id else { return }
+        guard writable, !busy, input.valid else { return }
+        // The task that is running can be edited, but only in the direction that makes it harder: the ratchet.
+        if let running = session, running.task.id == input.id {
+            applyRatchetedEdit(input, to: running)
+            return
+        }
         var task = input
         task.title = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
         task.domains = FocusRules.normalizeDomains(task.domains)
@@ -1051,7 +1091,16 @@ final class AppModel: ObservableObject {
         return workspace.tasks.first { $0.id == id && !$0.completed }
     }
 
+    /// Pausing is one of the three ways out of a session; a protected one asks for the code or the wait first.
     func pause() {
+        guard writable, let s = workspace.session, s.endedAt == nil else { return }
+        guard passesStopGate(.pause, session: s) else { return }
+        performPause()
+    }
+
+    /// Pauses without asking anything. Used by the Mac (sleep, lock, user switch) and by the strict-mode safety
+    /// valve: those are not the user trying to escape, and blocking them would trap the session.
+    func performPause() {
         guard writable, workspace.session != nil, workspace.session?.endedAt == nil else { return }
         pausedBySystem = false
         resumePrompt = nil
@@ -1108,9 +1157,10 @@ final class AppModel: ObservableObject {
         offerResumeAfterSystemPause(reason: "mientras el Mac estaba bloqueado")
     }
 
-    private func pauseForSystem() {
+    func pauseForSystem() {
         guard let s = session, !s.paused, s.endedAt == nil else { return }
-        pause()
+        // The Mac went to sleep or locked: not an escape attempt, so no code and no wait.
+        performPause()
         pausedBySystem = true
         if error == nil {
             notice = "Sesión en pausa por reposo o bloqueo del Mac."
@@ -1193,6 +1243,8 @@ final class AppModel: ObservableObject {
     func finish() {
         guard writable, var s = session, !busy else { return }
         if s.endedAt != nil { showCompletion = true; showWindow?(); return }
+        // Finishing once the time is up is never protected; finishing early is the third way out.
+        guard passesStopGate(.finishEarly, session: s) else { return }
         let finishInstant = Date()
         s.finish(at: finishInstant, uptime: uptime)
         workspace.session = s
@@ -1313,6 +1365,7 @@ final class AppModel: ObservableObject {
 
     func cancelSession(note: String = "Sesión cancelada") {
         guard writable, !busy, var s = session else { return }
+        guard s.endedAt != nil || passesStopGate(.cancel, session: s) else { return }
         let cancelInstant = Date()
         s.finish(at: cancelInstant, uptime: uptime)
         var recordSession = s
@@ -1374,7 +1427,7 @@ final class AppModel: ObservableObject {
         _ = persist()
     }
 
-    private func enqueueProjectionForTask(_ inputTask: FocusTask, session: WorkSession? = nil, now: Date = Date(), force: Bool = false) {
+    func enqueueProjectionForTask(_ inputTask: FocusTask, session: WorkSession? = nil, now: Date = Date(), force: Bool = false) {
         guard !preview, workspace.settings.calendarID != nil else { return }
         let task = workspace.tasks.first(where: { $0.id == inputTask.id }) ?? inputTask
         let activeSession = session ?? self.session
@@ -1681,9 +1734,22 @@ final class AppModel: ObservableObject {
             if rolled { syncCalendar() }
         }
         startDueAutoStartTasks()
+        checkStopRequestReady()
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility
             observe()
+            // Windows on screen without the focus, and pages inside Electron apps: both have their own interval.
+            sweepBackgroundWindows()
+            scanEmbeddedPages()
+        }
+        if ticks.isMultiple(of: 10) {
+            checkClockDrift()
+            // The permission can look granted and not work; a block that cannot act must not pretend otherwise.
+            if session?.task.strict == true, accessible {
+                accessibilityBroken = !AccessibilityProbe.actuallyGranted()
+            } else {
+                accessibilityBroken = false
+            }
         }
         // Replenish reminder queue when earlier reminders are consumed in a busy day (>60 reminders)
         // Only with permission: without it nothing gets scheduled, so the check always failed and rescheduled
@@ -1772,13 +1838,27 @@ final class AppModel: ObservableObject {
         }
         let appChanged = id != lastObservedAppID
         lastObservedAppID = id
+        // System Settings is exempt as a distraction — you may need the Wi-Fi mid-session — but two of its panes
+        // are the way out of the block, so they are checked before the exemption applies.
+        if SystemSettingsGuard.bundleIDs.contains(id) {
+            guardSystemSettingsIfNeeded(bundleID: id, pid: fg.app.processIdentifier, session: s)
+        }
         var exemptions = FocusRules.systemExemptBundleIDs
         if let ownID = Bundle.main.bundleIdentifier { exemptions.insert(ownID) }
         guard !exemptions.contains(id) else { return }
         // Never redirect while FocusDesk is presenting a modal open/save panel
         guard NSApp.modalWindow == nil else { return }
 
-        let allowed = s.task.apps.isEmpty || s.task.apps.contains { $0.id == id }
+        // A Chromium "web app" is a real app with its own icon wrapping a single site: judge it by that site,
+        // so installing a blocked page as an app is not a way around the rules.
+        let webAppHost = workspace.settings.inspectEmbeddedPages && WebRules.looksLikeChromiumWebApp(bundleID: id)
+            ? AppInspector.chromiumWebAppHost(for: fg.app)
+            : nil
+        var allowed = s.task.apps.isEmpty || s.task.apps.contains { $0.id == id }
+        if allowed, let webAppHost, s.task.webBlockAction != .warn,
+           !FocusRules.domainAllowed(webAppHost, list: s.task.domains) {
+            allowed = false
+        }
         let at = Date()
         let currentUptime = uptime
 
@@ -1798,128 +1878,24 @@ final class AppModel: ObservableObject {
             uptime: currentUptime
         ) ?? false
 
-        if allowed, id != "com.brave.Browser" { domainEpisodeHost = nil }
+        if allowed, !WebRules.isBrowser(id) { domainEpisodeHost = nil; blockedHostEpisode = nil }
 
         if isNewInterruption {
-            notice = "\(fg.app.localizedName ?? id) está fuera del perfil de esta tarea."
+            notice = webAppHost.map { "\(fg.app.localizedName ?? id) abre \($0), que no entra en esta tarea." }
+                ?? "\(fg.app.localizedName ?? id) está fuera del perfil de esta tarea."
             if !s.task.strict && !preview { notifyDistraction(notice ?? "", session: s) }
         }
 
         if !allowed && s.task.strict {
-            // Blocking used to mean only "bring an allowed app to the front": the distracting app stayed open right
-            // behind it, and launchers or games (Riot Client stayed 11 s) took the front back as soon as they opened
-            // another window, while the next check waited for the 5-second tick. Now the distracting app is hidden,
-            // the allowed one comes forward, and the front is checked again moments later.
-            let distracting = fg.app
-            let distractingName = distracting.localizedName ?? id
-            let runningTarget = lastAllowed.flatMap { candidate in
-                (candidate.isTerminated || !s.task.apps.contains(where: { a in a.id == candidate.bundleIdentifier })) ? nil : candidate
-            } ?? NSWorkspace.shared.runningApplications.first { app in
-                !app.isTerminated && s.task.apps.contains { $0.id == app.bundleIdentifier }
-            }
-            // No allowed app open: open one instead of pausing straight away (twice at most, then the pause below).
-            if runningTarget == nil, strictLaunchAttempts < 2,
-               let (allowedApp, url) = s.task.apps.lazy.compactMap({ app in Self.installedURL(of: app).map { (app, $0) } }).first {
-                strictLaunchAttempts += 1
-                distracting.hide()
-                notice = "\(distractingName) no está entre las apps de esta tarea: la he ocultado y abro \(allowedApp.name)."
-                let config = NSWorkspace.OpenConfiguration()
-                config.activates = true
-                NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in }
-                scheduleStrictRecheck(after: 1.5)
-                return
-            }
-            let decision = strictTracker.evaluateUnallowed(hasRunningAllowedApp: runningTarget != nil, at: at)
-            switch decision {
-            case .none:
-                break
-            case .cooldown:
-                // Taken back during the cooldown after a redirect: caught again as soon as it ends.
-                scheduleStrictRecheck(after: strictTracker.cooldown)
-            case .redirect:
-                if let target = runningTarget {
-                    // `hide()` answers false even when it works; whether the redirect held is checked below.
-                    distracting.hide()
-                    let ok = target.activate(options: [])
-                    strictTracker.recordRedirectAttempt(succeeded: ok)
-                    notice = ok
-                        ? "\(distractingName) no está entre las apps de esta tarea: la he ocultado y vuelves a \(target.localizedName ?? "la app permitida")."
-                        : "No se pudo volver a \(target.localizedName ?? "la app permitida"). Puedes pausar en cualquier momento."
-                    if isNewInterruption, !preview { notifyDistraction(notice ?? "", session: s) }
-                    scheduleStrictRecheck(after: 0.8)
-                }
-            case .pauseSession(let reason):
-                pause()
-                // pause() clears any prompt; this one has to wait for an answer and offer the allowed apps,
-                // otherwise «Reanudar» just pauses again a few seconds later.
-                resumePrompt = reason
-                promptApps = s.task.apps
-                pausedBySystem = true
-                if !preview {
-                    reminders.notify(
-                        "Sesión en pausa · \(s.task.title)",
-                        body: reason,
-                        category: ReminderService.pausedCategory,
-                        userInfo: ["taskID": s.task.id.uuidString],
-                        identifier: "paused-" + s.id.uuidString
-                    )
-                }
-                showWindow?()
-                return
-            }
+            guard enforceApp(fg.app, bundleID: id, session: s, isNewInterruption: isNewInterruption, at: at) else { return }
         }
 
-        // One osascript process per read: on switching to Brave, then at most every 20 s (it was every 5 s).
-        if id == "com.brave.Browser", workspace.settings.observeBrave,
-           appChanged || Date().timeIntervalSince(lastBraveReadAt) >= 20 {
-            lastBraveReadAt = Date()
-            let sessionID = s.id
-            brave.read { [weak self] result in
-                guard let self,
-                      let current = self.session,
-                      current.id == sessionID,
-                      !current.paused,
-                      current.endedAt == nil,
-                      self.workspace.settings.observeBrave,
-                      NSWorkspace.shared.frontmostApplication?.bundleIdentifier == id else { return }
-                switch result {
-                case .host(let host):
-                    self.braveStatus = "Dominio activo: \(host)"
-                    if self.workspace.session?.activities.last?.domain != host {
-                        let outside = !FocusRules.domainAllowed(host, list: current.task.domains)
-                        // One interruption per visit outside the task's domains, like apps; the notice also reaches
-                        // the user, who is looking at Brave and not at FocusDesk's window.
-                        let newVisit = outside && self.domainEpisodeHost == nil
-                        self.domainEpisodeHost = outside ? (self.domainEpisodeHost ?? host) : nil
-                        self.workspace.session?.record(
-                            Activity(appID: id, name: "Brave", domain: host, interruption: newVisit),
-                            at: Date(),
-                            uptime: self.uptime
-                        )
-                        if outside {
-                            self.notice = "\(host) no está en los dominios de la tarea. El control de webs es informativo."
-                            if newVisit, !self.preview { self.notifyDistraction(self.notice ?? "", session: current) }
-                        }
-                    }
-                case .permissionDenied:
-                    self.braveStatus = "Permiso de Automatización denegado (dominio desconocido)"
-                    if self.workspace.session?.activities.last?.domainStatus != "sin permiso" {
-                        self.workspace.session?.record(
-                            Activity(appID: id, name: "Brave", domainStatus: "sin permiso"),
-                            at: Date(),
-                            uptime: self.uptime
-                        )
-                    }
-                case .noWindowOrTab:
-                    self.braveStatus = "Sin ventana o pestaña activa en Brave"
-                case .notRunning:
-                    self.braveStatus = "Brave cerrado"
-                case .timeout:
-                    self.braveStatus = "Respuesta tardía de Brave (dominio desconocido)"
-                case .unknown:
-                    self.braveStatus = "Pestaña interna o dominio desconocido"
-                }
-            }
+        // The address bar of any browser FocusDesk knows, not just Brave: one `osascript` per browser, on switching
+        // to it and then every 15 s.
+        if WebRules.isBrowser(id), workspace.settings.observeBrave || s.task.webBlockAction != .warn,
+           appChanged || Date().timeIntervalSince(lastWebReadAt[id] ?? .distantPast) >= 15 {
+            lastWebReadAt[id] = Date()
+            inspectBrowser(bundleID: id, session: s)
         }
     }
 
@@ -1934,14 +1910,14 @@ final class AppModel: ObservableObject {
     }
 
     /// Where an allowed app lives on this Mac, by bundle id first (it may have moved) and then by its saved path.
-    private static func installedURL(of app: AllowedApp) -> URL? {
+    static func installedURL(of app: AllowedApp) -> URL? {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.id)
             ?? (FileManager.default.fileExists(atPath: app.path) ? URL(fileURLWithPath: app.path) : nil)
     }
 
     /// Looks at the front app again shortly: an app that grabs the focus back right after being hidden is caught
     /// then, not up to five seconds later on the next tick.
-    private func scheduleStrictRecheck(after delay: TimeInterval) {
+    func scheduleStrictRecheck(after delay: TimeInterval) {
         strictRecheck?.cancel()
         let item = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.observe() }
@@ -1951,13 +1927,13 @@ final class AppModel: ObservableObject {
     }
 
     /// "Vuelve a tu tarea" replaces the previous one instead of piling up, and sounds at most every 3 minutes.
-    private func notifyDistraction(_ body: String, session s: WorkSession) {
+    func notifyDistraction(_ body: String, session s: WorkSession) {
         guard Date().timeIntervalSince(lastDistractionNotifyAt) >= 180 else { return }
         lastDistractionNotifyAt = Date()
         reminders.notify("Vuelve a tu tarea", body: body, identifier: "distraction-" + s.id.uuidString)
     }
 
-    private func clearSessionNotifications(_ s: WorkSession) {
+    func clearSessionNotifications(_ s: WorkSession) {
         reminders.removeDelivered(identifiers: ["distraction-", "overtime-", "paused-"].map { $0 + s.id.uuidString })
     }
 

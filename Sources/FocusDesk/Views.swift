@@ -73,7 +73,8 @@ struct MainView: View {
             VStack(spacing: 0) {
                 TopBar(model: model)
                 Rectangle().fill(Palette.stroke).frame(height: 1)
-                if model.error != nil || model.notice != nil || model.resumePrompt != nil {
+                if model.error != nil || model.notice != nil || model.resumePrompt != nil
+                    || model.accessibilityBroken || model.session?.stopRequest != nil {
                     BannerStack(model: model)
                         .padding(.horizontal, 28)
                         .padding(.top, 14)
@@ -104,6 +105,11 @@ struct MainView: View {
         .tint(Palette.mint)
         .sheet(item: $model.editingTask) { task in TaskEditor(model: model, draft: task) }
         .sheet(isPresented: $model.showCompletion) { CompletionView(model: model) }
+        // Leaving a protected session: the code has to be typed before anything happens.
+        .sheet(isPresented: Binding(
+            get: { model.pendingStop != nil },
+            set: { if !$0 { model.pendingStop = nil } }
+        )) { UnlockSheet(model: model) }
         .confirmationDialog("¿Eliminar esta tarea y su evento de calendario?", isPresented: Binding(get: { model.taskPendingDeletion != nil }, set: { if !$0 { model.taskPendingDeletion = nil } }), titleVisibility: .visible) {
             Button("Eliminar tarea", role: .destructive) { if let task = model.taskPendingDeletion { model.deleteTask(task) }; model.taskPendingDeletion = nil }
         }
@@ -300,6 +306,10 @@ private struct SidebarSessionCard: View {
                     .accessibilityLabel("Ver la sesión en Hoy")
             }
             Text(session.task.title).font(.app(13, weight: .semibold)).lineLimit(2)
+            if session.task.protection != .none, !ended {
+                Chip(session.task.protection.label, icon: "lock.shield", color: Palette.mint)
+                    .help(session.task.protection.explanation)
+            }
             if !ended {
                 Text(FocusRules.clock(remaining))
                     .font(.app(26, weight: .regular, design: .monospaced))
@@ -424,6 +434,41 @@ private struct BannerStack: View {
                         .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.warning))
                         .help("Dejarla en pausa")
                         .accessibilityLabel("Dejarla en pausa")
+                }
+                .padding(12)
+                .foregroundStyle(Palette.warning)
+                .background(Palette.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.warning.opacity(0.28), lineWidth: 1))
+            }
+            // A wait the user asked for: visible the whole time, with the way back.
+            if let session = model.session, let request = session.stopRequest {
+                let left = request.remaining()
+                HStack(spacing: 10) {
+                    Image(systemName: left > 0 ? "hourglass" : "checkmark.circle.fill")
+                    Text(left > 0
+                         ? "Has pedido \(request.reason.verb) «\(session.task.title)». Faltan \(FocusRules.clock(left)) y la sesión sigue."
+                         : "Ya puedes \(request.reason.verb) «\(session.task.title)». Si se te pasaron las ganas, sigue trabajando.")
+                        .font(.app(12, weight: .medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button("Seguir trabajando") { model.cancelStopRequest() }
+                        .buttonStyle(.focus(.secondary, compact: true))
+                }
+                .padding(12)
+                .foregroundStyle(left > 0 ? Palette.muted : Palette.mint)
+                .background(Palette.elevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.stroke, lineWidth: 1))
+            }
+            // The block cannot act: saying nothing would be pretending to protect.
+            if model.accessibilityBroken {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill").padding(.top, 1)
+                    Text(AccessibilityProbe.brokenPermissionAdvice)
+                        .font(.app(12))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button("Abrir Accesibilidad") { MacActivity.openAccessibilitySettings() }
+                        .buttonStyle(.focus(.secondary, compact: true))
                 }
                 .padding(12)
                 .foregroundStyle(Palette.warning)
@@ -2009,10 +2054,17 @@ struct SessionButtons: View {
                     .buttonStyle(.focus(.ghost, compact: compact))
                     .help("Ampliar 10 minutos (⌃⌥⌘A)")
                     .accessibilityLabel("Ampliar 10 minutos")
-                Button { confirmCancel = true } label: { Image(systemName: "xmark") }
-                    .buttonStyle(FocusIconButtonStyle(size: compact ? 24 : 30, tint: Palette.danger.opacity(0.8)))
-                    .help("Cancelar la sesión sin completar la tarea")
-                    .accessibilityLabel("Cancelar la sesión sin completar la tarea")
+                if model.session?.task.protection == .forced, model.currentRemainingIsPositive {
+                    Button { model.requestEmergencyExit() } label: { Image(systemName: "exclamationmark.shield") }
+                        .buttonStyle(FocusIconButtonStyle(size: compact ? 24 : 30, tint: Palette.warning))
+                        .help("Salida de emergencia: 60 caracteres y queda anotada")
+                        .accessibilityLabel("Salida de emergencia")
+                } else {
+                    Button { confirmCancel = true } label: { Image(systemName: "xmark") }
+                        .buttonStyle(FocusIconButtonStyle(size: compact ? 24 : 30, tint: Palette.danger.opacity(0.8)))
+                        .help("Cancelar la sesión sin completar la tarea")
+                        .accessibilityLabel("Cancelar la sesión sin completar la tarea")
+                }
             }
             Spacer(minLength: 0)
         }
