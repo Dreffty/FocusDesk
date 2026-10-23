@@ -194,13 +194,19 @@ enum SystemSettingsGuard {
 
 // MARK: - Coming back after being killed
 
-/// A login item that brings FocusDesk back when it exits badly — which is what happens when it is killed from
-/// Activity Monitor or with `kill`. It is deliberately modest: everything lives in your own account, and anyone
-/// who knows `launchctl` can switch it off. It buys the half minute in which the impulse usually passes, and it
-/// is the most a plain app can do without asking for an administrator password.
+/// A login item that brings FocusDesk back when it disappears in the middle of a protected session — killed from
+/// Activity Monitor, forced to quit, or crashed. It is deliberately modest: everything lives in your own account,
+/// and anyone who knows `launchctl` can switch it off. It buys the half minute in which the impulse usually passes,
+/// and it is the most a plain app can do without asking for an administrator password.
+///
+/// launchd only watches the processes it starts itself, and `KeepAlive` starts the job the moment it is loaded.
+/// The first version pointed the job at FocusDesk: loading it opened a second copy, which saw the first one, quit
+/// with status 0, and launchd took that as done — the FocusDesk actually open was never watched. Now the job runs
+/// `FocusDesk --watcher`, a separate process with no window that looks for the planner and reopens it.
 @MainActor
 final class RelaunchGuard: ObservableObject {
     static let label = "local.focusdesk.guard"
+    static let watcherArgument = "--watcher"
 
     @Published private(set) var installed = false
     @Published private(set) var message = ""
@@ -218,12 +224,19 @@ final class RelaunchGuard: ObservableObject {
         return executable.path.contains(".app/Contents/MacOS/") ? executable : nil
     }
 
-    func refresh() {
+    /// `repair` rewrites a login item that points somewhere else — an older version that ran the planner itself,
+    /// or a FocusDesk that has since moved folders and would leave the job pointing at nothing. Never from the
+    /// demo mode, which runs from the build folder and must not repoint the real login item at it.
+    func refresh(repair: Bool = false) {
         installed = FileManager.default.fileExists(atPath: plistURL.path)
+        if repair, installed, available, let executable = bundledExecutable, installedArguments() != Self.arguments(for: executable) {
+            install()
+            return
+        }
         if !available {
             message = "Disponible cuando abres FocusDesk desde la app instalada, no desde la carpeta de compilación."
         } else if installed {
-            message = "Activo: si matan FocusDesk durante una sesión protegida, macOS vuelve a abrirlo."
+            message = "Activo: si FocusDesk se cierra a la fuerza durante una sesión protegida, vuelve a abrirse en unos segundos y la sesión sigue. Se abre también al iniciar sesión."
         } else {
             message = "Apagado. Con él, cerrar FocusDesk a la fuerza deja de ser una salida fácil."
         }
@@ -233,16 +246,18 @@ final class RelaunchGuard: ObservableObject {
         guard let executable = bundledExecutable else { refresh(); return }
         let plist: [String: Any] = [
             "Label": Self.label,
-            "ProgramArguments": [executable.path],
-            // Only after an unclean exit: quitting FocusDesk properly from its menu is still allowed.
-            "KeepAlive": ["SuccessfulExit": false],
-            "RunAtLoad": false,
-            "ProcessType": "Interactive",
-            // Enough to outlast a burst of kills without turning into a loop.
-            "ThrottleInterval": 5
+            "ProgramArguments": Self.arguments(for: executable),
+            // The watcher itself is kept running; it is the one that decides whether FocusDesk comes back.
+            "KeepAlive": true,
+            "RunAtLoad": true,
+            "LimitLoadToSessionType": "Aqua",
+            "ProcessType": "Standard",
+            "ThrottleInterval": 10
         ]
         do {
             try FileManager.default.createDirectory(at: plistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            // An older job may be loaded with other arguments: unload it first, or bootstrap keeps the old one.
+            _ = Self.launchctl(["bootout", "gui/\(getuid())/\(Self.label)"])
             let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
             try data.write(to: plistURL, options: .atomic)
             let result = Self.launchctl(["bootstrap", "gui/\(getuid())", plistURL.path])
@@ -264,6 +279,16 @@ final class RelaunchGuard: ObservableObject {
         refresh()
     }
 
+    private static func arguments(for executable: URL) -> [String] {
+        [executable.path, watcherArgument]
+    }
+
+    private func installedArguments() -> [String]? {
+        guard let data = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
+        return plist["ProgramArguments"] as? [String]
+    }
+
     @discardableResult
     private static func launchctl(_ arguments: [String]) -> (status: Int32, output: String) {
         let process = Process()
@@ -276,5 +301,83 @@ final class RelaunchGuard: ObservableObject {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+}
+
+// MARK: - The watcher the login item runs
+
+/// `FocusDesk --watcher`: no window, no Dock icon, never a second planner. Every two seconds it looks for the
+/// FocusDesk of its own bundle; when that is gone and the saved session says it was a protected session still
+/// running, it opens FocusDesk again, which picks the session up by itself. What may bring it back, and the limit
+/// that stops it bouncing forever, are in `RelaunchDecision`.
+///
+/// For tests: `--data-directory <dir>` reads another data folder and reopens FocusDesk in demo mode on it, so the
+/// whole round trip can be tried without touching the real agenda; `--dry-run` prints one decision and exits.
+enum RelaunchWatcher {
+    static func run(arguments: [String]) -> Never {
+        let started = Date()
+        let testDirectory = arguments.firstIndex(of: "--data-directory").flatMap {
+            $0 + 1 < arguments.count ? URL(fileURLWithPath: arguments[$0 + 1]) : nil
+        }
+        let dryRun = arguments.contains("--dry-run")
+        let directory = testDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FocusDesk")
+        let store = WorkspaceStore(url: directory.appendingPathComponent("workspace.json"))
+        var relaunches: [Date] = []
+        // Right after a log-in, the login items get a moment to open FocusDesk themselves.
+        if !dryRun && testDirectory == nil { Thread.sleep(forTimeInterval: 10) }
+        while true {
+            let now = Date()
+            relaunches.removeAll { now.timeIntervalSince($0) > RelaunchDecision.window }
+            let appRunning = interfaceRunning()
+            // The data file is only read while FocusDesk is gone, never under its feet.
+            let session = appRunning ? nil : (try? store.load())?.session
+            let relaunch = RelaunchDecision.shouldRelaunch(
+                session: session,
+                appRunning: appRunning,
+                watcherAge: now.timeIntervalSince(started),
+                recentRelaunches: relaunches.count,
+                now: now
+            )
+            if dryRun {
+                let state = session.map { s in
+                    s.runningSince != nil ? "en marcha al guardarse" : (s.resumeOnLaunchUntil != nil ? "cerrada por reinicio" : "en pausa")
+                } ?? (appRunning ? "no se mira con FocusDesk abierta" : "ninguna")
+                print("FocusDesk abierta: \(appRunning ? "sí" : "no") · sesión: \(state) · volver a abrirla: \(relaunch ? "sí" : "no")")
+                exit(0)
+            }
+            if relaunch {
+                relaunches.append(now)
+                reopen(demoDirectory: testDirectory)
+                Thread.sleep(forTimeInterval: 8)
+            } else {
+                Thread.sleep(forTimeInterval: 2)
+            }
+        }
+    }
+
+    /// A FocusDesk of this same bundle with a window and a Dock icon — not another watcher, and not a copy in
+    /// another folder.
+    static func interfaceRunning() -> Bool {
+        let own = ProcessInfo.processInfo.processIdentifier
+        let bundlePath = Bundle.main.bundleURL.standardizedFileURL.path
+        return NSRunningApplication.runningApplications(withBundleIdentifier: "local.focusdesk.app").contains { app in
+            app.processIdentifier != own && !app.isTerminated && app.activationPolicy == .regular &&
+            app.bundleURL?.standardizedFileURL.path == bundlePath
+        }
+    }
+
+    private static func reopen(demoDirectory: URL?) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        var arguments = ["-n", Bundle.main.bundleURL.path]
+        if let demoDirectory {
+            arguments += ["--args", "--preview", "--preview-directory", demoDirectory.path]
+        } else {
+            arguments.removeFirst()   // the real planner: never a second copy
+        }
+        process.arguments = arguments
+        try? process.run()
+        process.waitUntilExit()
     }
 }

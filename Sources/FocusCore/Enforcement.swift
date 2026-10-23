@@ -91,6 +91,16 @@ public enum SessionProtection: String, Codable, CaseIterable, Sendable {
         }
     }
 
+    /// Where the way out of a session with this protection is, said wherever FocusDesk refuses something.
+    public var wayOut: String {
+        switch self {
+        case .none: return ""
+        case .challenge: return "Para pararla, pulsa Pausar o Cancelar y teclea el código."
+        case .delay: return "Para pararla, pulsa Pausar o Cancelar y espera a que pase el tiempo."
+        case .forced: return StopGate.emergencyHint
+        }
+    }
+
     /// Order from softest to hardest; the ratchet never lets a running session go down this list.
     public var strength: Int {
         switch self {
@@ -262,6 +272,9 @@ public enum Ratchet {
         if current.guardSystemPanes && !proposed.guardSystemPanes {
             return .refused("La protección de «Privacidad y seguridad» y «Fecha y hora» no se quita con la sesión en marcha.")
         }
+        if current.punisherEnabled && !proposed.punisherEnabled {
+            return .refused("El endurecimiento tras varios intentos seguidos no se quita con la sesión en marcha.")
+        }
         return .accepted
     }
 }
@@ -349,8 +362,62 @@ public enum StopGate {
             return .waitStarted(Double(max(1, stopDelayMinutes)) * 60)
         case .forced:
             let left = FocusRules.clock(timeLeft)
-            return .refused("«Hasta el final»: no se puede \(reason.verb) esta sesión. Le quedan \(left).")
+            return .refused("«Hasta el final»: no se puede \(reason.verb) esta sesión. Le quedan \(left). \(emergencyHint)")
         }
+    }
+
+    /// Every refusal says where the way out is: a block nobody can find the exit of is a trap, not a block.
+    public static let emergencyHint = "Si de verdad pasa algo, usa «Emergencia» (el escudo junto a Pausar): 60 caracteres y queda anotada."
+}
+
+// MARK: - Closed by the Mac, not by the user
+
+/// The reason macOS gives when it asks every app to quit. A restart or a shutdown must never be stopped by a
+/// session: that is how somebody ends up holding the power button and losing work in every other app.
+public enum SystemQuit {
+    /// `kAEQuitReason` values (AERegistry.h): quit all, shutdown, restart, log out and their confirmation dialogs.
+    public static let reasonCodes: Set<UInt32> = [
+        fourCharCode("quia"), fourCharCode("shut"), fourCharCode("rest"),
+        fourCharCode("rlgo"), fourCharCode("logo"), fourCharCode("rrst"), fourCharCode("rsdn")
+    ]
+
+    public static func isSystemQuit(reasonCode: UInt32?) -> Bool {
+        guard let reasonCode else { return false }
+        return reasonCodes.contains(reasonCode)
+    }
+
+    static func fourCharCode(_ text: String) -> UInt32 {
+        text.utf8.reduce(0) { ($0 << 8) | UInt32($1) }
+    }
+}
+
+// MARK: - Coming back after FocusDesk went away
+
+/// What the login-item watcher decides when it finds FocusDesk is not running. Kept pure so the rules that bring
+/// the app back — and, above all, the ones that stop it from coming back in a loop — can be tested.
+public enum RelaunchDecision {
+    /// At most this many relaunches inside `window`: a FocusDesk that crashes on launch must not bounce forever.
+    public static let maxRelaunches = 3
+    public static let window: TimeInterval = 180
+    /// A watcher younger than this has just been started by a log-in, not lived through a log-out.
+    public static let startupGrace: TimeInterval = 90
+
+    public static func shouldRelaunch(
+        session: WorkSession?,
+        appRunning: Bool,
+        watcherAge: TimeInterval,
+        recentRelaunches: Int,
+        now: Date = Date()
+    ) -> Bool {
+        guard !appRunning, recentRelaunches < maxRelaunches, let session else { return false }
+        // Killed or crashed mid-session: what was saved last still says it was running.
+        if session.runningSince != nil { return session.shouldResumeAfterRelaunch(now: now) }
+        // Closed by a restart or a log-out: only right after logging back in. While the Mac is logging out the
+        // watcher is old, and relaunching then would get in the way of the very restart this exists to allow.
+        if session.resumeOnLaunchUntil != nil, watcherAge < startupGrace {
+            return session.shouldResumeAfterRelaunch(now: now)
+        }
+        return false
     }
 }
 
@@ -479,6 +546,24 @@ public enum WebRules {
 
     public static func browserKind(for bundleID: String) -> BrowserKind? { browsers[bundleID] }
     public static func isBrowser(_ bundleID: String) -> Bool { browsers[bundleID] != nil }
+
+    /// Browsers that do not let another app read the address of their tabs. Websites cannot be blocked in them,
+    /// so a task that blocks websites says so instead of pretending.
+    public static let unreadableBrowsers: Set<String> = [
+        "org.mozilla.firefox",
+        "org.mozilla.firefoxdeveloperedition",
+        "org.mozilla.nightly",
+        "app.zen-browser.zen",
+        "org.torproject.torbrowser",
+        "net.waterfox.waterfox",
+        "com.kagi.kagimacOS",
+        "com.duckduckgo.macos.browser"
+    ]
+
+    /// A site saved as an app from Safari's File › Add to Dock: its own bundle, its address out of reach.
+    public static func looksLikeSafariWebApp(bundleID: String) -> Bool {
+        bundleID.hasPrefix("com.apple.Safari.WebApp")
+    }
 
     /// Bundle ids that are a Chromium web app (a "PWA") rather than a real application: Chrome, Brave and Edge
     /// all name them this way, and each one wraps a single site.

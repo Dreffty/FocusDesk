@@ -16,7 +16,7 @@ Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma 
 
 **Un solo temporizador, siempre.** Si empiezas otra tarea mientras hay una en marcha, FocusDesk pregunta: «Tienes «A» en marcha. ¿La terminas y empiezas «B»?». Al aceptar, detiene la actual, te pide su resultado y arranca la nueva al confirmarlo, así nunca pierdes el tiempo ya trabajado. Empezar la tarea que ya está en marcha simplemente la reanuda si estaba en pausa.
 
-**Si el Mac se duerme o se bloquea**, la sesión se pausa y al volver aparece un aviso que espera respuesta («¿Reanudamos?») y una notificación con acción **Reanudar**; el tiempo que el Mac estuvo bloqueado no cuenta como trabajado. Que solo se apague la pantalla no pausa nada: grabar, leer o estudiar ocurre sin tocar el teclado.
+**Si el Mac se duerme o se bloquea**, la sesión se pausa y al volver aparece un aviso que espera respuesta («¿Reanudamos?») y una notificación con acción **Reanudar**; el tiempo que el Mac estuvo bloqueado no cuenta como trabajado. Una sesión **protegida** no pregunta: al desbloquear sigue sola (preguntar era una salida gratis: bloquear, desbloquear y decir que no). Que solo se apague la pantalla no pausa nada: grabar, leer o estudiar ocurre sin tocar el teclado.
 4. Al guardar tu primera tarea con hora, FocusDesk te pide permiso para avisarte (también puedes darlo en **Ajustes**). Si los avisos están desactivados, Hoy te lo dice con un botón para activarlos. Cuando llegue el aviso previo o de inicio, puedes pulsar **Empezar ahora** o **Posponer 10 min** directamente desde la notificación sin buscar la tarea en la ventana. Si el permiso está denegado, Ajustes ofrece un botón directo a la configuración de Notificaciones de macOS.
 5. Pulsa **He terminado** (`⌃⌥⌘T`), aunque sobre tiempo. Revisa los archivos detectados, marca cuáles corresponden al resultado real, adjunta archivos manualmente si lo necesitas y elige cómo pasar a la siguiente tarea (**Mantener su horario**, **Empezar la siguiente** o **Descansar 10 min**).
 
@@ -33,14 +33,21 @@ Cada tarea decide, en **«Si quieres dejarlo a medias»**, cuánto cuesta abando
 
 Mientras una sesión protegida corre, **también cuesta lo mismo salir de FocusDesk** (⌘Q, el menú o el Dock): salir es la forma más corta de desactivar un bloqueo.
 
-**La ley del trinquete.** Una sesión en marcha se puede endurecer, nunca aflojar: alargarla sí, acortarla no; subir la protección sí, bajarla no; quitar apps permitidas sí, añadirlas no. Si intentas lo segundo, FocusDesk te dice exactamente qué campo lo impide en vez de descartar el cambio en silencio.
+**Las salidas que existen siempre.** Un bloqueo del que no se puede salir es una trampa, no un bloqueo:
+
+- **Apagar, reiniciar o cerrar sesión funciona siempre**, también en «Hasta el final». FocusDesk deja pasar a macOS y guarda la sesión; al volver a abrirse sigue sola si aún le quedaba tiempo (si ya habría terminado, solo te la ofrece).
+- **Cuando se acaba el tiempo**, la protección desaparece: Terminar ya no pide nada.
+- **El código, la espera o «Emergencia»** (60 caracteres, solo en «Hasta el final»). Cada vez que FocusDesk dice que no, dice también dónde está la salida.
+- **Último recurso, sin reiniciar nada:** Forzar salida (⌘⌥Esc, o ⌥+clic derecho en el icono del Dock). Ni el Dock ni esa ventana se bloquean nunca. Con el vigilante encendido, FocusDesk vuelve a abrirse y la sesión sigue; para apagarlo a mano: `launchctl bootout gui/$(id -u)/local.focusdesk.guard`.
+
+**La ley del trinquete.** Una sesión en marcha se puede endurecer, nunca aflojar: alargarla sí, acortarla no; subir la protección sí, bajarla no; quitar apps permitidas sí, añadirlas no. Si intentas lo segundo, FocusDesk te dice exactamente qué campo lo impide en vez de descartar el cambio en silencio. Lo mismo vale para lo que rodea a la sesión: con una protegida en marcha no se apagan el vigilante, la vigilancia de ventanas ni la de webs dentro de apps, ni se restaura o recupera una copia (traería la sesión en pausa).
 
 **Qué se bloquea, y cómo:**
 
 - **Apps** — eliges si FocusDesk la **oculta** (nada se pierde), la **cierra** (como ⌘Q: puede preguntarte si guardas) o **fuerza su cierre** (para juegos y lanzadores que vuelven solos). Hay una lista fija de procesos del sistema —Finder, Dock, Ajustes, Terminal, las herramientas de accesibilidad— que como mucho se ocultan, pase lo que pase.
 - **Ventanas en segundo plano** — un vídeo en una esquina o en el segundo monitor distrae aunque escribas en otra ventana. FocusDesk mira todas las ventanas visibles, no solo la que tiene el foco, y las oculta (nunca las cierra).
-- **Webs de verdad** — además de avisar, una tarea puede **llevar esa pestaña a una página de bloqueo** (con el tiempo que queda y el nombre de la tarea) o **cerrar solo esa pestaña**. El resto del navegador sigue intacto. Funciona en Safari, Brave, Chrome, Edge, Arc, Vivaldi, Opera y Chromium.
-- **Webs disfrazadas de app** — una página instalada como aplicación desde Chrome o Brave se juzga por el sitio que abre, no por su icono.
+- **Webs de verdad** — además de avisar, una tarea puede **llevar esa pestaña a una página de bloqueo** (con el tiempo que queda y el nombre de la tarea) o **cerrar solo esa pestaña**. El resto del navegador sigue intacto. Volver con «Atrás» a la web bloqueada vuelve a bloquearla: mientras la tarea bloquea webs, FocusDesk mira la pestaña cada 5 segundos. Funciona en Safari, Brave, Chrome, Edge, Arc, Vivaldi, Opera y Chromium. Firefox y otros navegadores no dejan leer su dirección: si la tarea bloquea webs, FocusDesk avisa de que en ellos no puede.
+- **Webs disfrazadas de app** — una página instalada como aplicación desde Chrome, Brave o Edge se juzga por el sitio que abre, no por su icono, y se oculta aunque la tarea no bloquee apps. Las de Safari («Añadir al Dock») no dejan leer su dirección: se avisa.
 - **Webs dentro de otras apps** — páginas abiertas en Discord, Slack o Notion. Aquí **solo se avisa**: esas ventanas llevan conversaciones y documentos, y cerrarlas para matar un vídeo sería mal negocio.
 - **Los ajustes que desarman el bloqueo** — si abres «Privacidad y seguridad», «Fecha y hora» o «Usuarios y grupos» con una sesión protegida, FocusDesk cierra esa ventana y te explica por qué. El resto de Ajustes del Sistema (Wi-Fi, sonido, pantallas) sigue disponible.
 
@@ -50,12 +57,15 @@ Mientras una sesión protegida corre, **también cuesta lo mismo salir de FocusD
 
 - **Adelantar el reloj del Mac.** Las cuentas atrás van con un reloj del sistema que no se puede mover a mano; si detecta un salto, lo dice y sigue con el suyo.
 - **Borrar o editar el archivo de datos con la app cerrada.** FocusDesk guarda una huella de la sesión protegida en el **Llavero**, fuera de sus datos. Si al abrirse falta esa sesión, te lo dice.
-- **Matar el proceso.** En Ajustes → Privacidad puedes activar **«Volver a abrirse si lo matan durante una sesión»**: un elemento de inicio que relanza FocusDesk cuando sale de mala manera.
+- **Matar el proceso o forzar la salida.** Al volver a abrirse, una sesión protegida que estaba en marcha sigue sola (antes volvía en pausa). En Ajustes → Privacidad puedes activar además **«Volver a abrirse si lo matan durante una sesión»**: un vigilante sin ventana (`FocusDesk --watcher`, lanzado por macOS al iniciar sesión) que la reabre en unos segundos. Solo actúa con una sesión protegida en marcha, nunca más de 3 veces en 3 minutos, y nunca mientras el Mac cierra sesión. Con él encendido, FocusDesk se abre también al iniciar sesión.
+- **Dejar abierto un panel de FocusDesk** (Exportar, Importar…). Antes apagaba el bloqueo entero mientras siguiera abierto; ya no.
 - **El permiso de Accesibilidad roto.** macOS a veces dice que el permiso está dado y no lo da de verdad. FocusDesk lo comprueba preguntándole al Dock, y si el bloqueo no puede actuar avisa en vez de fingir que protege.
+
+**Despierta mientras bloquea.** Durante una sesión que bloquea algo, FocusDesk le pide a macOS que no la adormezca (App Nap); si no, sus comprobaciones periódicas se retrasaban con la app en segundo plano.
 
 **Hasta dónde llega, con honestidad.** FocusDesk no pide contraseña de administrador ni instala nada con permisos de root. Todo lo anterior vive en tu cuenta de usuario: añade fricción —que es lo que de verdad frena a un impulso— pero quien sepa usar la Terminal puede desmontarlo. No se vende como inviolable, porque no lo es.
 
-Bloquear las apps que distraen oculta la app que no toca, devuelve el foco a una app permitida, vuelve a mirar al momento (los lanzadores y juegos que se ponen delante otra vez se ocultan de nuevo) y registra una sola interrupción por cada episodio continuo fuera del entorno de trabajo (volver a trabajar y salir de nuevo cuenta como otra). Finder, Ajustes del Sistema, FocusDesk, Vorssaint, los avisos y diálogos del sistema y las herramientas de accesibilidad siguen accesibles. Si una app permitida se cierra o falla su activación tras varios intentos, la sesión se pausa automáticamente para evitar bucles y conservar el control. Un navegador permitido puede abrir cualquier web: los dominios se normalizan (aceptando URLs como `https://claude.ai/`), se señalan y registran, pero no se bloquean.
+Bloquear las apps que distraen oculta la app que no toca, devuelve el foco a una app permitida, vuelve a mirar al momento (los lanzadores y juegos que se ponen delante otra vez se ocultan de nuevo) y registra una sola interrupción por cada episodio continuo fuera del entorno de trabajo (volver a trabajar y salir de nuevo cuenta como otra). Finder, Ajustes del Sistema, FocusDesk, Vorssaint, los avisos y diálogos del sistema y las herramientas de accesibilidad siguen accesibles. Si una app permitida se cierra o falla su activación tras varios intentos, una sesión sin protección se pausa automáticamente para evitar bucles; una protegida no se pausa (era una salida gratis): oculta la app que no toca y te lleva a la ventana de FocusDesk. Un navegador permitido puede abrir cualquier web: los dominios se normalizan (aceptando URLs como `https://claude.ai/`), se señalan y registran, pero no se bloquean.
 
 ## Teclado, deshacer y apariencia
 

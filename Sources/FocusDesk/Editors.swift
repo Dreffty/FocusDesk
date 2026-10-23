@@ -260,7 +260,7 @@ struct TaskEditor: View {
                                 }
                             }
                             Toggle("Bloquear las apps que distraen", isOn: $draft.strict).toggleStyle(.switch)
-                            Text("Si abres una app que no está en la lista, FocusDesk la oculta y te devuelve a una permitida\(model.workspace.settings.focusDuringStrict ? "; además pone No molestar mientras dura la sesión" : ""). Puedes pausar en cualquier momento. Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
+                            Text("Si abres una app que no está en la lista, FocusDesk la oculta y te devuelve a una permitida\(model.workspace.settings.focusDuringStrict ? "; además pone No molestar mientras dura la sesión" : ""). \(draft.protection == .none ? "Puedes pausar en cualquier momento." : "Para parar antes de tiempo, lo que elijas abajo en «Si quieres dejarlo a medias».") Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
                             if draft.strict && draft.apps.isEmpty {
                                 Text("Elige al menos una app permitida para poder bloquear las demás.").font(.app(10)).foregroundStyle(Palette.warning)
                             }
@@ -1201,16 +1201,16 @@ struct SettingsView: View {
                         Divider().overlay(Palette.stroke)
                         Toggle("Vigilar también las ventanas visibles sin foco", isOn: Binding(
                             get: { model.workspace.settings.watchBackgroundWindows },
-                            set: { value in model.updateSettings { $0.watchBackgroundWindows = value } }
+                            set: { value in model.updateBlockingSetting(turningOn: value) { $0.watchBackgroundWindows = value } }
                         ))
                         Text("Un vídeo en una esquina o en el segundo monitor distrae igual aunque escribas en otra ventana. Se ocultan, nunca se cierran.")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
                         Toggle("Mirar dentro de apps con web incrustada", isOn: Binding(
                             get: { model.workspace.settings.inspectEmbeddedPages },
-                            set: { value in model.updateSettings { $0.inspectEmbeddedPages = value } }
+                            set: { value in model.updateBlockingSetting(turningOn: value) { $0.inspectEmbeddedPages = value } }
                         ))
-                        Text("Páginas abiertas dentro de Discord, Slack o Notion, y webs instaladas como app desde Chrome o Brave. Solo se avisa: esas ventanas llevan conversaciones y documentos.")
+                        Text("Páginas abiertas dentro de Discord, Slack o Notion: solo se avisa, esas ventanas llevan conversaciones y documentos. Las webs instaladas como app desde Chrome, Brave o Edge se bloquean como la web que abren.")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
                     }
@@ -1223,6 +1223,8 @@ struct SettingsView: View {
                         Toggle("Volver a abrirse si lo matan durante una sesión", isOn: Binding(
                             get: { model.relaunchGuard.installed },
                             set: { value in
+                                // Switching it off is one more way out of a protected session, so it waits for the end.
+                                if !value, model.refuseWhileProtected("apagar el vigilante") { return }
                                 if value { model.relaunchGuard.install() } else { model.relaunchGuard.remove() }
                                 model.updateSettings { $0.relaunchGuard = model.relaunchGuard.installed }
                             }
@@ -1285,10 +1287,15 @@ struct SettingsView: View {
                         HStack(spacing: 10) {
                             Button("Exportar copia JSON") { model.export() }
                                 .buttonStyle(.focusSecondary)
+                            // A copy brings its session back paused: not while a protected session is running.
                             Button("Importar / Restaurar copia…") { chooseBackupToImport() }
                                 .buttonStyle(.focusSecondary)
+                                .disabled(model.protectedSessionRunning)
+                                .help(model.protectedSessionRunning ? "No disponible con una sesión protegida en marcha" : "Restaurar una copia de seguridad")
                             Button("Recuperar copia automática") { model.recoverFromAutoBackup() }
                                 .buttonStyle(.focusSecondary)
+                                .disabled(model.protectedSessionRunning)
+                                .help(model.protectedSessionRunning ? "No disponible con una sesión protegida en marcha" : "Volver a la última copia automática")
                             Button("Abrir carpeta de datos") { NSWorkspace.shared.open(model.store.url.deletingLastPathComponent()) }
                                 .buttonStyle(.focusGhost)
                             Spacer()

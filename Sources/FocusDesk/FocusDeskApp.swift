@@ -8,11 +8,22 @@ import UserNotifications
 @main
 struct FocusDeskApplication {
     @MainActor static func main() {
+        // The login item's watcher: no window, no Dock icon, and never a second planner (`RelaunchWatcher`).
+        if CommandLine.arguments.contains(RelaunchGuard.watcherArgument) {
+            RelaunchWatcher.run(arguments: CommandLine.arguments)
+        }
         let app = NSApplication.shared
         let isIsolatedCheck = CommandLine.arguments.contains("--preview")
+        // Only another planner counts: the watcher has no Dock icon and must not make FocusDesk refuse to open.
         if !isIsolatedCheck,
            let other = NSRunningApplication.runningApplications(withBundleIdentifier: "local.focusdesk.app")
-               .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+               .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && $0.activationPolicy == .regular }) {
+            // The checks read and write the real data: with FocusDesk open they used to just bring it forward and
+            // exit 0, as if they had passed.
+            if CommandLine.arguments.contains("--verify-guard") || CommandLine.arguments.contains("--verify-calendar") {
+                print("FAIL: FocusDesk ya está abierta (pid \(other.processIdentifier)). Ciérrala antes de comprobar: dos copias escribirían el mismo archivo de datos.")
+                exit(2)
+            }
             DistributedNotificationCenter.default().postNotificationName(Notification.Name("local.focusdesk.showWindow"), object: nil)
             other.activate(options: [])
             return
@@ -286,9 +297,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationWillTerminate(_ notification: Notification) { model.shutdown() }
 
     /// Quitting is the shortest way out of a block, so a protected session asks for the same thing pausing does.
-    /// Everything else quits as usual.
+    /// A restart, a shutdown or a log-out is never stopped; everything else quits as usual.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        model.canQuitNow() ? .terminateNow : .terminateCancel
+        model.canQuitNow(systemQuit: Self.isSystemQuit()) ? .terminateNow : .terminateCancel
+    }
+
+    private static func isSystemQuit() -> Bool {
+        QuitEvent.isSystemQuit(NSAppleEventManager.shared().currentAppleEvent)
     }
 
     @objc private func settings() { showSettings(nil) }
@@ -591,5 +606,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self.model.handleNotificationAction(identifier: actionID, userInfo: userInfo)
             completionHandler()
         }
+    }
+}
+
+/// Whether a quit comes from macOS restarting, shutting down or logging out: the reason travels in the quit Apple
+/// event. ⌘Q, the Dock and `quit app` scripts carry none and still go through the session's gate.
+enum QuitEvent {
+    static func isSystemQuit(_ event: NSAppleEventDescriptor?) -> Bool {
+        guard let event,
+              event.eventClass == AEEventClass(kCoreEventClass),
+              event.eventID == AEEventID(kAEQuitApplication) else { return false }
+        let keyword = AEKeyword(kAEQuitReason)
+        guard let reason = event.attributeDescriptor(forKeyword: keyword) ?? event.paramDescriptor(forKeyword: keyword) else {
+            return false
+        }
+        let code = reason.enumCodeValue != 0 ? reason.enumCodeValue : reason.typeCodeValue
+        return SystemQuit.isSystemQuit(reasonCode: code)
+    }
+
+    /// A quit event like the one macOS sends, for the smoke check; `reason` nil is a plain ⌘Q.
+    static func make(reason: OSType?, asAttribute: Bool = true) -> NSAppleEventDescriptor {
+        let event = NSAppleEventDescriptor(
+            eventClass: AEEventClass(kCoreEventClass),
+            eventID: AEEventID(kAEQuitApplication),
+            targetDescriptor: nil,
+            returnID: AEReturnID(kAutoGenerateReturnID),
+            transactionID: AETransactionID(kAnyTransactionID)
+        )
+        if let reason {
+            let value = NSAppleEventDescriptor(enumCode: reason)
+            if asAttribute {
+                event.setAttribute(value, forKeyword: AEKeyword(kAEQuitReason))
+            } else {
+                event.setParam(value, forKeyword: AEKeyword(kAEQuitReason))
+            }
+        }
+        return event
     }
 }

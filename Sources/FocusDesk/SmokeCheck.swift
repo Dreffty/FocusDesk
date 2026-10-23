@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Foundation
 import FocusCore
 
@@ -169,17 +170,15 @@ enum SmokeCheck {
             model.resume()
 
             // 4c. A session paused by the Mac must be offered back on unlock, not left silently stopped.
-            DistributedNotificationCenter.default().postNotificationName(
-                NSNotification.Name("com.apple.screenIsLocked"), object: nil, userInfo: nil, deliverImmediately: true
-            )
+            // The handlers are called directly: posting a fake «screen locked» to the whole system paused the real
+            // FocusDesk's session if one was running, and locked other apps that listen for it.
+            model.screenLocked()
             try await settle(until: { model.session?.paused == true })
             guard model.session?.paused == true, model.session?.endedAt == nil else {
                 throw Failure.message("Locking the screen did not pause the session")
             }
             let pausedAt = model.session?.accumulated ?? 0
-            DistributedNotificationCenter.default().postNotificationName(
-                NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, userInfo: nil, deliverImmediately: true
-            )
+            model.screenUnlocked()
             try await settle(until: { model.resumePrompt != nil })
             guard let prompt = model.resumePrompt, prompt.contains(taskB.title) else {
                 throw Failure.message("Unlocking did not offer the paused session back")
@@ -193,9 +192,7 @@ enum SmokeCheck {
             }
             // A pause the user asked for must not raise the prompt on the next unlock.
             model.pause()
-            DistributedNotificationCenter.default().postNotificationName(
-                NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, userInfo: nil, deliverImmediately: true
-            )
+            model.screenUnlocked()
             try await Task.sleep(nanoseconds: 300_000_000)
             guard model.resumePrompt == nil else {
                 throw Failure.message("A user pause should not be reported as a system pause")
@@ -712,6 +709,31 @@ enum SmokeCheck {
             guard model.session?.paused == false, model.pendingStop == nil else {
                 throw Failure.message("A forced session could be paused")
             }
+            guard model.notice?.contains("Emergencia") == true else {
+                throw Failure.message("Refusing to pause «hasta el final» did not say where the emergency exit is")
+            }
+            // A hand-off refused outright neither claims the session stopped nor leaves the other task queued.
+            let handoffTarget = FocusTask(title: "Otra tarea durante «hasta el final»", scheduledAt: Date().addingTimeInterval(900), minutes: 20)
+            model.saveTask(handoffTarget)
+            model.start(handoffTarget)
+            model.acceptHandoff()
+            guard model.session?.task.id == sealed.id, model.session?.endedAt == nil, model.queuedStartTask == nil else {
+                throw Failure.message("A refused hand-off stopped the session or left the other task queued")
+            }
+            model.deleteTask(handoffTarget)
+            // A restart is never refused, not even here: the session is saved to come back instead. The quit
+            // events are built like the ones macOS sends; a plain ⌘Q carries no reason and still meets the gate.
+            for code in [kAERestart, kAEShutDown, kAEReallyLogOut] {
+                guard QuitEvent.isSystemQuit(QuitEvent.make(reason: OSType(code))),
+                      QuitEvent.isSystemQuit(QuitEvent.make(reason: OSType(code), asAttribute: false)) else {
+                    throw Failure.message("A restart or shutdown quit event was not recognised")
+                }
+            }
+            guard !QuitEvent.isSystemQuit(QuitEvent.make(reason: nil)), !QuitEvent.isSystemQuit(nil) else {
+                throw Failure.message("A plain quit was taken for a restart")
+            }
+            guard model.canQuitNow(systemQuit: true) else { throw Failure.message("A restart was refused by «hasta el final»") }
+            model.quittingForSystem = false
             model.requestEmergencyExit()
             guard let escape = model.pendingStop, escape.emergency, escape.expected.count == 60 else {
                 throw Failure.message("The emergency way out was not offered")
@@ -722,6 +744,78 @@ enum SmokeCheck {
                 throw Failure.message("The emergency exit did not end the session or left no trace")
             }
 
+            // 8b. The ways out that used to be free, closed. Locking the screen pauses a protected session — the
+            // locked time does not count — and unlocking brings it back without asking.
+            let lockedTask = FocusTask(
+                title: "Sesión protegida y pantalla bloqueada",
+                scheduledAt: Date().addingTimeInterval(300),
+                minutes: 30,
+                protection: .challenge
+            )
+            model.saveTask(lockedTask)
+            model.start(lockedTask)
+            try await idle(model)
+            model.screenLocked()
+            guard model.session?.paused == true else { throw Failure.message("Locking the screen did not pause the protected session") }
+            let lockedAccumulated = model.session?.accumulated ?? 0
+            model.screenUnlocked()
+            guard model.session?.paused == false, model.resumePrompt == nil,
+                  model.session?.accumulated == lockedAccumulated else {
+                throw Failure.message("Unlocking did not resume the protected session by itself, or counted the locked time")
+            }
+            // Copies, the vigilance settings and the punisher stay as they are while it runs.
+            let protectedID = model.session?.id
+            model.recoverFromAutoBackup()
+            guard model.session?.id == protectedID, model.session?.paused == false else {
+                throw Failure.message("Recovering a copy ended a protected session")
+            }
+            model.updateBlockingSetting(turningOn: false) { $0.watchBackgroundWindows = false }
+            guard model.workspace.settings.watchBackgroundWindows else {
+                throw Failure.message("A vigilance setting could be switched off mid-session")
+            }
+            var softer = lockedTask
+            softer.punisherEnabled = false
+            model.saveTask(softer)
+            guard model.session?.task.punisherEnabled == true else { throw Failure.message("The ratchet let the punisher be switched off") }
+            model.authorizedStop = .cancel
+            model.cancelSession(note: "Cierre tras prueba de pantalla bloqueada")
+
+            // FocusDesk killed in the middle of a protected session: reopened, the session carries on by itself.
+            let crashDir = FileManager.default.temporaryDirectory.appendingPathComponent("FocusDesk-smoke-crash-" + UUID().uuidString)
+            let crashStore = WorkspaceStore(url: crashDir.appendingPathComponent("workspace.json"))
+            var crashed = WorkSession(task: FocusTask(title: "Sesión cerrada a la fuerza", scheduledAt: Date(), minutes: 30, protection: .forced))
+            crashed.checkpoint(at: Date())
+            var crashWorkspace = Workspace()
+            crashWorkspace.session = crashed
+            try crashStore.save(crashWorkspace)
+            let reopened = AppModel(directory: crashDir, preview: true)
+            guard reopened.session?.id == crashed.id, reopened.session?.paused == false, reopened.resumePrompt == nil else {
+                throw Failure.message("A protected session came back paused after a force-quit")
+            }
+            // Closed by a restart: let through, saved, and back by itself at the next launch.
+            guard reopened.canQuitNow(systemQuit: true) else { throw Failure.message("A restart was refused") }
+            reopened.shutdown()
+            guard let savedForRestart = try crashStore.load().session, savedForRestart.paused,
+                  savedForRestart.resumeOnLaunchUntil != nil else {
+                throw Failure.message("A restart did not save the protected session to come back")
+            }
+            let afterRestart = AppModel(directory: crashDir, preview: true)
+            guard afterRestart.session?.paused == false, afterRestart.session?.resumeOnLaunchUntil == nil else {
+                throw Failure.message("The protected session did not come back after the restart")
+            }
+            // One that would have finished while FocusDesk was closed is offered back, not forced back.
+            let staleDir = FileManager.default.temporaryDirectory.appendingPathComponent("FocusDesk-smoke-stale-" + UUID().uuidString)
+            var staleWorkspace = Workspace()
+            staleWorkspace.session = WorkSession(
+                task: FocusTask(title: "Sesión de ayer", scheduledAt: Date().addingTimeInterval(-86_400), minutes: 30, protection: .forced),
+                now: Date().addingTimeInterval(-86_400)
+            )
+            try WorkspaceStore(url: staleDir.appendingPathComponent("workspace.json")).save(staleWorkspace)
+            let staleModel = AppModel(directory: staleDir, preview: true)
+            guard staleModel.session?.paused == true, staleModel.resumePrompt != nil else {
+                throw Failure.message("A session that would have ended long ago was forced back instead of offered")
+            }
+
             // 9. Auto-backup recovery when primary file is corrupted (Item 6 & Item 18)
             try Data("corrupt-json".utf8).write(to: model.store.url)
             model.recoverFromAutoBackup()
@@ -729,7 +823,7 @@ enum SmokeCheck {
                 throw Failure.message("Auto-backup recovery after corruption")
             }
 
-            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo and redo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; keyboard selection, move and resize; tolerant reading with the original kept; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery; protected sessions (code with a fresh one on each miss, wait that can be called off, «hasta el final» plus emergency exit) and the ratchet on a running session."
+            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo and redo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; keyboard selection, move and resize; tolerant reading with the original kept; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery; protected sessions (code with a fresh one on each miss, wait that can be called off, «hasta el final» plus emergency exit, named in every refusal) and the ratchet on a running session (punisher included); a restart never refused and the session back after it; a protected session back by itself after a force-quit, not after a day; locking the screen pauses and unlocking resumes a protected session; copies, vigilance settings and a refused hand-off cannot end it."
         } catch {
             return "FAIL: \(error.localizedDescription)"
         }

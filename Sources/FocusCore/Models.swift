@@ -581,6 +581,9 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
     /// Anchors to tell a clock change from real time passing.
     public var wallAnchor: Date
     public var continuousAnchor: Double
+    /// Set when macOS closed FocusDesk (restart, shutdown, log-out) in the middle of a protected session: until
+    /// this moment the session comes back by itself at the next launch instead of waiting paused.
+    public var resumeOnLaunchUntil: Date?
 
     public init(task: FocusTask, now: Date = Date(), uptime: TimeInterval? = nil, continuous: Double = TrustedClock.continuousSeconds()) {
         self.id = UUID()
@@ -609,6 +612,7 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         self.clockJump = nil
         self.wallAnchor = now
         self.continuousAnchor = continuous
+        self.resumeOnLaunchUntil = nil
     }
 
     enum CodingKeys: String, CodingKey {
@@ -616,7 +620,7 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         case baseline, baselineValid, activities, interruptionCount, inDistractionEpisode
         case lastActivityAt, lastActivityUptime, checked, endedAt
         case finalChangedFiles, finalEvidenceMessage, selectedFiles, manualFiles
-        case stopRequest, punisher, blocksApplied, clockJump, wallAnchor, continuousAnchor
+        case stopRequest, punisher, blocksApplied, clockJump, wallAnchor, continuousAnchor, resumeOnLaunchUntil
     }
 
     public init(from decoder: Decoder) throws {
@@ -647,6 +651,7 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         clockJump = try c.decodeIfPresent(TimeInterval.self, forKey: .clockJump)
         wallAnchor = try c.decodeIfPresent(Date.self, forKey: .wallAnchor) ?? startedAt
         continuousAnchor = try c.decodeIfPresent(Double.self, forKey: .continuousAnchor) ?? TrustedClock.continuousSeconds()
+        resumeOnLaunchUntil = try c.decodeIfPresent(Date.self, forKey: .resumeOnLaunchUntil)
     }
 
     public var paused: Bool { runningSince == nil }
@@ -654,6 +659,23 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
     /// This session is defending itself right now: it is running, has time left and the task asks for it.
     public func enforcing(at now: Date, uptime: TimeInterval? = nil) -> Bool {
         !paused && endedAt == nil && task.enforces && remaining(at: now, uptime: uptime) > 0
+    }
+
+    /// When the session would have ended had it kept running, as last saved. Past this moment a protected session
+    /// is not worth bringing back on its own: it would have finished anyway.
+    public var recoveryDeadline: Date? {
+        if let resumeOnLaunchUntil { return resumeOnLaunchUntil }
+        guard let runningSince else { return nil }
+        return runningSince.addingTimeInterval(budget - accumulated)
+    }
+
+    /// A protected session that FocusDesk lost without the user stopping it — killed, crashed or closed by a
+    /// restart — and that still has time left. Call it on the session as it was read from disk, before anything
+    /// pauses it. Coming back paused used to be a free way out: force-quit, reopen, and the block was gone.
+    public func shouldResumeAfterRelaunch(now: Date = Date()) -> Bool {
+        guard endedAt == nil, task.protection != .none, budget - accumulated > 0,
+              let deadline = recoveryDeadline else { return false }
+        return now < deadline
     }
 
     /// The deadline the Keychain witness is built from, anchored to the clock the user cannot wind forward.
@@ -719,6 +741,7 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         guard runningSince == nil, endedAt == nil else { return }
         runningSince = now
         runningUptime = uptime
+        resumeOnLaunchUntil = nil
         lastActivityAt = now
         lastActivityUptime = uptime
         inDistractionEpisode = false
@@ -1226,6 +1249,9 @@ public enum FocusRules {
         "com.apple.dock",
         "com.apple.Spotlight",
         "com.apple.screencaptureui",
+        // The open and save panels of some apps run in this separate process; one of FocusDesk's own panels left
+        // open must neither be hidden nor stop the block.
+        "com.apple.appkit.xpc.openAndSavePanelService",
         "com.apple.WindowManager",
         "com.vorssaint.utils",
         // Assistive tools must never count as a distraction: adjusting your screen reader is not leaving the task.

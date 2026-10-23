@@ -58,8 +58,7 @@ extension AppModel {
             _ = persist()
             return true
         case .challenge(let code):
-            pendingStop = PendingStopChallenge(reason: reason, expected: code)
-            showWindow?()
+            presentStopChallenge(PendingStopChallenge(reason: reason, expected: code))
             return false
         case .waitStarted(let seconds):
             workspace.session?.stopRequest = StopRequest(reason: reason, minutes: s.task.stopDelayMinutes)
@@ -73,6 +72,24 @@ extension AppModel {
         case .refused(let why):
             notice = why
             return false
+        }
+    }
+
+    /// Puts the code on screen. The task editor is closed first: two sheets cannot share the window, and a code
+    /// that never appears would leave the user without a visible way out.
+    func presentStopChallenge(_ challenge: PendingStopChallenge) {
+        guard editingTask != nil else {
+            pendingStop = challenge
+            showWindow?()
+            return
+        }
+        editingTask = nil
+        // Once the editor has finished closing, or the new sheet would be dropped.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.pendingStop = challenge
+                self?.showWindow?()
+            }
         }
     }
 
@@ -116,8 +133,13 @@ extension AppModel {
 
     /// Answers whether FocusDesk may quit now. Quitting with a protected session running is the same escape as
     /// pausing it, so it costs the same: the code, or the wait.
+    /// A restart, a shutdown or a log-out always goes through: refusing one is how somebody ends up holding the
+    /// power button and losing what is open in every other app. The session comes back at the next launch.
     /// The demo mode (`--preview`) always lets go: trying out a locked session must not trap anyone in a demo.
-    func canQuitNow() -> Bool {
+    func canQuitNow(systemQuit: Bool = false) -> Bool {
+        // Set on every request: a restart that another app called off must not mark a later ordinary quit.
+        quittingForSystem = systemQuit
+        if systemQuit { return true }
         guard !preview, let s = session, s.enforcing(at: now, uptime: uptime), s.task.protection != .none else { return true }
         if authorizedStop == .pause { return true }
         switch StopGate.decide(
@@ -131,8 +153,7 @@ extension AppModel {
         case .allowed, .waitFinished:
             return true
         case .challenge(let code):
-            pendingStop = PendingStopChallenge(reason: .pause, expected: code, quitAfter: true)
-            showWindow?()
+            presentStopChallenge(PendingStopChallenge(reason: .pause, expected: code, quitAfter: true))
             notice = "Salir con una sesión protegida en marcha es como pausarla: teclea el código."
             return false
         case .waitStarted(let seconds):
@@ -155,15 +176,16 @@ extension AppModel {
 
     func dismissStopChallenge() {
         pendingStop = nil
+        // A task queued by a hand-off waited for this stop; without it, the running session simply carries on.
+        if session?.endedAt == nil { queuedStartTaskID = nil }
         notice = "Sigues con la tarea."
     }
 
     /// The way out of a session set to «Hasta el final»: sixty characters, no paste, and a line in the history.
     func requestEmergencyExit() {
         guard let s = session, s.endedAt == nil else { return }
-        pendingStop = PendingStopChallenge(reason: .cancel, expected: UnlockChallenge.make(length: 60), emergency: true)
+        presentStopChallenge(PendingStopChallenge(reason: .cancel, expected: UnlockChallenge.make(length: 60), emergency: true))
         notice = "«\(s.task.title)» está en «Hasta el final». La salida de emergencia existe, pero cuesta 60 caracteres y queda registrada."
-        showWindow?()
     }
 
     /// Tells the user the moment a wait is up, since they are usually looking at something else by then.
@@ -252,27 +274,11 @@ extension AppModel {
             guard let target = runningTarget else { return true }
             // Several tries in a row at the same wall means the impulse is winning: the block gets harder.
             let punisherJustFired = workspace.session?.registerBlock() ?? false
-            let action = FocusRules.safeAction(
-                workspace.session?.activeBlockAction() ?? s.task.blockAction,
-                for: id
-            )
-            let verb: String
-            switch action {
-            case .hide:
-                distracting.hide()
-                verb = "la he ocultado"
-            case .close:
-                // Like ⌘Q: the app can still offer to save.
-                distracting.terminate()
-                verb = "la he cerrado"
-            case .forceQuit:
-                distracting.forceTerminate()
-                verb = "la he cerrado a la fuerza"
-            }
+            let verb = applyBlockAction(to: distracting, bundleID: id)
             let ok = target.activate(options: [])
             strictTracker.recordRedirectAttempt(succeeded: ok)
-            if punisherJustFired, let until = workspace.session?.punisher.remaining() {
-                notice = "Van \(s.punisher.maxAttempts) intentos seguidos. Durante \(FocusRules.clock(until)) FocusDesk cerrará estas apps en vez de ocultarlas."
+            if punisherJustFired, let message = punisherMessage(for: s) {
+                notice = message
             } else {
                 notice = ok
                     ? "\(distractingName) no está entre las apps de esta tarea: \(verb) y vuelves a \(target.localizedName ?? "la app permitida")."
@@ -282,8 +288,21 @@ extension AppModel {
             scheduleStrictRecheck(after: 0.8)
             return false
         case .pauseSession(let reason):
-            // The safety valve: nowhere to send the user back to. Pausing here needs no code, or the session
-            // would be stuck with no allowed app and no way out.
+            if s.task.protection != .none {
+                // A protected session never pauses itself: that was a free way out (quit the allowed apps, or flick
+                // back to the blocked one three times in a row). FocusDesk's own window is where it sends you
+                // instead, and the code, the wait or «Emergencia» stay the way out.
+                _ = applyBlockAction(to: distracting, bundleID: id)
+                notice = runningTarget == nil
+                    ? "\(distractingName) no entra en esta tarea y no hay ninguna app permitida abierta. Abre una desde el Dock o el Finder: la sesión sigue."
+                    : "\(distractingName) no entra en esta tarea. Vuelve a \(runningTarget?.localizedName ?? "la app permitida"): la sesión sigue."
+                showWindow?()
+                if isNewInterruption, !preview { notifyDistraction(notice ?? "", session: s) }
+                scheduleStrictRecheck(after: 1.5)
+                return false
+            }
+            // The safety valve of an unprotected session: nowhere to send the user back to. Pausing here needs no
+            // code, or the session would be stuck with no allowed app and no way out.
             performPause()
             resumePrompt = reason
             promptApps = s.task.apps
@@ -300,6 +319,34 @@ extension AppModel {
             showWindow?()
             return false
         }
+    }
+
+    /// Applies the task's action to an app outside it — one step harder while the punisher is on — and says what
+    /// was done. Nothing on the never-close list is ever more than hidden.
+    private func applyBlockAction(to app: NSRunningApplication, bundleID id: String) -> String {
+        switch FocusRules.safeAction(workspace.session?.activeBlockAction() ?? .hide, for: id) {
+        case .hide:
+            app.hide()
+            return "la he ocultado"
+        case .close:
+            // Like ⌘Q: the app can still offer to save.
+            app.terminate()
+            return "la he cerrado"
+        case .forceQuit:
+            app.forceTerminate()
+            return "la he cerrado a la fuerza"
+        }
+    }
+
+    /// What gets harder when the punisher goes off, said plainly. Nil when nothing changes for this task (it
+    /// already closes apps and tabs), so it never claims a change that does not happen.
+    func punisherMessage(for s: WorkSession) -> String? {
+        guard let until = workspace.session?.punisher.remaining(), until > 0 else { return nil }
+        var harder: [String] = []
+        if s.task.strict, s.task.blockAction == .hide { harder.append("cerrará las apps que distraen en vez de ocultarlas") }
+        if s.task.webBlockAction == .redirect { harder.append("cerrará las pestañas bloqueadas en vez de redirigirlas") }
+        guard !harder.isEmpty else { return nil }
+        return "Van \(s.punisher.maxAttempts) intentos seguidos. Durante \(FocusRules.clock(until)) FocusDesk \(harder.joined(separator: " y "))."
     }
 
     /// Windows drawn on any monitor without the keyboard focus — a video playing in the corner while you type in
@@ -322,7 +369,8 @@ extension AppModel {
             names.append(app.localizedName ?? app.bundleIdentifier ?? "una app")
         }
         guard !names.isEmpty else { return }
-        workspace.session?.registerBlock()
+        // Counted, but not fed to the punisher: a window FocusDesk found on its own is not an attempt of yours.
+        workspace.session?.blocksApplied += 1
         notice = names.count == 1
             ? "\(names[0]) seguía a la vista en otra ventana: la he ocultado."
             : "Seguían a la vista sin tener el foco: \(names.joined(separator: ", ")). Las he ocultado."
@@ -383,7 +431,7 @@ extension AppModel {
             )
         }
         domainEpisodeHost = outside ? host : nil
-        guard outside else { blockedHostEpisode = nil; return }
+        guard outside else { return }
 
         switch s.task.webBlockAction {
         case .warn:
@@ -392,18 +440,25 @@ extension AppModel {
                 if !preview { notifyDistraction(notice ?? "", session: s) }
             }
         case .redirect, .closeTab:
-            // One action per visit: redirecting lands on FocusDesk's page, which must not be blocked in turn.
-            guard blockedHostEpisode != host else { return }
-            blockedHostEpisode = host
+            // One action per visit while the browser is still changing the tab. Seen again a few seconds later —
+            // Back from the blocked page, a reopened tab — it is blocked again: remembering the host for the whole
+            // visit let Back walk straight past the block. (FocusDesk's own page is a file, never read as a host.)
+            if lastWebBlockHost == host, Date().timeIntervalSince(lastWebBlockAt) < 4 { return }
+            lastWebBlockHost = host
+            lastWebBlockAt = Date()
             let punisherJustFired = workspace.session?.registerBlock() ?? false
             let hardened = punisherJustFired || (workspace.session?.punisher.isActive() ?? false)
             let action: WebBlockAction = hardened && s.task.webBlockAction == .redirect ? .closeTab : s.task.webBlockAction
             if action == .closeTab {
                 webInspector.closeActiveTab(bundleID: bundleID) { [weak self] ok in
                     guard let self else { return }
-                    self.notice = ok
-                        ? "\(host) no entra en esta tarea: he cerrado esa pestaña. El resto del navegador sigue como estaba."
-                        : "\(host) no entra en esta tarea, pero no pude cerrar la pestaña. Revisa el permiso de Automatización."
+                    if ok, punisherJustFired, let message = self.punisherMessage(for: s) {
+                        self.notice = message
+                    } else {
+                        self.notice = ok
+                            ? "\(host) no entra en esta tarea: he cerrado esa pestaña. El resto del navegador sigue como estaba."
+                            : "\(host) no entra en esta tarea, pero no pude cerrar la pestaña. Revisa el permiso de Automatización."
+                    }
                     if !self.preview { self.notifyDistraction(self.notice ?? "", session: s) }
                 }
             } else {
@@ -442,8 +497,8 @@ extension AppModel {
         let hosts = AppInspector.embeddedHosts(for: front)
         guard !hosts.isEmpty else { return }
         let blocked = hosts.filter { !FocusRules.domainAllowed($0, list: s.task.domains) }
-        guard let host = blocked.first, blockedHostEpisode != host else { return }
-        blockedHostEpisode = host
+        guard let host = blocked.first, embeddedReportedHost != host else { return }
+        embeddedReportedHost = host
         workspace.session?.record(
             Activity(appID: id, name: front.localizedName ?? id, domain: host, interruption: true),
             at: Date(),

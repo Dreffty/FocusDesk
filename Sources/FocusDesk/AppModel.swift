@@ -105,8 +105,21 @@ final class AppModel: ObservableObject {
     var strictRecheck: DispatchWorkItem?
     /// Last read of each browser's address bar, so one `osascript` per browser does not pile up.
     var lastWebReadAt: [String: Date] = [:]
-    /// Host of the current visit to a blocked site: one interruption and one action per visit.
-    var blockedHostEpisode: String?
+    /// The last tab FocusDesk acted on, so one visit is not acted on twice while the browser is still changing it.
+    /// Only for a few seconds: going Back to the blocked site has to be blocked again.
+    var lastWebBlockHost: String?
+    var lastWebBlockAt = Date.distantPast
+    /// Page inside an Electron app already reported, so the same one is not announced on every scan.
+    var embeddedReportedHost: String?
+    /// Browsers whose address cannot be read, already warned about during this session.
+    var warnedUnreadableBrowsers: Set<String> = []
+    /// Keeps macOS from napping FocusDesk while a session blocks something (`keepAwakeForSession`).
+    private var napActivity: NSObjectProtocol?
+    /// macOS asked FocusDesk to quit for a restart, a shutdown or a log-out: it goes, and the session comes back.
+    var quittingForSystem = false
+    /// The pause came from the screen locking, the Mac sleeping or another account taking over — the only pauses
+    /// a protected session takes back by itself.
+    private var pausedByLockOrSleep = false
     /// Last sweep of windows visible without the keyboard focus.
     var lastBackgroundSweepAt = Date.distantPast
     /// Last look at which System Settings pane is open.
@@ -121,7 +134,7 @@ final class AppModel: ObservableObject {
     var overtimeNotified = false
     private var hasInitialBaseline = false
     /// Task to start once the current session's result is confirmed (set by an accepted hand-off).
-    private var queuedStartTaskID: UUID?
+    var queuedStartTaskID: UUID?
     /// True when the pause came from the Mac (sleep, lock, user switch) and not from the user pressing Pausar.
     var pausedBySystem = false
     private var dayCache: [String: (real: [FocusTask], projected: [FocusTask])] = [:]
@@ -145,6 +158,7 @@ final class AppModel: ObservableObject {
         self.preview = preview
         let directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("FocusDesk")
         store = WorkspaceStore(url: directory.appendingPathComponent("workspace.json"))
+        var resumeProtected = false
         do {
             workspace = try store.load()
             // Some elements could not be read: keep the original file untouched in backups/ before anything is
@@ -156,10 +170,14 @@ final class AppModel: ObservableObject {
             }
             workspace.prune(at: Date())
             if workspace.session != nil {
+                // Decided on the session as it was saved, before it is paused just below.
+                resumeProtected = workspace.session?.shouldResumeAfterRelaunch(now: Date()) == true
                 // Only intervals persisted before termination can count after recovery.
                 workspace.session?.runningSince = nil
                 workspace.session?.runningUptime = nil
-                offerLoadedSession(reason: "quedó a medias al cerrarse FocusDesk")
+                if !resumeProtected {
+                    offerLoadedSession(reason: "quedó a medias al cerrarse FocusDesk")
+                }
             }
         } catch {
             writable = false
@@ -197,6 +215,9 @@ final class AppModel: ObservableObject {
                 MainActor.assumeIsolated { self?.pauseForSystem() }
             })
         }
+        observers.append(center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.offerResumeAfterSystemPause(reason: "mientras se usaba otra cuenta del Mac") }
+        })
         observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.now = Date()
@@ -241,6 +262,12 @@ final class AppModel: ObservableObject {
                 .sink { [weak self] wanted in self?.applyDoNotDisturb(wanted) }
                 .store(in: &subscriptions)
         }
+        // A session that blocks things has to stay awake: napped by macOS, its checks ran late or not at all.
+        $workspace
+            .map { workspace in workspace.session.map { !$0.paused && $0.endedAt == nil && $0.task.enforces } == true }
+            .removeDuplicates()
+            .sink { [weak self] active in self?.keepAwakeForSession(active) }
+            .store(in: &subscriptions)
         NotificationCenter.default.publisher(for: .EKEventStoreChanged)
             .debounce(for: .milliseconds(700), scheduler: RunLoop.main)
             .sink { [weak self] _ in
@@ -277,9 +304,15 @@ final class AppModel: ObservableObject {
             }
         }
         schedule()
+        // A protected session lost to a force-quit, a crash or a restart comes back by itself. Coming back paused
+        // was a free way out: force-quit, reopen, and the block was gone.
+        if resumeProtected, writable, let s = workspace.session {
+            resume()
+            notice = "«\(s.task.title)» está protegida y FocusDesk se cerró sin que la pararas: sigue donde estaba. \(s.task.protection.wayOut)"
+        }
         // A protected session the data file no longer knows about: the file was edited while FocusDesk was closed.
         checkWitnessAtLaunch()
-        relaunchGuard.refresh()
+        relaunchGuard.refresh(repair: !preview)
     }
 
     /// A session read from disk (at launch, or in a restored or recovered copy) never runs on its own. The design
@@ -324,6 +357,37 @@ final class AppModel: ObservableObject {
     }
 
     var session: WorkSession? { workspace.session }
+
+    /// A protected session is defending itself right now: the settings and data that could end it stay as they are.
+    var protectedSessionRunning: Bool {
+        guard let s = session else { return false }
+        return s.task.protection != .none && s.enforcing(at: Date(), uptime: uptime)
+    }
+
+    /// Says no, with the reason, when `action` would weaken a protected session. Returns true when it refused.
+    func refuseWhileProtected(_ action: String) -> Bool {
+        guard protectedSessionRunning, let s = session else { return false }
+        notice = "No se puede \(action) mientras «\(s.task.title)» está protegida. \(s.task.protection.wayOut)"
+        return true
+    }
+
+    /// Settings that make the block see more: turning one on is always fine, turning it off waits for the session.
+    func updateBlockingSetting(turningOn: Bool, _ mutate: (inout Settings) -> Void) {
+        if !turningOn, refuseWhileProtected("apagar esta vigilancia") { return }
+        updateSettings(mutate)
+    }
+
+    private func keepAwakeForSession(_ active: Bool) {
+        if active, napActivity == nil {
+            napActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiatedAllowingIdleSystemSleep],
+                reason: "Una sesión de FocusDesk está bloqueando distracciones"
+            )
+        } else if !active, let activity = napActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            napActivity = nil
+        }
+    }
     var tasks: [FocusTask] { workspace.tasks.filter { !$0.completed }.sorted { $0.scheduledAt < $1.scheduledAt } }
     var scheduledTasks: [FocusTask] { workspace.tasks.filter { !$0.completed && $0.isScheduled }.sorted { $0.scheduledAt < $1.scheduledAt } }
     var unscheduledTasks: [FocusTask] {
@@ -1074,8 +1138,14 @@ final class AppModel: ObservableObject {
         guard let current = session else { start(task); return }
         guard current.task.id != task.id else { return }
         queuedStartTaskID = task.id
-        notice = "«\(current.task.title)» se ha detenido. Confirma su resultado y «\(task.title)» empezará."
         finish()
+        if session?.endedAt != nil {
+            notice = "«\(current.task.title)» se ha detenido. Confirma su resultado y «\(task.title)» empezará."
+        } else if pendingStop == nil, session?.stopRequest == nil {
+            // Refused outright («hasta el final»): nothing stopped, so nothing is waiting to start either.
+            queuedStartTaskID = nil
+        }
+        // With a code on screen or a wait running, the new task stays queued until the stop goes through.
     }
 
     func cancelHandoff() {
@@ -1103,6 +1173,7 @@ final class AppModel: ObservableObject {
     func performPause() {
         guard writable, workspace.session != nil, workspace.session?.endedAt == nil else { return }
         pausedBySystem = false
+        pausedByLockOrSleep = false
         resumePrompt = nil
         promptApps = []
         let currentNow = Date()
@@ -1118,6 +1189,7 @@ final class AppModel: ObservableObject {
         guard writable, workspace.session != nil else { return }
         guard workspace.session?.endedAt == nil else { showCompletion = true; return }
         pausedBySystem = false
+        pausedByLockOrSleep = false
         resumePrompt = nil
         promptApps = []
         if let s = workspace.session { reminders.removeDelivered(identifiers: ["paused-" + s.id.uuidString]) }
@@ -1146,12 +1218,12 @@ final class AppModel: ObservableObject {
         syncCalendar()
     }
 
-    @objc private func screenLocked() {
+    @objc func screenLocked() {
         screenIsLocked = true
         pauseForSystem()
     }
 
-    @objc private func screenUnlocked() {
+    @objc func screenUnlocked() {
         screenIsLocked = false
         now = Date()
         offerResumeAfterSystemPause(reason: "mientras el Mac estaba bloqueado")
@@ -1162,6 +1234,7 @@ final class AppModel: ObservableObject {
         // The Mac went to sleep or locked: not an escape attempt, so no code and no wait.
         performPause()
         pausedBySystem = true
+        pausedByLockOrSleep = true
         if error == nil {
             notice = "Sesión en pausa por reposo o bloqueo del Mac."
         }
@@ -1173,6 +1246,15 @@ final class AppModel: ObservableObject {
     private func offerResumeAfterSystemPause(reason: String) {
         guard pausedBySystem, let s = session, s.paused, s.endedAt == nil else {
             if session == nil || session?.paused == false { pausedBySystem = false }
+            return
+        }
+        // A protected session does not ask: the question was a free way out (lock the screen, unlock, say no).
+        // The locked time still does not count; the session simply carries on once the Mac is back.
+        if pausedByLockOrSleep, s.task.protection != .none, s.remaining(at: Date(), uptime: uptime) > 0 {
+            // Woken up behind the lock screen: unlocking is what brings it back.
+            guard !screenIsLocked else { return }
+            resume()
+            notice = "«\(s.task.title)» sigue donde estaba: se pausó \(reason) y ese rato no cuenta."
             return
         }
         let remaining = FocusRules.clock(max(0, s.remaining(at: now, uptime: uptime)))
@@ -1846,8 +1928,9 @@ final class AppModel: ObservableObject {
         var exemptions = FocusRules.systemExemptBundleIDs
         if let ownID = Bundle.main.bundleIdentifier { exemptions.insert(ownID) }
         guard !exemptions.contains(id) else { return }
-        // Never redirect while FocusDesk is presenting a modal open/save panel
-        guard NSApp.modalWindow == nil else { return }
+        // A FocusDesk open or save panel left on screen used to switch the whole block off (this returned early
+        // while `NSApp.modalWindow` was set). The panel is FocusDesk's own window, already exempt, and the
+        // out-of-process panel service is on the exempt list: nothing else needs to stop the block.
 
         // A Chromium "web app" is a real app with its own icon wrapping a single site: judge it by that site,
         // so installing a blocked page as an app is not a way around the rules.
@@ -1878,7 +1961,15 @@ final class AppModel: ObservableObject {
             uptime: currentUptime
         ) ?? false
 
-        if allowed, !WebRules.isBrowser(id) { domainEpisodeHost = nil; blockedHostEpisode = nil }
+        if allowed, !WebRules.isBrowser(id) { domainEpisodeHost = nil }
+        // A browser, or a site saved as an app from Safari, whose address cannot be read: websites are not blocked
+        // there, and a task that blocks them says so once instead of pretending.
+        if allowed, s.task.webBlockAction != .warn,
+           WebRules.unreadableBrowsers.contains(id) || WebRules.looksLikeSafariWebApp(bundleID: id),
+           !warnedUnreadableBrowsers.contains(id) {
+            warnedUnreadableBrowsers.insert(id)
+            notice = "\(fg.app.localizedName ?? id) no deja leer qué web tiene abierta: en ella FocusDesk no puede bloquear webs. Para esta tarea usa Safari, Chrome, Brave, Edge o Arc."
+        }
 
         if isNewInterruption {
             notice = webAppHost.map { "\(fg.app.localizedName ?? id) abre \($0), que no entra en esta tarea." }
@@ -1889,11 +1980,22 @@ final class AppModel: ObservableObject {
         if !allowed && s.task.strict {
             guard enforceApp(fg.app, bundleID: id, session: s, isNewInterruption: isNewInterruption, at: at) else { return }
         }
+        // A site saved as a Chromium app is that site. With websites blocked it is hidden even when the task does
+        // not block apps, or installing YouTube as an app walked past a block that only looked at browser tabs.
+        if !s.task.strict, s.task.webBlockAction != .warn, let webAppHost,
+           !FocusRules.domainAllowed(webAppHost, list: s.task.domains) {
+            fg.app.hide()
+            workspace.session?.registerBlock()
+            notice = "\(fg.app.localizedName ?? id) abre \(webAppHost), que no entra en esta tarea: la he ocultado."
+            return
+        }
 
         // The address bar of any browser FocusDesk knows, not just Brave: one `osascript` per browser, on switching
-        // to it and then every 15 s.
+        // to it and then every 15 s — every 5 s when the task blocks websites, so a blocked page opened without
+        // leaving the browser (or reached again with Back) does not stay up for long.
+        let webReadInterval: TimeInterval = s.task.webBlockAction != .warn ? 5 : 15
         if WebRules.isBrowser(id), workspace.settings.observeBrave || s.task.webBlockAction != .warn,
-           appChanged || Date().timeIntervalSince(lastWebReadAt[id] ?? .distantPast) >= 15 {
+           appChanged || Date().timeIntervalSince(lastWebReadAt[id] ?? .distantPast) >= webReadInterval - 0.5 {
             lastWebReadAt[id] = Date()
             inspectBrowser(bundleID: id, session: s)
         }
@@ -1956,6 +2058,8 @@ final class AppModel: ObservableObject {
     }
 
     func recoverFromAutoBackup() {
+        // A copy brings its session back paused: during a protected session that was a one-click way out.
+        guard !refuseWhileProtected("recuperar una copia") else { return }
         do {
             let recovered = try store.recoverFromRollingBackup(at: Date())
             workspace = recovered
@@ -1989,6 +2093,7 @@ final class AppModel: ObservableObject {
     }
 
     func restoreBackup(from fileURL: URL) throws {
+        guard !refuseWhileProtected("restaurar una copia") else { return }
         let imported = try store.validateBackup(at: fileURL)
         let (restored, prevURL) = try store.restore(imported, at: Date())
         workspace = restored
@@ -2015,7 +2120,13 @@ final class AppModel: ObservableObject {
 
     func shutdown() {
         if session?.endedAt == nil {
+            // Closed by a restart, a shutdown or a log-out in the middle of a protected session: macOS is let
+            // through, and the session comes back at the next launch while it still has time left.
+            let comeBackUntil: Date? = quittingForSystem && protectedSessionRunning
+                ? session.map { Date().addingTimeInterval(max(0, $0.remaining(at: Date(), uptime: uptime))) }
+                : nil
             workspace.session?.pause(at: Date(), uptime: uptime)
+            workspace.session?.resumeOnLaunchUntil = comeBackUntil
             if let s = workspace.session {
                 enqueueProjectionForTask(s.task, session: s, now: Date())
             }

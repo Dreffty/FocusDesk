@@ -105,11 +105,9 @@ struct MainView: View {
         .tint(Palette.mint)
         .sheet(item: $model.editingTask) { task in TaskEditor(model: model, draft: task) }
         .sheet(isPresented: $model.showCompletion) { CompletionView(model: model) }
-        // Leaving a protected session: the code has to be typed before anything happens.
-        .sheet(isPresented: Binding(
-            get: { model.pendingStop != nil },
-            set: { if !$0 { model.pendingStop = nil } }
-        )) { UnlockSheet(model: model) }
+        // Leaving a protected session: the code has to be typed before anything happens. Keyed by the challenge,
+        // so asking again always brings the sheet up (a true-to-true Bool never re-presented a dropped one).
+        .sheet(item: $model.pendingStop) { _ in UnlockSheet(model: model) }
         .confirmationDialog("¿Eliminar esta tarea y su evento de calendario?", isPresented: Binding(get: { model.taskPendingDeletion != nil }, set: { if !$0 { model.taskPendingDeletion = nil } }), titleVisibility: .visible) {
             Button("Eliminar tarea", role: .destructive) { if let task = model.taskPendingDeletion { model.deleteTask(task) }; model.taskPendingDeletion = nil }
         }
@@ -2055,10 +2053,19 @@ struct SessionButtons: View {
                     .help("Ampliar 10 minutos (⌃⌥⌘A)")
                     .accessibilityLabel("Ampliar 10 minutos")
                 if model.session?.task.protection == .forced, model.currentRemainingIsPositive {
-                    Button { model.requestEmergencyExit() } label: { Image(systemName: "exclamationmark.shield") }
-                        .buttonStyle(FocusIconButtonStyle(size: compact ? 24 : 30, tint: Palette.warning))
-                        .help("Salida de emergencia: 60 caracteres y queda anotada")
-                        .accessibilityLabel("Salida de emergencia")
+                    // Named, not just an icon: every refusal sends the user here, so it has to be findable.
+                    if compact {
+                        Button { model.requestEmergencyExit() } label: { Image(systemName: "exclamationmark.shield") }
+                            .buttonStyle(FocusIconButtonStyle(size: 24, tint: Palette.warning))
+                            .help("Salida de emergencia: 60 caracteres y queda anotada")
+                            .accessibilityLabel("Salida de emergencia")
+                    } else {
+                        Button { model.requestEmergencyExit() } label: { Label("Emergencia", systemImage: "exclamationmark.shield") }
+                            .buttonStyle(.focus(.ghost, compact: compact))
+                            .foregroundStyle(Palette.warning)
+                            .help("Salida de emergencia: 60 caracteres y queda anotada")
+                            .accessibilityLabel("Salida de emergencia")
+                    }
                 } else {
                     Button { confirmCancel = true } label: { Image(systemName: "xmark") }
                         .buttonStyle(FocusIconButtonStyle(size: compact ? 24 : 30, tint: Palette.danger.opacity(0.8)))
