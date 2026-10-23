@@ -155,7 +155,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             )
             let pageLine = sample.map { "OK: página de bloqueo de muestra en \($0.path)" }
                 ?? "FAIL: no se pudo escribir la página de bloqueo."
-            let report = [keychain, axLine, guardLine, windowsLine, pageLine].joined(separator: "\n")
+            // The data file itself: proof that the app can still read what it saved.
+            let dataLine: String
+            if let failure = model.error {
+                dataLine = "FAIL: no se pudieron leer los datos — \(failure)"
+            } else {
+                dataLine = "OK: datos legibles (\(model.workspace.tasks.count) tareas, \(model.workspace.history.count) sesiones en el historial)."
+            }
+            let report = [keychain, axLine, guardLine, windowsLine, pageLine, dataLine].joined(separator: "\n")
             print(report)
             fflush(stdout)
             if CommandLine.arguments.contains("--quit-after-verify") {

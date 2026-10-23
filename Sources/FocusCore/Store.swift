@@ -31,11 +31,15 @@ public struct WorkspaceStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(workspace)
-        try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+        // Plain atomic write plus 0600. `completeFileProtectionUnlessOpen` is an iOS data-protection class: on
+        // macOS 26 it leaves the file unreadable even to FocusDesk itself ("Operation not permitted"), which
+        // locked a real agenda out of its own data. On a Mac the encryption at rest is FileVault's job, and the
+        // owner-only permissions below are what keeps other accounts out.
+        try data.write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         guard rollingBackup else { return }
         // Keep an automatic rolling backup so corrupt primary files can be recovered without data loss.
-        try? data.write(to: backupURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try? data.write(to: backupURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
     }
 
