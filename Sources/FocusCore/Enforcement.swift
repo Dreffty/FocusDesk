@@ -227,55 +227,211 @@ public enum RatchetVerdict: Equatable, Sendable {
     }
 }
 
+/// One way a change makes a protected task easier to escape. Kept apart from the words, because the same change is
+/// said one way while the session runs («No se puede acortar…») and another when it is about to start («Acortarla»).
+public enum Loosening: Equatable, Sendable {
+    case appBlockRemoved
+    case weakerProtection(SessionProtection)
+    case shorter
+    case shorterCode(Int)
+    case shorterWait(Int)
+    case softerAppAction
+    case softerWebAction
+    case moreAllowedApps
+    case noAllowedApps
+    case moreAllowedDomains
+    case systemPanesUnguarded
+    case punisherRemoved
+    case foldersUnblocked
+
+    /// What FocusDesk says when the session is running.
+    public var whileRunning: String {
+        switch self {
+        case .appBlockRemoved: return "No se puede quitar el bloqueo de apps mientras la sesión está en marcha."
+        case .weakerProtection(let current): return "No se puede rebajar la protección («\(current.label)») con la sesión en marcha."
+        case .shorter: return "No se puede acortar la sesión en marcha. Alargarla sí."
+        case .shorterCode(let chars): return "El código de desbloqueo no puede acortarse ahora (eran \(chars) caracteres)."
+        case .shorterWait(let minutes): return "La espera para parar no puede acortarse ahora (eran \(minutes) minutos)."
+        case .softerAppAction: return "No se puede suavizar qué hace FocusDesk con las apps que distraen mientras la sesión corre."
+        case .softerWebAction: return "No se puede suavizar el bloqueo de webs mientras la sesión corre."
+        case .moreAllowedApps: return "No se pueden añadir apps permitidas con la sesión en marcha. Quitarlas sí."
+        case .noAllowedApps: return "Sin apps permitidas el bloqueo no tendría a dónde devolverte. Deja al menos una."
+        case .moreAllowedDomains: return "No se pueden añadir dominios permitidos mientras la sesión bloquea webs."
+        case .systemPanesUnguarded: return "La protección de «Privacidad y seguridad» y «Fecha y hora» no se quita con la sesión en marcha."
+        case .punisherRemoved: return "El endurecimiento tras varios intentos seguidos no se quita con la sesión en marcha."
+        case .foldersUnblocked: return "No se pueden desbloquear carpetas con la sesión en marcha. Bloquear más sí."
+        }
+    }
+
+    /// The same change named as an action, for a task that is about to start: «Rebajar su protección».
+    public var asAction: String {
+        switch self {
+        case .appBlockRemoved: return "Quitarle el bloqueo de apps"
+        case .weakerProtection: return "Rebajar su protección"
+        case .shorter: return "Acortarla"
+        case .shorterCode: return "Acortar su código de desbloqueo"
+        case .shorterWait: return "Acortar su espera para parar"
+        case .softerAppAction: return "Suavizar lo que hace con las apps que distraen"
+        case .softerWebAction: return "Suavizar su bloqueo de webs"
+        case .moreAllowedApps: return "Añadirle apps permitidas"
+        case .noAllowedApps: return "Dejarla sin apps permitidas"
+        case .moreAllowedDomains: return "Añadirle dominios permitidos"
+        case .systemPanesUnguarded: return "Quitarle la protección de Ajustes"
+        case .punisherRemoved: return "Quitarle el endurecimiento tras varios intentos"
+        case .foldersUnblocked: return "Desbloquearle carpetas"
+        }
+    }
+}
+
 public enum Ratchet {
     /// Judges `proposed` against `current` for a session that is being enforced right now.
     /// `current` is what the session is running with; `proposed` is what the editor wants to save.
     public static func judge(current: FocusTask, proposed: FocusTask) -> RatchetVerdict {
-        if current.strict && !proposed.strict {
-            return .refused("No se puede quitar el bloqueo de apps mientras la sesión está en marcha.")
-        }
-        if proposed.protection.strength < current.protection.strength {
-            return .refused("No se puede rebajar la protección («\(current.protection.label)») con la sesión en marcha.")
-        }
-        if proposed.minutes < current.minutes {
-            return .refused("No se puede acortar la sesión en marcha. Alargarla sí.")
-        }
-        if proposed.unlockChars < current.unlockChars {
-            return .refused("El código de desbloqueo no puede acortarse ahora (eran \(current.unlockChars) caracteres).")
-        }
-        if proposed.stopDelayMinutes < current.stopDelayMinutes {
-            return .refused("La espera para parar no puede acortarse ahora (eran \(current.stopDelayMinutes) minutos).")
-        }
-        if proposed.blockAction.strength < current.blockAction.strength {
-            return .refused("No se puede suavizar qué hace FocusDesk con las apps que distraen mientras la sesión corre.")
-        }
-        if proposed.webBlockAction.strength < current.webBlockAction.strength {
-            return .refused("No se puede suavizar el bloqueo de webs mientras la sesión corre.")
-        }
+        loosening(current: current, proposed: proposed).map { .refused($0.whileRunning) } ?? .accepted
+    }
+
+    /// The first field in which `proposed` is easier to escape than `current`, or nil when it is not.
+    public static func loosening(current: FocusTask, proposed: FocusTask) -> Loosening? {
+        if current.strict && !proposed.strict { return .appBlockRemoved }
+        if proposed.protection.strength < current.protection.strength { return .weakerProtection(current.protection) }
+        if proposed.minutes < current.minutes { return .shorter }
+        if proposed.unlockChars < current.unlockChars { return .shorterCode(current.unlockChars) }
+        if proposed.stopDelayMinutes < current.stopDelayMinutes { return .shorterWait(current.stopDelayMinutes) }
+        if proposed.blockAction.strength < current.blockAction.strength { return .softerAppAction }
+        if proposed.webBlockAction.strength < current.webBlockAction.strength { return .softerWebAction }
         // The app list is a list of what IS allowed: adding to it widens the hole, removing narrows it.
         let currentApps = Set(current.apps.map(\.id))
         let proposedApps = Set(proposed.apps.map(\.id))
-        if !proposedApps.subtracting(currentApps).isEmpty {
-            return .refused("No se pueden añadir apps permitidas con la sesión en marcha. Quitarlas sí.")
-        }
-        if current.strict && proposedApps.isEmpty {
-            return .refused("Sin apps permitidas el bloqueo no tendría a dónde devolverte. Deja al menos una.")
-        }
+        if !proposedApps.subtracting(currentApps).isEmpty { return .moreAllowedApps }
+        if current.strict && proposedApps.isEmpty { return .noAllowedApps }
         // Same for the domains that stay open while websites are blocked.
         if current.webBlockAction != .warn {
             let currentDomains = Set(FocusRules.parseDomains(current.domains).valid)
             let proposedDomains = Set(FocusRules.parseDomains(proposed.domains).valid)
-            if !proposedDomains.subtracting(currentDomains).isEmpty {
-                return .refused("No se pueden añadir dominios permitidos mientras la sesión bloquea webs.")
-            }
+            if !proposedDomains.subtracting(currentDomains).isEmpty { return .moreAllowedDomains }
         }
-        if current.guardSystemPanes && !proposed.guardSystemPanes {
-            return .refused("La protección de «Privacidad y seguridad» y «Fecha y hora» no se quita con la sesión en marcha.")
+        if current.guardSystemPanes && !proposed.guardSystemPanes { return .systemPanesUnguarded }
+        if current.punisherEnabled && !proposed.punisherEnabled { return .punisherRemoved }
+        // Blocked folders are the opposite list: what is closed. Taking one out opens a hole.
+        let blockedNow = Set(FolderRules.normalizeList(current.blockedFolders).map { $0.lowercased() })
+        let blockedNext = Set(FolderRules.normalizeList(proposed.blockedFolders).map { $0.lowercased() })
+        if !blockedNow.isSubset(of: blockedNext) { return .foldersUnblocked }
+        return nil
+    }
+}
+
+// MARK: - Protected before it starts
+
+/// FocusMe's `activeProtectionRunUp`. At 8:55 a task that starts at 9:00 has «not started yet», and deleting it is
+/// free: the exact moment the impulse wins. From `minutes` before its start until its planned end, a protected task
+/// defends itself, and anything that puts it off or softens it costs what stopping it would cost — the code, the
+/// wait or the emergency exit. Doing it earlier, for longer or more strictly stays free.
+public enum RunUp {
+    public static let defaultMinutes = 10
+    /// What Ajustes offers; 0 switches it off.
+    public static let choices = [0, 5, 10, 15, 30, 60]
+
+    public static func clampedMinutes(_ value: Int) -> Int { max(0, min(120, value)) }
+
+    /// The stretch of time in which `task` protects itself, or nil when it never does.
+    public static func window(for task: FocusTask, minutes: Int) -> DateInterval? {
+        let lead = clampedMinutes(minutes)
+        guard lead > 0, task.protection != .none, task.isScheduled, !task.completed else { return nil }
+        let from = task.scheduledAt.addingTimeInterval(-Double(lead) * 60)
+        guard task.end > from else { return nil }
+        return DateInterval(start: from, end: task.end)
+    }
+
+    /// True when `task` is inside its window and has not been worked on in it. A session started in the window and
+    /// stopped through its own way out already paid; leaving the task afterwards is not charged twice.
+    public static func isArmed(_ task: FocusTask, minutes: Int, now: Date, sessionStarts: [Date] = []) -> Bool {
+        guard let window = window(for: task, minutes: minutes), now >= window.start, now < window.end else { return false }
+        return !sessionStarts.contains { $0 >= window.start && $0 < window.end }
+    }
+
+    /// What `proposed` would do to an armed task, named as an action («Retrasarla»), or nil when it only makes the
+    /// task sooner, longer or stricter. `nil` as `proposed` means deleting it.
+    public static func loosening(current: FocusTask, proposed: FocusTask?, calendar: Calendar = .current) -> String? {
+        guard let proposed else { return "Borrarla" }
+        if !proposed.isScheduled { return "Pasarla a la bandeja" }
+        if proposed.completed && !current.completed { return "Marcarla como hecha sin hacerla" }
+        let day = FocusRules.dayKey(for: current.scheduledAt, calendar: calendar)
+        if proposed.skippedDates.contains(day) && !current.skippedDates.contains(day) { return "Saltársela" }
+        // Half a minute of slack: rounding a time in the editor is not putting the task off.
+        if proposed.scheduledAt > current.scheduledAt.addingTimeInterval(30) { return "Retrasarla" }
+        if current.autoStart && !proposed.autoStart { return "Quitarle el inicio automático" }
+        return Ratchet.loosening(current: current, proposed: proposed)?.asAction
+    }
+}
+
+// MARK: - Folders that close when they are opened
+
+/// FocusMe's «Finder locations»: sometimes the distraction is a folder — films, comics, installers — and not an app
+/// or a website. Paths are compared folder by whole folder and without caring about case, like APFS does.
+public enum FolderRules {
+    /// «~/Series/» → «/Users/luis/Series». Symbolic links are resolved, so another path to the same folder is the
+    /// same folder.
+    public static func normalize(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        // Links are only resolved in parts that exist, so resolve the deepest folder that does and put the rest
+        // back on top: «atajo/ep1.mp4» through a link to «Series» has to come out as «Series/ep1.mp4».
+        var existing = URL(fileURLWithPath: expanded).standardizedFileURL
+        var rest: [String] = []
+        while existing.path != "/", !FileManager.default.fileExists(atPath: existing.path) {
+            rest.insert(existing.lastPathComponent, at: 0)
+            existing.deleteLastPathComponent()
         }
-        if current.punisherEnabled && !proposed.punisherEnabled {
-            return .refused("El endurecimiento tras varios intentos seguidos no se quita con la sesión en marcha.")
+        var resolved = existing.resolvingSymlinksInPath()
+        for component in rest { resolved.appendPathComponent(component) }
+        var result = resolved.path
+        while result.count > 1 && result.hasSuffix("/") { result.removeLast() }
+        return result
+    }
+
+    /// Normalized, without empties or repeats, in the order given.
+    public static func normalizeList(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for path in paths {
+            let clean = normalize(path)
+            guard !clean.isEmpty, seen.insert(clean.lowercased()).inserted else { continue }
+            result.append(clean)
         }
-        return .accepted
+        return result
+    }
+
+    /// The blocked folder that is `path` or contains it. «Series» blocks «Series/T1/ep1.mp4», not «Series 2».
+    public static func blockingFolder(for path: String, in folders: [String]) -> String? {
+        let target = normalize(path).lowercased()
+        guard !target.isEmpty else { return nil }
+        return folders.first { folder in
+            let blocked = normalize(folder).lowercased()
+            return !blocked.isEmpty && (target == blocked || target.hasPrefix(blocked + "/"))
+        }
+    }
+
+    /// Why a folder cannot be blocked, or nil. Closing these would close everything, FocusDesk's own data included.
+    public static func problem(with path: String, home: String = NSHomeDirectory()) -> String? {
+        let clean = normalize(path)
+        guard !clean.isEmpty else { return "Elige una carpeta." }
+        let lowered = clean.lowercased()
+        let homeFolder = normalize(home).lowercased()
+        let vital: Set<String> = ["/", "/users", "/system", "/applications", "/library", "/volumes", "/private",
+                                  homeFolder, homeFolder + "/library", homeFolder + "/applications"]
+        if vital.contains(lowered) {
+            return "«\(name(of: clean))» no se puede bloquear: el Mac la necesita para funcionar."
+        }
+        if homeFolder.hasPrefix(lowered + "/") {
+            return "«\(name(of: clean))» contiene tu carpeta de usuario: bloquearla lo bloquearía todo."
+        }
+        return nil
+    }
+
+    public static func name(of path: String) -> String {
+        let last = (path as NSString).lastPathComponent
+        return last.isEmpty ? path : last
     }
 }
 

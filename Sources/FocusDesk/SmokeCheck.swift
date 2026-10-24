@@ -816,6 +816,105 @@ enum SmokeCheck {
                 throw Failure.message("A session that would have ended long ago was forced back instead of offered")
             }
 
+            // 10. Protected before it starts: from the margin on, putting a protected task off costs its way out,
+            // and doing it sooner or harder stays free.
+            if let s = model.session, s.endedAt == nil { model.authorizedStop = .cancel; model.cancelSession(note: "Antes del paso 10") }
+            model.updateSettings { $0.runUpMinutes = 10 }
+            let soon = FocusTask(title: "Antes de empezar", scheduledAt: Date().addingTimeInterval(240), minutes: 30,
+                                 protection: .challenge, unlockChars: 8)
+            model.saveTask(soon)
+            try await nextEvent()
+            guard let armed = model.workspace.tasks.first(where: { $0.id == soon.id }), model.protectedBeforeStart(armed) else {
+                throw Failure.message("A protected task four minutes away was not protected yet")
+            }
+            let earlier = armed.scheduledAt.addingTimeInterval(-60)
+            _ = model.shift(armed, to: earlier)
+            guard model.pendingStop == nil,
+                  let movedEarlier = model.workspace.tasks.first(where: { $0.id == soon.id }),
+                  abs(movedEarlier.scheduledAt.timeIntervalSince(earlier)) < 1 else {
+                throw Failure.message("Moving a protected task earlier was charged")
+            }
+            model.deleteTask(movedEarlier)
+            guard let deleteCode = model.pendingStop, deleteCode.runUp != nil, deleteCode.expected.count == 8,
+                  model.workspace.tasks.contains(where: { $0.id == soon.id }) else {
+                throw Failure.message("Deleting a protected task about to start was free")
+            }
+            model.dismissStopChallenge()
+            guard model.pendingStop == nil, model.workspace.tasks.contains(where: { $0.id == soon.id }) else {
+                throw Failure.message("Leaving the code did not keep the task")
+            }
+            var unprotected = movedEarlier
+            unprotected.protection = .none
+            model.saveTask(unprotected)
+            guard model.pendingStop?.runUp != nil,
+                  model.workspace.tasks.first(where: { $0.id == soon.id })?.protection == .challenge else {
+                throw Failure.message("Removing the protection of a task about to start was free")
+            }
+            model.dismissStopChallenge()
+            model.snoozeTask(movedEarlier, minutes: 10)
+            guard let snoozeCode = model.pendingStop, snoozeCode.runUp != nil else {
+                throw Failure.message("Snoozing a protected task about to start was free")
+            }
+            model.pendingStop?.typed = snoozeCode.expected
+            model.submitStopChallenge()
+            try await nextEvent()
+            guard model.pendingStop == nil,
+                  let snoozed = model.workspace.tasks.first(where: { $0.id == soon.id }),
+                  snoozed.scheduledAt > movedEarlier.scheduledAt.addingTimeInterval(500) else {
+                throw Failure.message("The right code did not apply the snooze")
+            }
+            // The margin itself cannot be shrunk while a task is inside it.
+            let hard = FocusTask(title: "Margen", scheduledAt: Date().addingTimeInterval(300), minutes: 20,
+                                 protection: .delay, stopDelayMinutes: 1)
+            model.saveTask(hard)
+            model.setRunUpMinutes(0)
+            guard model.workspace.settings.runUpMinutes == 10 else {
+                throw Failure.message("The run-up margin shrank while a task was inside it")
+            }
+            // «Esperar unos minutos»: the first try starts the wait and changes nothing.
+            model.moveToInbox(hard)
+            guard model.runUpWaits[hard.id] != nil, model.pendingStop == nil,
+                  model.workspace.tasks.first(where: { $0.id == hard.id })?.isScheduled == true else {
+                throw Failure.message("A task with a wait went to the inbox without waiting")
+            }
+            // «Hasta el final»: only the emergency exit, and it is written down.
+            let forced = FocusTask(title: "Hasta el final antes de empezar", scheduledAt: Date().addingTimeInterval(300),
+                                   minutes: 20, protection: .forced)
+            model.saveTask(forced)
+            let usesBefore = model.workspace.settings.emergencyUses.count
+            model.deleteTask(forced)
+            guard let emergency = model.pendingStop, emergency.emergency, emergency.expected.count == 60 else {
+                throw Failure.message("A «hasta el final» task about to start was not behind the emergency exit")
+            }
+            model.pendingStop?.typed = emergency.expected
+            model.submitStopChallenge()
+            guard !model.workspace.tasks.contains(where: { $0.id == forced.id }),
+                  model.workspace.settings.emergencyUses.count == usesBefore + 1 else {
+                throw Failure.message("The emergency exit did not delete the task, or left no trace")
+            }
+            // A task that can be stopped freely is never charged, about to start or not.
+            let free = FocusTask(title: "Libre", scheduledAt: Date().addingTimeInterval(120), minutes: 20)
+            model.saveTask(free)
+            model.deleteTask(free)
+            guard model.pendingStop == nil, !model.workspace.tasks.contains(where: { $0.id == free.id }) else {
+                throw Failure.message("An unprotected task was charged for being deleted")
+            }
+            // Started in the margin and stopped through its own way out, it is not charged a second time.
+            let worked = FocusTask(title: "Ya empezada", scheduledAt: Date().addingTimeInterval(120), minutes: 20,
+                                   protection: .challenge, unlockChars: 8)
+            model.saveTask(worked)
+            model.start(worked)
+            try await idle(model)
+            model.authorizedStop = .cancel
+            model.cancelSession(note: "Prueba del margen")
+            try await nextEvent()
+            if let leftover = model.workspace.tasks.first(where: { $0.id == worked.id }) {
+                model.deleteTask(leftover)
+                guard model.pendingStop == nil, !model.workspace.tasks.contains(where: { $0.id == worked.id }) else {
+                    throw Failure.message("A task already worked on in the margin was charged again")
+                }
+            }
+
             // 9. Auto-backup recovery when primary file is corrupted (Item 6 & Item 18)
             try Data("corrupt-json".utf8).write(to: model.store.url)
             model.recoverFromAutoBackup()
@@ -823,7 +922,7 @@ enum SmokeCheck {
                 throw Failure.message("Auto-backup recovery after corruption")
             }
 
-            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo and redo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; keyboard selection, move and resize; tolerant reading with the original kept; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery; protected sessions (code with a fresh one on each miss, wait that can be called off, «hasta el final» plus emergency exit, named in every refusal) and the ratchet on a running session (punisher included); a restart never refused and the session back after it; a protected session back by itself after a force-quit, not after a day; locking the screen pauses and unlocking resumes a protected session; copies, vigilance settings and a refused hand-off cannot end it."
+            return "PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; single-timer hand-off (offer, decline, accept, queued start, resume-same-task); recurring series (snooze one occurrence, edit whole series or one occurrence, roll a missed day); lock pauses & unlock offers resume without counting locked time; session shortcuts system-wide only during a session (\(hotKeyStatus)); disabled-reminders warning; reopen after «He terminado»; recovery prompt after a quit; per-task auto-start; agenda undo and redo (move, delete, series snooze) that never reverts a later edit; overdue quick actions; first free slot; worked time; quick capture; checklist while confirming; keyboard selection, move and resize; tolerant reading with the original kept; selective & manual evidence; confirm & recurrence; cancel session; save-failure session pause & in-memory retention; deleted-task pending queue cleanup; auto-backup recovery; protected sessions (code with a fresh one on each miss, wait that can be called off, «hasta el final» plus emergency exit, named in every refusal) and the ratchet on a running session (punisher included); a restart never refused and the session back after it; a protected session back by itself after a force-quit, not after a day; locking the screen pauses and unlocking resumes a protected session; copies, vigilance settings and a refused hand-off cannot end it; protected before it starts (moving earlier free, deleting and snoozing behind the code, the margin cannot shrink while armed, a wait for «esperar», the logged emergency exit for «hasta el final», unprotected never charged, not charged twice)."
         } catch {
             return "FAIL: \(error.localizedDescription)"
         }

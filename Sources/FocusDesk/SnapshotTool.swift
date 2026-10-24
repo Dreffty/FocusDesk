@@ -79,7 +79,8 @@ enum SnapshotTool {
                 protection: .challenge,
                 unlockChars: 32,
                 blockAction: .close,
-                webBlockAction: .redirect
+                webBlockAction: .redirect,
+                blockedFolders: [NSHomeDirectory() + "/Movies", NSHomeDirectory() + "/Downloads"]
             )
             if guarded.apps.isEmpty {
                 guarded.apps = [AllowedApp(id: "com.apple.dt.Xcode", name: "Xcode", path: "/Applications/Xcode.app")]
@@ -113,6 +114,18 @@ enum SnapshotTool {
             written.append("codigo-desbloqueo")
             model.pendingStop = nil
             try await settle()
+
+            // The same code, asked for deleting a protected task five minutes before it starts.
+            if let soon = model.workspace.tasks.first(where: { model.protectedBeforeStart($0) }) {
+                model.pendingStop = PendingStopChallenge(reason: .cancel, expected: UnlockChallenge.make(length: 24),
+                                                         runUp: .delete(soon), runUpAction: "Borrarla")
+                if let expected = model.pendingStop?.expected { model.pendingStop?.typed = String(expected.prefix(6)) }
+                try await settle(0.6)
+                try capture(unlock, name: "codigo-antes-de-empezar", in: folder)
+                written.append("codigo-antes-de-empezar")
+                model.pendingStop = nil
+                try await settle()
+            }
 
             // Menu-bar panel, during the session.
             let panel = NSHostingView(rootView: MenuPanel(model: model).environment(\.locale, Locale(identifier: "es_ES")))
@@ -157,6 +170,10 @@ enum SnapshotTool {
         model.saveTask(FocusTask(title: "Llamar al proveedor", isScheduled: false, dueDate: at(18, 0, dayOffset: 1), minutes: 15))
         model.saveTask(FocusTask(title: "Grabar intro para el canal", category: "Contenido", scheduledAt: at(10, 0, dayOffset: 1), minutes: 30))
         model.saveTask(FocusTask(title: "Inventario de la tienda", category: "Tienda", scheduledAt: at(16, 0, dayOffset: 2), minutes: 60))
+        // Five minutes away and protected: already defends itself, and closes a folder of films while it runs.
+        model.saveTask(FocusTask(title: "Repasar redes para el examen", category: "Estudio", scheduledAt: Date().addingTimeInterval(300),
+                                 minutes: 45, protection: .challenge, unlockChars: 24,
+                                 blockedFolders: [NSHomeDirectory() + "/Movies"]))
 
         // A finished session in the history.
         let done = FocusTask(title: "Revisar correo", category: "Personal", scheduledAt: at(max(0, base - 1), 0), minutes: 20)

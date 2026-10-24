@@ -244,11 +244,19 @@ final class WebInspector {
         return .page(host: host)
     }
 
-    /// One `osascript` process, killed if it hangs: a frozen browser must never freeze FocusDesk.
     private func run(_ source: String, timeout: TimeInterval, completion: @escaping (String, String, Int32, Bool) -> Void) {
+        OsaScript.run(source, timeout: timeout, completion: completion)
+    }
+}
+
+/// One `osascript` process, killed if it hangs: a frozen browser or Finder must never freeze FocusDesk.
+/// `arguments` reach the script as `argv`, never as part of its text, so nothing read from the disk can run.
+enum OsaScript {
+    static func run(_ source: String, arguments: [String] = [], timeout: TimeInterval,
+                    completion: @escaping (String, String, Int32, Bool) -> Void) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", source]
+        process.arguments = ["-e", source] + arguments
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe
@@ -272,6 +280,95 @@ final class WebInspector {
             }
         } catch {
             DispatchQueue.main.async { completion("", error.localizedDescription, -1, false) }
+        }
+    }
+}
+
+// MARK: - Folders the task closes
+
+/// Closing a window the polite way: its close button, through Accessibility. Nothing is quit, nothing is lost that
+/// the app would not have asked about.
+enum WindowCloser {
+    @discardableResult
+    static func closeFrontWindow(pid: pid_t) -> Bool {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        var windowValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &windowValue) == .success,
+              let windowValue, CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { return false }
+        let window = windowValue as! AXUIElement
+        var buttonValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &buttonValue) == .success,
+              let buttonValue, CFGetTypeID(buttonValue) == AXUIElementGetTypeID() else { return false }
+        return AXUIElementPerformAction(buttonValue as! AXUIElement, kAXPressAction as CFString) == .success
+    }
+}
+
+/// What a window has open from the disk — FocusMe's `getFinderLocation`, plus the document of any other app.
+enum FolderInspector {
+    /// The file the front window of `pid` has open (`AXDocument`): QuickTime, Preview, VLC, IINA and most document
+    /// apps set it. Nothing else of the window is read.
+    static func frontDocumentPath(pid: pid_t) -> String? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.2)
+        var windowValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &windowValue) == .success,
+              let windowValue, CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { return nil }
+        var documentValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(windowValue as! AXUIElement, kAXDocumentAttribute as CFString, &documentValue) == .success,
+              let raw = documentValue as? String, let url = URL(string: raw), url.isFileURL else { return nil }
+        return url.path
+    }
+
+    enum FinderResult: Equatable {
+        /// The blocked folders some Finder window was showing; those windows now show the folder above.
+        case movedOut([String])
+        case permissionDenied
+        case failed
+    }
+
+    /// Sends every Finder window (each tab that is in front) showing a blocked folder to the folder above it, the
+    /// way a blocked tab goes to FocusDesk's page instead of the whole browser closing. The Finder does not say
+    /// which folder a window shows over Accessibility, so this is AppleScript, and macOS asks once for permission.
+    static func moveFinderWindowsOut(of folders: [String], completion: @escaping (FinderResult) -> Void) {
+        let pairs = folders.flatMap { [$0, ($0 as NSString).deletingLastPathComponent] }
+        guard !pairs.isEmpty else { completion(.movedOut([])); return }
+        let script = """
+        on run argv
+         set parents to {}
+         repeat with i from 2 to (count of argv) by 2
+          set end of parents to (POSIX file (item i of argv) as alias)
+         end repeat
+         with timeout of 3 seconds
+          tell application id "com.apple.finder"
+           set hits to ""
+           repeat with w in (every Finder window)
+            try
+             set p to POSIX path of (target of w as alias)
+             repeat with k from 1 to (count of parents)
+              set b to item (k * 2 - 1) of argv
+              if p is (b & "/") or p starts with (b & "/") then
+               set target of w to (item k of parents)
+               set hits to hits & b & linefeed
+               exit repeat
+              end if
+             end repeat
+            end try
+           end repeat
+           return hits
+          end tell
+         end timeout
+        end run
+        """
+        OsaScript.run(script, arguments: pairs, timeout: 4) { output, errorText, status, timedOut in
+            let lowered = errorText.lowercased()
+            if lowered.contains("-1743") || lowered.contains("not authorized") || lowered.contains("no está autorizado") {
+                completion(.permissionDenied)
+            } else if timedOut || status != 0 {
+                completion(.failed)
+            } else {
+                completion(.movedOut(output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }))
+            }
         }
     }
 }

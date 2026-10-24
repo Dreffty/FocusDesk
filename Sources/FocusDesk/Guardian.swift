@@ -179,16 +179,7 @@ enum SystemSettingsGuard {
     /// Closes the frontmost System Settings window without quitting the app, so the rest stays available.
     @discardableResult
     static func closeFrontWindow(pid: pid_t) -> Bool {
-        let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        var windowValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &windowValue) == .success,
-              let windowValue, CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { return false }
-        let window = windowValue as! AXUIElement
-        var buttonValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &buttonValue) == .success,
-              let buttonValue, CFGetTypeID(buttonValue) == AXUIElementGetTypeID() else { return false }
-        return AXUIElementPerformAction(buttonValue as! AXUIElement, kAXPressAction as CFString) == .success
+        WindowCloser.closeFrontWindow(pid: pid)
     }
 }
 

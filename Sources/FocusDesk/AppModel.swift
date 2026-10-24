@@ -130,6 +130,16 @@ final class AppModel: ObservableObject {
     var authorizedStop: StopReason?
     /// Whether the end of a pending wait has already been announced.
     var stopReadyNotified = false
+    /// A change to a task about to start whose way out was just paid: lets that one change through once.
+    var authorizedRunUp: UUID?
+    /// Waits asked for to change a protected task before it starts («Esperar unos minutos»), by task.
+    /// Kept in memory only: quitting FocusDesk just means waiting again, which is never a way out.
+    var runUpWaits: [UUID: StopRequest] = [:]
+    var runUpWaitsNotified: Set<UUID> = []
+    /// One Finder question at a time: a slow Finder must not pile up `osascript` processes.
+    var finderCheckBusy = false
+    /// The Finder permission is asked for by macOS; if it was refused, this is said once per session.
+    var warnedFinderPermission = false
     private var ticks = 0
     var overtimeNotified = false
     private var hasInitialBaseline = false
@@ -371,6 +381,18 @@ final class AppModel: ObservableObject {
         return true
     }
 
+    /// The run-up margin can always grow. Shrinking it while a task is already inside it would be the cheapest way
+    /// out of that very task (set it to «No», then delete it), so that waits until the task has started or ended.
+    func setRunUpMinutes(_ minutes: Int) {
+        let value = RunUp.clampedMinutes(minutes)
+        if value < workspace.settings.runUpMinutes,
+           let armed = workspace.tasks.first(where: { protectedBeforeStart($0) }) {
+            notice = "«\(armed.title)» ya está protegida porque está a punto de empezar: el margen se puede acortar cuando empiece o acabe su hora."
+            return
+        }
+        updateSettings { $0.runUpMinutes = value }
+    }
+
     /// Settings that make the block see more: turning one on is always fine, turning it off waits for the session.
     func updateBlockingSetting(turningOn: Bool, _ mutate: (inout Settings) -> Void) {
         if !turningOn, refuseWhileProtected("apagar esta vigilancia") { return }
@@ -521,11 +543,15 @@ final class AppModel: ObservableObject {
         _ = persist()
     }
 
-    func saveTask(_ input: FocusTask, detachFromSeriesID: UUID? = nil, occurrenceDate: Date? = nil) {
+    /// `checkRunUp` is false when the caller (move, snooze, inbox) already asked the run-up gate for this change.
+    func saveTask(_ input: FocusTask, detachFromSeriesID: UUID? = nil, occurrenceDate: Date? = nil, checkRunUp: Bool = true) {
         guard writable, !busy, input.valid else { return }
         // The task that is running can be edited, but only in the direction that makes it harder: the ratchet.
         if let running = session, running.task.id == input.id {
             applyRatchetedEdit(input, to: running)
+            return
+        }
+        if checkRunUp, !passesRunUpGate(.save(input, detachFromSeriesID: detachFromSeriesID, occurrenceDate: occurrenceDate)) {
             return
         }
         var task = input
@@ -582,7 +608,7 @@ final class AppModel: ObservableObject {
     }
 
     func deleteTask(_ task: FocusTask) {
-        guard writable, !busy, task.id != session?.task.id else { return }
+        guard writable, !busy, task.id != session?.task.id, passesRunUpGate(.delete(task)) else { return }
         let before = workspace.tasks
         defer {
             if error == nil, before.count != workspace.tasks.count {
@@ -616,7 +642,8 @@ final class AppModel: ObservableObject {
     /// Returns the id of the task that moved: a detached copy when `task` was a series occurrence.
     @discardableResult
     func shift(_ task: FocusTask, to date: Date, durationMinutes: Int? = nil) -> UUID? {
-        guard writable, !busy, task.id != session?.task.id else { return nil }
+        guard writable, !busy, task.id != session?.task.id,
+              passesRunUpGate(.shift(task, to: date, minutes: durationMinutes)) else { return nil }
         let before = workspace.tasks
         let detached = isSeriesHead(task)
         var updated = occurrenceForDirectEdit(task)
@@ -625,7 +652,7 @@ final class AppModel: ObservableObject {
         if let durationMinutes {
             updated.minutes = FocusRules.clampedMinutes(durationMinutes)
         }
-        saveTask(updated)
+        saveTask(updated, checkRunUp: false)
         guard error == nil else { return nil }
         let when = updated.scheduledAt.formatted(date: Calendar.current.isDateInToday(updated.scheduledAt) ? .omitted : .abbreviated, time: .shortened)
         let what = durationMinutes != nil && Calendar.current.isDate(updated.scheduledAt, equalTo: task.scheduledAt, toGranularity: .minute)
@@ -929,13 +956,13 @@ final class AppModel: ObservableObject {
     }
 
     func snoozeTask(_ task: FocusTask, minutes: Int = 10) {
-        guard writable, !busy, task.id != session?.task.id else { return }
+        guard writable, !busy, task.id != session?.task.id, passesRunUpGate(.snooze(task, minutes: minutes)) else { return }
         let before = workspace.tasks
         defer { if error == nil { rememberUndo("Posponer «\(task.title)»", before: before) } }
         let detached = isSeriesHead(task)
         let updated = occurrenceForDirectEdit(task).snoozed(minutes: minutes, now: Date())
         reminders.removeDelivered(forTaskID: task.id)
-        saveTask(updated)
+        saveTask(updated, checkRunUp: false)
         if error == nil {
             let time = updated.scheduledAt.formatted(date: .omitted, time: .shortened)
             notice = detached
@@ -946,12 +973,12 @@ final class AppModel: ObservableObject {
 
     /// Sends one task to the inbox. For a series that means this occurrence only; the series keeps its schedule.
     func moveToInbox(_ task: FocusTask) {
-        guard writable, !busy, task.id != session?.task.id else { return }
+        guard writable, !busy, task.id != session?.task.id, passesRunUpGate(.inbox(task)) else { return }
         let before = workspace.tasks
         let detached = isSeriesHead(task)
         var unscheduled = occurrenceForDirectEdit(task)
         unscheduled.isScheduled = false
-        saveTask(unscheduled)
+        saveTask(unscheduled, checkRunUp: false)
         guard error == nil else { return }
         notice = detached
             ? "Esta ocurrencia de «\(unscheduled.title)» pasa a la bandeja. La serie sigue programada."
@@ -1817,6 +1844,7 @@ final class AppModel: ObservableObject {
         }
         startDueAutoStartTasks()
         checkStopRequestReady()
+        checkRunUpWaitsReady()
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility
             observe()
@@ -1924,6 +1952,10 @@ final class AppModel: ObservableObject {
         // are the way out of the block, so they are checked before the exemption applies.
         if SystemSettingsGuard.bundleIDs.contains(id) {
             guardSystemSettingsIfNeeded(bundleID: id, pid: fg.app.processIdentifier, session: s)
+        }
+        // The Finder is exempt too — you may need your files — but not the folders this task closes.
+        if !s.task.blockedFolders.isEmpty {
+            guardBlockedFolders(frontBundleID: id, frontApp: fg.app, session: s)
         }
         var exemptions = FocusRules.systemExemptBundleIDs
         if let ownID = Bundle.main.bundleIdentifier { exemptions.insert(ownID) }

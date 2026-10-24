@@ -15,9 +15,14 @@ struct PendingStopChallenge: Identifiable, Equatable {
     var attempts = 0
     /// Set when the code was asked for because FocusDesk was being quit: typing it right quits too.
     var quitAfter = false
+    /// Set when the code guards a change to a task that is about to start, not a running session.
+    var runUp: RunUpChange?
+    /// That change named as an action («Retrasarla»), for the sheet's button.
+    var runUpAction = ""
 
     var title: String {
         if emergency { return "Salida de emergencia" }
+        if runUp != nil { return "Cambiar una tarea protegida" }
         switch reason {
         case .pause: return "Pausar la sesión"
         case .cancel: return "Cancelar la sesión"
@@ -29,7 +34,148 @@ struct PendingStopChallenge: Identifiable, Equatable {
     var complete: Bool { UnlockChallenge.matches(typed: typed, expected: expected) }
 }
 
+/// A change to a task that may be about to start, kept whole so it can be applied once its way out is paid.
+enum RunUpChange: Equatable {
+    case save(FocusTask, detachFromSeriesID: UUID?, occurrenceDate: Date?)
+    case delete(FocusTask)
+    case shift(FocusTask, to: Date, minutes: Int?)
+    case snooze(FocusTask, minutes: Int)
+    case inbox(FocusTask)
+
+    var task: FocusTask {
+        switch self {
+        case .save(let t, _, _), .delete(let t), .shift(let t, _, _), .snooze(let t, _), .inbox(let t): return t
+        }
+    }
+
+    /// The occurrence the change acts on. A series is one task whose `scheduledAt` is today's occurrence; editing a
+    /// later occurrence from the agenda is not touching today's.
+    var occurrence: Date {
+        switch self {
+        case .save(let t, _, let date): return date ?? t.scheduledAt
+        default: return task.scheduledAt
+        }
+    }
+
+    enum Outcome { case deleted, changed(FocusTask) }
+
+    /// What `current` would become.
+    func outcome(from current: FocusTask, now: Date) -> Outcome {
+        switch self {
+        case .save(let t, _, _): return .changed(t)
+        case .delete: return .deleted
+        case .shift(_, let date, let minutes):
+            var moved = current
+            moved.scheduledAt = date
+            moved.isScheduled = true
+            if let minutes { moved.minutes = FocusRules.clampedMinutes(minutes) }
+            return .changed(moved)
+        case .snooze(_, let minutes): return .changed(current.snoozed(minutes: minutes, now: now))
+        case .inbox:
+            var unscheduled = current
+            unscheduled.isScheduled = false
+            return .changed(unscheduled)
+        }
+    }
+}
+
 extension AppModel {
+
+    // MARK: - Protected before it starts
+
+    /// Starts of sessions of `taskID` in the history: one inside the run-up window means it was already worked on.
+    func sessionStarts(of taskID: UUID) -> [Date] {
+        workspace.history.filter { $0.session.task.id == taskID }.map(\.session.startedAt)
+    }
+
+    /// Whether `task` already defends itself because it is about to start (for the agenda's lock and the editor).
+    func protectedBeforeStart(_ task: FocusTask, at instant: Date = Date()) -> Bool {
+        guard task.id != session?.task.id else { return false }
+        return RunUp.isArmed(task, minutes: workspace.settings.runUpMinutes, now: instant, sessionStarts: sessionStarts(of: task.id))
+    }
+
+    /// True when `change` may go ahead now. A protected task that is about to start costs what stopping it would
+    /// cost — the code, the wait or the emergency exit — to put off or soften; doing it sooner, longer or more
+    /// strictly stays free. When it may not go ahead, this leaves the way out on screen and answers false.
+    func passesRunUpGate(_ change: RunUpChange) -> Bool {
+        let current = workspace.tasks.first { $0.id == change.task.id } ?? change.task
+        if authorizedRunUp == current.id {
+            authorizedRunUp = nil
+            return true
+        }
+        let instant = Date()
+        guard abs(change.occurrence.timeIntervalSince(current.scheduledAt)) < 60,
+              protectedBeforeStart(current, at: instant) else { return true }
+        let what: String?
+        switch change.outcome(from: current, now: instant) {
+        case .deleted: what = RunUp.loosening(current: current, proposed: nil)
+        case .changed(let proposed): what = RunUp.loosening(current: current, proposed: proposed)
+        }
+        guard let what else { return true }
+
+        let time = current.scheduledAt.formatted(date: .omitted, time: .shortened)
+        let lead = current.scheduledAt > instant
+            ? "«\(current.title)» empieza a las \(time) y ya está protegida."
+            : "«\(current.title)» era a las \(time) y sigue protegida hasta su hora de fin."
+        switch current.protection {
+        case .none:
+            return true
+        case .challenge:
+            presentStopChallenge(PendingStopChallenge(
+                reason: .cancel, expected: UnlockChallenge.make(length: current.unlockChars),
+                runUp: change, runUpAction: what))
+            notice = "\(lead) \(what) cuesta lo mismo que pararla: teclea el código."
+            return false
+        case .delay:
+            if let wait = runUpWaits[current.id] {
+                guard wait.ready() else {
+                    notice = "\(lead) Faltan \(FocusRules.clock(wait.remaining())) de la espera que pediste; al cumplirse, vuelve a hacerlo."
+                    return false
+                }
+                runUpWaits[current.id] = nil
+                runUpWaitsNotified.remove(current.id)
+                return true
+            }
+            runUpWaits[current.id] = StopRequest(reason: .cancel, minutes: current.stopDelayMinutes)
+            notice = "\(lead) \(what) cuesta lo mismo que pararla: una espera de \(current.stopDelayMinutes) min. Cuando pase, vuelve a hacerlo."
+            return false
+        case .forced:
+            presentStopChallenge(PendingStopChallenge(
+                reason: .cancel, expected: UnlockChallenge.make(length: 60), emergency: true,
+                runUp: change, runUpAction: what))
+            notice = "\(lead) Está en «Hasta el final»: \(what.lowercased()) solo con la salida de emergencia, que queda anotada."
+            return false
+        }
+    }
+
+    /// Applies a change whose way out was just paid, letting it through the gate exactly once.
+    func applyPaidRunUpChange(_ change: RunUpChange) {
+        authorizedRunUp = change.task.id
+        defer { authorizedRunUp = nil }
+        switch change {
+        case .save(let t, let seriesID, let date): saveTask(t, detachFromSeriesID: seriesID, occurrenceDate: date)
+        case .delete(let t): deleteTask(t)
+        case .shift(let t, let date, let minutes): shift(t, to: date, durationMinutes: minutes)
+        case .snooze(let t, let minutes): snoozeTask(t, minutes: minutes)
+        case .inbox(let t): moveToInbox(t)
+        }
+    }
+
+    /// Says when a wait asked for before a task starts is over, since by then the user is usually elsewhere.
+    func checkRunUpWaitsReady() {
+        for (taskID, wait) in runUpWaits where wait.ready() && !runUpWaitsNotified.contains(taskID) {
+            runUpWaitsNotified.insert(taskID)
+            guard let task = workspace.tasks.first(where: { $0.id == taskID }) else { continue }
+            notice = "La espera ha terminado: ya puedes cambiar «\(task.title)». Si has cambiado de idea, déjala como está."
+            if !preview {
+                reminders.notify(
+                    "Ya puedes cambiar «\(task.title)»",
+                    body: "La espera ha terminado. Repite el cambio en FocusDesk si sigues queriendo.",
+                    identifier: "runupready-" + taskID.uuidString
+                )
+            }
+        }
+    }
 
     // MARK: - Leaving a protected session
 
@@ -106,7 +252,7 @@ extension AppModel {
     func submitStopChallenge() {
         guard let challenge = pendingStop else { return }
         guard challenge.complete else {
-            let length = challenge.emergency ? 60 : (session?.task.unlockChars ?? 24)
+            let length = challenge.emergency ? 60 : (challenge.runUp?.task.unlockChars ?? session?.task.unlockChars ?? 24)
             pendingStop?.attempts += 1
             pendingStop?.typed = ""
             pendingStop?.expected = UnlockChallenge.make(length: length)
@@ -117,6 +263,12 @@ extension AppModel {
         let wasEmergency = challenge.emergency
         let shouldQuit = challenge.quitAfter
         pendingStop = nil
+        if let change = challenge.runUp {
+            if wasEmergency { workspace.settings.emergencyUses.append(FocusRules.dayKey(for: Date())) }
+            applyPaidRunUpChange(change)
+            if wasEmergency { notice = "Salida de emergencia usada para «\(change.task.title)». Queda anotada." }
+            return
+        }
         if wasEmergency {
             workspace.settings.emergencyUses.append(FocusRules.dayKey(for: Date()))
             notice = "Salida de emergencia usada. Queda anotada en el historial de la sesión."
@@ -175,7 +327,12 @@ extension AppModel {
     }
 
     func dismissStopChallenge() {
+        let runUp = pendingStop?.runUp
         pendingStop = nil
+        if let runUp {
+            notice = "«\(runUp.task.title)» se queda como estaba."
+            return
+        }
         // A task queued by a hand-off waited for this stop; without it, the running session simply carries on.
         if session?.endedAt == nil { queuedStartTaskID = nil }
         notice = "Sigues con la tarea."
@@ -200,6 +357,54 @@ extension AppModel {
                 identifier: "stopready-" + s.id.uuidString
             )
         }
+    }
+
+    // MARK: - Folders the task closes
+
+    /// A folder the task closes, opened anyway: a Finder window showing it goes back to the folder above, and an
+    /// app showing a file from inside it (a film in QuickTime) has that window closed.
+    func guardBlockedFolders(frontBundleID id: String, frontApp: NSRunningApplication, session s: WorkSession) {
+        let folders = s.task.blockedFolders
+        let finderID = "com.apple.finder"
+        if id != finderID, id != Bundle.main.bundleIdentifier,
+           let path = FolderInspector.frontDocumentPath(pid: frontApp.processIdentifier),
+           let folder = FolderRules.blockingFolder(for: path, in: folders) {
+            let closed = WindowCloser.closeFrontWindow(pid: frontApp.processIdentifier)
+            let name = FolderRules.name(of: folder)
+            let app = frontApp.localizedName ?? id
+            reportFolderBlock(closed
+                ? "«\(name)» está bloqueada mientras dura «\(s.task.title)»: he cerrado esa ventana de \(app)."
+                : "«\(name)» está bloqueada mientras dura «\(s.task.title)», pero \(app) no deja cerrar esa ventana.",
+                session: s)
+        }
+        // Finder windows count in front or visible behind; a Finder with nothing on screen is not asked.
+        guard !finderCheckBusy,
+              let finder = NSRunningApplication.runningApplications(withBundleIdentifier: finderID).first,
+              id == finderID || ScreenWindows.visibleOwnerPIDs().contains(finder.processIdentifier) else { return }
+        finderCheckBusy = true
+        FolderInspector.moveFinderWindowsOut(of: folders) { [weak self] result in
+            guard let self else { return }
+            self.finderCheckBusy = false
+            switch result {
+            case .movedOut(let hits) where !hits.isEmpty:
+                let names = hits.map { "«\(FolderRules.name(of: $0))»" }.joined(separator: ", ")
+                let verb = hits.count == 1 ? "está bloqueada" : "están bloqueadas"
+                self.reportFolderBlock(
+                    "\(names) \(verb) mientras dura «\(s.task.title)»: el Finder vuelve a la carpeta de arriba.",
+                    session: s)
+            case .permissionDenied where !self.warnedFinderPermission:
+                self.warnedFinderPermission = true
+                self.notice = "FocusDesk no tiene permiso para ver qué carpeta enseña el Finder, así que no puede cerrar las carpetas de esta tarea. Dalo en Ajustes del Sistema › Privacidad y seguridad › Automatización."
+            default:
+                break
+            }
+        }
+    }
+
+    private func reportFolderBlock(_ message: String, session s: WorkSession) {
+        workspace.session?.registerBlock()
+        notice = message
+        if !preview { notifyDistraction(message, session: s) }
     }
 
     // MARK: - Editing the task that is running

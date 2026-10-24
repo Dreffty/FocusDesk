@@ -41,6 +41,8 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
     public var webBlockAction: WebBlockAction
     public var guardSystemPanes: Bool
     public var punisherEnabled: Bool
+    /// Folders that close as soon as they are opened during the session (`FolderRules`).
+    public var blockedFolders: [String]
 
     public init(
         id: UUID = UUID(),
@@ -60,7 +62,8 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         blockAction: AppBlockAction = .hide,
         webBlockAction: WebBlockAction = .warn,
         guardSystemPanes: Bool = true,
-        punisherEnabled: Bool = true
+        punisherEnabled: Bool = true,
+        blockedFolders: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -80,11 +83,13 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         self.webBlockAction = webBlockAction
         self.guardSystemPanes = guardSystemPanes
         self.punisherEnabled = punisherEnabled
+        self.blockedFolders = FolderRules.normalizeList(blockedFolders)
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, category, minutes, leadMinutes, strict, apps, domains, folder, checklist, autoStart
         case protection, unlockChars, stopDelayMinutes, blockAction, webBlockAction, guardSystemPanes, punisherEnabled
+        case blockedFolders
     }
 
     public init(from decoder: Decoder) throws {
@@ -107,6 +112,7 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         webBlockAction = try c.decodeIfPresent(WebBlockAction.self, forKey: .webBlockAction) ?? .warn
         guardSystemPanes = try c.decodeIfPresent(Bool.self, forKey: .guardSystemPanes) ?? true
         punisherEnabled = try c.decodeIfPresent(Bool.self, forKey: .punisherEnabled) ?? true
+        blockedFolders = try c.decodeIfPresent([String].self, forKey: .blockedFolders) ?? []
     }
 
     public static let defaults: [FocusProfile] = [
@@ -223,6 +229,9 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
     public var guardSystemPanes: Bool
     /// Makes the block harder for a while after several attempts in a row.
     public var punisherEnabled: Bool
+    /// Folders that close as soon as they are opened during the session — in the Finder, or as the document of
+    /// any app (a film in QuickTime). FocusMe's «Finder locations».
+    public var blockedFolders: [String]
 
     public init(
         id: UUID = UUID(),
@@ -254,7 +263,8 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         blockAction: AppBlockAction = .hide,
         webBlockAction: WebBlockAction = .warn,
         guardSystemPanes: Bool = true,
-        punisherEnabled: Bool = true
+        punisherEnabled: Bool = true,
+        blockedFolders: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -286,6 +296,7 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         self.webBlockAction = webBlockAction
         self.guardSystemPanes = guardSystemPanes
         self.punisherEnabled = punisherEnabled
+        self.blockedFolders = FolderRules.normalizeList(blockedFolders)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -293,6 +304,7 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         case apps, domains, folder, checklist, repeatRule, repeatDays, skippedDates, seriesID
         case profileID, isFixedAppointment, completed, calendarEventID, calendarSnapshot, autoStart
         case protection, unlockChars, stopDelayMinutes, blockAction, webBlockAction, guardSystemPanes, punisherEnabled
+        case blockedFolders
     }
 
     public init(from decoder: Decoder) throws {
@@ -327,6 +339,7 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         webBlockAction = try c.decodeIfPresent(WebBlockAction.self, forKey: .webBlockAction) ?? .warn
         guardSystemPanes = try c.decodeIfPresent(Bool.self, forKey: .guardSystemPanes) ?? true
         punisherEnabled = try c.decodeIfPresent(Bool.self, forKey: .punisherEnabled) ?? true
+        blockedFolders = try c.decodeIfPresent([String].self, forKey: .blockedFolders) ?? []
     }
 
     public var end: Date { scheduledAt.addingTimeInterval(Double(minutes) * 60) }
@@ -342,7 +355,7 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
     }
 
     /// Whether this task defends itself at all: it blocks something, or it resists being stopped.
-    public var enforces: Bool { strict || webBlockAction != .warn || protection != .none }
+    public var enforces: Bool { strict || webBlockAction != .warn || protection != .none || !blockedFolders.isEmpty }
 
     /// Snoozes an overdue or unscheduled task relative to `now`, or shifts a future task forward from `scheduledAt`.
     public func snoozed(minutes deltaMinutes: Int = 10, now: Date = Date()) -> FocusTask {
@@ -376,6 +389,7 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         webBlockAction = profile.webBlockAction
         guardSystemPanes = profile.guardSystemPanes
         punisherEnabled = profile.punisherEnabled
+        blockedFolders = profile.blockedFolders
         profileID = profile.id
     }
 
@@ -1037,6 +1051,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var relaunchGuard: Bool
     /// Emergency codes used, with the day they were used on: an escape hatch that leaves a trace.
     public var emergencyUses: [String]
+    /// Minutes before a protected task starts from which it already defends itself (`RunUp`); 0 switches it off.
+    public var runUpMinutes: Int
 
     public init() {
         self.calendarID = nil
@@ -1061,13 +1077,14 @@ public struct Settings: Codable, Equatable, Sendable {
         self.inspectEmbeddedPages = true
         self.relaunchGuard = false
         self.emergencyUses = []
+        self.runUpMinutes = RunUp.defaultMinutes
     }
 
     enum CodingKeys: String, CodingKey {
         case calendarID, observeTitles, observeBrave, detailDays, excludedTitleApps
         case hotKeyEnabled, hotKeyCode, hotKeyModifiers, hotKeyLabel, hotKeyTarget
         case categories, workdays, workStartHour, workEndHour, breaks, textScale, showMenuBarItem, focusDuringStrict
-        case watchBackgroundWindows, inspectEmbeddedPages, relaunchGuard, emergencyUses
+        case watchBackgroundWindows, inspectEmbeddedPages, relaunchGuard, emergencyUses, runUpMinutes
     }
 
     public init(from decoder: Decoder) throws {
@@ -1094,6 +1111,7 @@ public struct Settings: Codable, Equatable, Sendable {
         inspectEmbeddedPages = try c.decodeIfPresent(Bool.self, forKey: .inspectEmbeddedPages) ?? true
         relaunchGuard = try c.decodeIfPresent(Bool.self, forKey: .relaunchGuard) ?? false
         emergencyUses = try c.decodeIfPresent([String].self, forKey: .emergencyUses) ?? []
+        runUpMinutes = RunUp.clampedMinutes(try c.decodeIfPresent(Int.self, forKey: .runUpMinutes) ?? RunUp.defaultMinutes)
     }
 }
 

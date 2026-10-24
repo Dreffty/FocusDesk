@@ -823,6 +823,15 @@ struct TaskRowView: View {
                     if isProjected { Chip("Próxima", icon: "repeat", color: Palette.mint) }
                     else if task.repeatRule != .never { Chip(task.repeatRule.label, icon: "repeat") }
                     if task.strict { Chip("Estricto", icon: "scope") }
+                    if !task.blockedFolders.isEmpty {
+                        Chip(task.blockedFolders.count == 1 ? "1 carpeta bloqueada" : "\(task.blockedFolders.count) carpetas bloqueadas",
+                             icon: "folder.badge.minus")
+                            .help(task.blockedFolders.map { FolderRules.name(of: $0) }.joined(separator: ", "))
+                    }
+                    if !isProjected, model.protectedBeforeStart(task, at: model.now) {
+                        Chip("Ya protegida", icon: "lock.shield", color: Palette.mint)
+                            .help("Está a punto de empezar: retrasarla, borrarla o ablandarla cuesta lo mismo que pararla («\(task.protection.label)»).")
+                    }
                     if task.isFixedAppointment { Chip("Cita fija", icon: "lock.fill") }
                     if overlaps { Chip("Solapada", icon: "exclamationmark.triangle.fill", color: Palette.warning) }
                     if let issue = model.calendar.issues[task.id] {

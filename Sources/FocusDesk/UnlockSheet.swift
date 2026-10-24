@@ -33,13 +33,29 @@ struct UnlockSheet: View {
                     .foregroundStyle(challenge.emergency ? Palette.warning : Palette.mint)
                 Text(challenge.title).font(.app(20, weight: .semibold, design: .rounded))
             }
-            if let session = model.session {
+            if let change = challenge.runUp {
+                Text(runUpLine(change, challenge: challenge))
+                    .font(.app(12))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let session = model.session {
                 Text(remainingLine(for: session))
                     .font(.app(12))
                     .foregroundStyle(Palette.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func runUpLine(_ change: RunUpChange, challenge: PendingStopChallenge) -> String {
+        let task = change.task
+        let time = task.scheduledAt.formatted(date: .omitted, time: .shortened)
+        let action = challenge.runUpAction.prefix(1).lowercased() + challenge.runUpAction.dropFirst()
+        let when = task.scheduledAt > Date() ? "empieza a las \(time)" : "era a las \(time)"
+        if challenge.emergency {
+            return "«\(task.title)» \(when) y está en «Hasta el final». Para \(action) queda esta salida, y queda anotada."
+        }
+        return "«\(task.title)» \(when) y ya está protegida. Teclea el código si de verdad quieres \(action)."
     }
 
     private func remainingLine(for session: WorkSession) -> String {
@@ -113,11 +129,13 @@ struct UnlockSheet: View {
 
     @ViewBuilder private func footer(_ challenge: PendingStopChallenge) -> some View {
         HStack {
-            Button("Seguir trabajando") { model.dismissStopChallenge() }
+            Button(challenge.runUp == nil ? "Seguir trabajando" : "Dejarla como está") { model.dismissStopChallenge() }
                 .buttonStyle(.focusSecondary)
                 .keyboardShortcut(.cancelAction)
             Spacer()
-            Button(challenge.quitAfter ? "Salir de FocusDesk" : buttonTitle(challenge.reason)) {
+            Button(challenge.quitAfter ? "Salir de FocusDesk"
+                   : challenge.runUp != nil ? challenge.runUpAction
+                   : buttonTitle(challenge.reason)) {
                 model.submitStopChallenge()
             }
             .buttonStyle(FocusPrimaryButton())

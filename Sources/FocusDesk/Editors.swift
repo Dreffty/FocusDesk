@@ -303,6 +303,9 @@ struct TaskEditor: View {
                                     Text(webHint).font(.app(10)).foregroundStyle(Palette.muted)
                                 }
                             }
+
+                            Divider().overlay(Palette.stroke)
+                            BlockedFoldersField(folders: $draft.blockedFolders)
                         }
                     }
 
@@ -321,6 +324,19 @@ struct TaskEditor: View {
                             .pickerStyle(.segmented)
                             .labelsHidden()
                             Text(draft.protection.explanation).font(.app(11)).foregroundStyle(Palette.muted)
+                            if let saved = model.workspace.tasks.first(where: { $0.id == draft.id }),
+                               model.protectedBeforeStart(saved) {
+                                Label("Ya está protegida: empieza a las \(saved.scheduledAt.formatted(date: .omitted, time: .shortened)). Retrasarla o ablandarla costará lo mismo que pararla; adelantarla, alargarla o endurecerla, no.",
+                                      systemImage: "lock.fill")
+                                    .font(.app(10, weight: .medium))
+                                    .foregroundStyle(Palette.warning)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } else if draft.protection != .none, model.workspace.settings.runUpMinutes > 0, draft.isScheduled {
+                                Text("Protege la tarea desde \(model.workspace.settings.runUpMinutes) min antes de empezar: a esa hora, borrarla o retrasarla ya cuesta lo mismo que pararla. El margen se cambia en Ajustes.")
+                                    .font(.app(10))
+                                    .foregroundStyle(Palette.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
 
                             if draft.protection == .challenge {
                                 Stepper("Código de \(draft.unlockChars) caracteres", value: $draft.unlockChars, in: UnlockChallenge.lengthRange, step: 4)
@@ -479,7 +495,15 @@ struct TaskEditor: View {
             domains: draft.domains,
             folder: draft.folder,
             checklist: draft.checklist,
-            autoStart: draft.autoStart
+            autoStart: draft.autoStart,
+            protection: draft.protection,
+            unlockChars: draft.unlockChars,
+            stopDelayMinutes: draft.stopDelayMinutes,
+            blockAction: draft.blockAction,
+            webBlockAction: draft.webBlockAction,
+            guardSystemPanes: draft.guardSystemPanes,
+            punisherEnabled: draft.punisherEnabled,
+            blockedFolders: draft.blockedFolders
         )
         model.saveProfile(profile)
         draft.profileID = profile.id
@@ -770,6 +794,32 @@ enum SettingsSectionTab: String, CaseIterable, Identifiable {
     }
 }
 
+/// How long before its start a protected task already defends itself (`RunUp`).
+private struct RunUpSettings: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Antes de que empiece una tarea protegida", icon: "lock.shield")
+                Picker("Protegerla desde", selection: Binding(
+                    get: { model.workspace.settings.runUpMinutes },
+                    set: { model.setRunUpMinutes($0) }
+                )) {
+                    ForEach(RunUp.choices, id: \.self) { minutes in
+                        Text(minutes == 0 ? "No protegerla antes" : "\(minutes) min antes").tag(minutes)
+                    }
+                }
+                .frame(maxWidth: 360)
+                Text("A las 8:55, una tarea de las 9:00 aún no ha empezado y borrarla sería gratis: justo cuando gana el impulso. Desde este margen, retrasar, borrar o ablandar una tarea protegida cuesta lo mismo que pararla —su código, su espera o la salida de emergencia—. Adelantarla, alargarla o endurecerla sigue libre, y las tareas que «Se pueden parar» no cambian.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
 /// No molestar during the sessions that block apps, with the one-time setup of its two shortcuts.
 private struct DoNotDisturbSettings: View {
     @ObservedObject var model: AppModel
@@ -921,6 +971,7 @@ struct SettingsView: View {
                     }
                 }
                 DoNotDisturbSettings(model: model, focusMode: model.focusMode)
+                RunUpSettings(model: model)
             }
 
             if section == .connections || section == .all {
@@ -1430,6 +1481,7 @@ struct ProfileEditorSheet: View {
                 }
             }
             TextField("Dominios (ej. chatgpt.com, claude.ai)", text: $draft.domains).textFieldStyle(.roundedBorder)
+            BlockedFoldersField(folders: $draft.blockedFolders)
             Text("Checklist (un paso por línea)").font(.app(10)).foregroundStyle(Palette.muted)
             TextEditor(text: $draft.checklist).frame(height: 70).overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.stroke))
             HStack {
@@ -1460,5 +1512,81 @@ struct ProfileEditorSheet: View {
         .padding(24)
         .frame(width: 540)
         .background(Palette.background)
+    }
+}
+
+/// The folders a task (or profile) closes while it runs — FocusMe's «Finder locations». Added through the open
+/// panel, so the path is always one that exists; the folders the Mac needs are refused with the reason.
+struct BlockedFoldersField: View {
+    @Binding var folders: [String]
+    @State private var problem: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("CARPETAS QUE DISTRAEN · OPCIONAL").fieldLabelStyle()
+                Spacer()
+                Button("Añadir carpeta…") { choose() }
+                    .buttonStyle(.focus(.secondary, compact: true))
+                    .help("Elegir carpetas que se cierran mientras dura la tarea")
+            }
+            if folders.isEmpty {
+                Text("Una carpeta de series, juegos o descargas. Mientras dura la tarea, abrirla en el Finder —o abrir un archivo de dentro, como un vídeo en QuickTime— cierra esa ventana.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(folders, id: \.self) { path in
+                    HStack(spacing: 8) {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 18, height: 18)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(FolderRules.name(of: path)).font(.app(11, weight: .medium)).lineLimit(1)
+                            Text(Self.abbreviated(path)).font(.app(9)).foregroundStyle(Palette.muted)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                        Spacer(minLength: 4)
+                        Button { folders.removeAll { $0 == path } } label: { Image(systemName: "xmark") }
+                            .accessibilityLabel("Desbloquear \(FolderRules.name(of: path))")
+                            .help("Desbloquear \(FolderRules.name(of: path))")
+                            .buttonStyle(FocusIconButtonStyle(size: 20))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Palette.elevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .accessibilityElement(children: .combine)
+                }
+                Text("La primera vez, macOS te pedirá que FocusDesk pueda controlar el Finder: es lo que le deja ver qué carpeta tienes abierta.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let problem {
+                Text(problem).font(.app(10)).foregroundStyle(Palette.warning)
+            }
+        }
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Bloquear"
+        panel.message = "Elige las carpetas que se cerrarán mientras dure la tarea."
+        guard panel.runModal() == .OK else { return }
+        problem = nil
+        for url in panel.urls {
+            if let why = FolderRules.problem(with: url.path) {
+                problem = why
+                continue
+            }
+            let clean = FolderRules.normalize(url.path)
+            if !folders.contains(where: { $0.lowercased() == clean.lowercased() }) { folders.append(clean) }
+        }
+    }
+
+    static func abbreviated(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
     }
 }
