@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "${0:A:h}/.."
 
-# 1. Avoid installing a stale dist/FocusDesk.app by checking source modification times.
-binary="dist/FocusDesk.app/Contents/MacOS/FocusDesk"
+# 1. Avoid installing a stale dist.noindex/FocusDesk.app by checking source modification times.
+binary="dist.noindex/FocusDesk.app/Contents/MacOS/FocusDesk"
 if [[ ! -x "$binary" ]] || [[ -n "$(find Sources Package.swift Resources -newer "$binary" 2>/dev/null)" ]]; then
   echo "Compilando versión actualizada antes de instalar…"
   ./build.command
@@ -11,10 +11,10 @@ fi
 
 # 2. Verify candidate bundle before touching ~/Applications/FocusDesk.app
 echo "Verificando firma, plist y prueba integrada del nuevo bundle…"
-plutil -lint dist/FocusDesk.app/Contents/Info.plist >/dev/null
-codesign --verify --deep --strict dist/FocusDesk.app
-if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' dist/FocusDesk.app/Contents/Info.plist)" != 'local.focusdesk.app' ]]; then
-  echo "Error: CFBundleIdentifier inesperado en dist/FocusDesk.app."
+plutil -lint dist.noindex/FocusDesk.app/Contents/Info.plist >/dev/null
+codesign --verify --deep --strict dist.noindex/FocusDesk.app
+if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' dist.noindex/FocusDesk.app/Contents/Info.plist)" != 'local.focusdesk.app' ]]; then
+  echo "Error: CFBundleIdentifier inesperado en dist.noindex/FocusDesk.app."
   exit 1
 fi
 
@@ -77,14 +77,28 @@ rollback() {
   fi
 }
 
-if ! (ditto dist/FocusDesk.app "$target" && codesign --verify --deep --strict "$target"); then
+if ! (ditto dist.noindex/FocusDesk.app "$target" && codesign --verify --deep --strict "$target"); then
   rollback
   exit 1
 fi
 
 # Without this the freshly installed bundle can stay invisible to Spotlight for a while.
-/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$target" 2>/dev/null || true
+lsregister=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
+"$lsregister" -f "$target" 2>/dev/null || true
 mdimport "$target" 2>/dev/null || true
+
+# One FocusDesk, not one per install: keep only the version just replaced, for going back, and tell macOS to
+# forget it and the build copy so neither shows up in «Abrir con…» as another FocusDesk.
+if [[ -n "$backup" && -d "$backup" ]]; then
+  "$lsregister" -u "$backup" 2>/dev/null || true
+  for old in "$PWD"/.build/installed-backups/FocusDesk-previous-*.app(N); do
+    if [[ "$old" != "$backup" ]]; then
+      "$lsregister" -u "$old" 2>/dev/null || true
+      rm -rf "$old"
+    fi
+  done
+fi
+"$lsregister" -u "$PWD/dist.noindex/FocusDesk.app" 2>/dev/null || true
 
 if [[ "${1:-}" != "--no-open" ]]; then
   open "$target" --args "$@"

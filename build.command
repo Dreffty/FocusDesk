@@ -3,7 +3,9 @@ set -euo pipefail
 cd "${0:A:h}"
 
 swift build -c release
-bundle="$PWD/dist/FocusDesk.app"
+# «.noindex»: Spotlight no mira dentro, así que la copia recién compilada no sale como una segunda FocusDesk
+# al lado de la instalada (el mismo truco que usa Xcode con sus carpetas de compilación).
+bundle="$PWD/dist.noindex/FocusDesk.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 cp .build/release/FocusDesk "$bundle/Contents/MacOS/FocusDesk"
 cp Resources/Info.plist "$bundle/Contents/Info.plist"

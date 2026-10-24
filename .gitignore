@@ -1,5 +1,6 @@
 .build/
 dist/
+dist.noindex/
 .DS_Store
 .gentlemerge/
 .agent-inbox/

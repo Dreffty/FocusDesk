@@ -4,7 +4,7 @@ Tu plan del día y el tiempo de cada tarea, accesibles desde la barra de menús 
 
 ## Abrir
 
-Abre `/Applications/FocusDesk.app` con doble clic, búscala en Spotlight escribiendo **FocusDesk** (todo junto: «Focus Desk» con espacio no la encuentra) o usa su icono del Dock. La copia compilada también está en `dist/FocusDesk.app`. Cerrar su ventana deja la app funcionando en la barra. El atajo global (**Control + Opción + Comando + F** por defecto, configurable en **Ajustes**, que se abren con `⌘,` en su propia ventana) vuelve a abrir el planificador o el panel compacto. Para cerrarla completamente, usa **Salir** en su menú.
+Abre `/Applications/FocusDesk.app` con doble clic, búscala en Spotlight escribiendo **FocusDesk** (todo junto: «Focus Desk» con espacio no la encuentra) o usa su icono del Dock. La copia compilada también está en `dist.noindex/FocusDesk.app`. Cerrar su ventana deja la app funcionando en la barra. El atajo global (**Control + Opción + Comando + F** por defecto, configurable en **Ajustes**, que se abren con `⌘,` en su propia ventana) vuelve a abrir el planificador o el panel compacto. Para cerrarla completamente, usa **Salir** en su menú.
 
 Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma estable local (`Apple Development`) cuando está disponible en el llavero (con respaldo ad-hoc `-`), conservando los permisos de macOS entre recompilaciones.
 
@@ -119,7 +119,7 @@ swift test
 Para explorar con datos separados:
 
 ```sh
-./dist/FocusDesk.app/Contents/MacOS/FocusDesk --preview
+./dist.noindex/FocusDesk.app/Contents/MacOS/FocusDesk --preview
 ```
 
 El chequeo integrado del flujo se ejecuta con `--preview --smoke-test`; imprime `PASS` o `FAIL`, guarda `smoke-report.txt` y devuelve código de salida distinto de cero (`1`) si falla. El chequeo optativo de EventKit se ejecuta con `--verify-calendar` (y `--quit-after-verify` para uso automatizado) y también devuelve código de salida `1` si imprime `FAIL` o `BLOCKED`.

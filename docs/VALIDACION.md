@@ -5,9 +5,9 @@ Fecha: 20 de octubre de 2026. Mac Apple Silicon, macOS 26.5.2, Swift 6.3.3.
 ## Verificado
 
 - `swift test`: nueve pruebas, cero fallos. Incluyen conservación de evidencias finales al guardar/cargar y finalización idempotente.
-- `./build.command`: compilación de producción y creación de `dist/FocusDesk.app`.
-- `codesign --verify --deep --strict dist/FocusDesk.app`: correcto.
-- `plutil -lint dist/FocusDesk.app/Contents/Info.plist`: correcto.
+- `./build.command`: compilación de producción y creación de `dist.noindex/FocusDesk.app`.
+- `codesign --verify --deep --strict dist.noindex/FocusDesk.app`: correcto.
+- `plutil -lint dist.noindex/FocusDesk.app/Contents/Info.plist`: correcto.
 - Ejecución real del binario con `--preview`, en una carpeta temporal independiente.
 - Inspección visual de la ventana inicial y del editor mediante accesibilidad.
 - Creación y guardado de una tarea desde la interfaz; aparece en la agenda.
@@ -56,7 +56,7 @@ Fecha: 20 de octubre de 2026. Mac Apple Silicon, macOS 26.5.2, Swift 6.3.3.
 
 ## 2. Prueba integrada en el bundle compilado (`--preview --smoke-test`)
 
-Ejecutada sobre `dist/FocusDesk.app/Contents/MacOS/FocusDesk --preview --smoke-test` y automáticamente dentro de `./scripts/install.command` antes de actualizar `~/Applications/FocusDesk.app`:
+Ejecutada sobre `dist.noindex/FocusDesk.app/Contents/MacOS/FocusDesk --preview --smoke-test` y automáticamente dentro de `./scripts/install.command` antes de actualizar `~/Applications/FocusDesk.app`:
 
 - **Resultado**: `PASS: Dock regular; status item visible; profiles & domain normalization; notification actions; overdue snooze; unscheduled inbox; start/pause/resume/extend; selective & manual evidence; confirm & recurrence; cancel session; auto-backup recovery.`
 - **Código de salida**: devuelve `0` en `PASS` y `1` si imprime `FAIL` (verificado durante el desarrollo), permitiendo automatizar tanto `--smoke-test` como `--verify-calendar`.
@@ -65,9 +65,9 @@ Ejecutada sobre `dist/FocusDesk.app/Contents/MacOS/FocusDesk --preview --smoke-t
 
 - **Firma estable**: `./build.command` detecta y firma el bundle con el certificado `Apple Development: tu-correo@ejemplo.com (M4GZ37V5M2)` (Team ID `M4GZ37V5M2`), generando un requisito designado estable en lugar de un hash ad-hoc efímero.
 - **Instalador seguro (`./scripts/install.command`)**:
-  1. Comprueba las fechas de modificación de `Sources/`, `Package.swift` y `Resources/` frente a `dist/FocusDesk.app` y recompila automáticamente si `dist` es más antiguo.
+  1. Comprueba las fechas de modificación de `Sources/`, `Package.swift` y `Resources/` frente a `dist.noindex/FocusDesk.app` y recompila automáticamente si `dist` es más antiguo.
   2. Verifica `Info.plist`, firma (`codesign --verify --deep --strict`) y ejecuta `--preview --smoke-test` antes de tocar `~/Applications/FocusDesk.app`.
-  3. Guarda la versión previa en `.build/installed-backups/` y restaura automáticamente ese respaldo si falla la copia o la verificación posterior.
+  3. Guarda la versión previa en `.build/installed-backups/` (solo esa: borra las anteriores y hace que macOS la olvide, para que no salga como otra FocusDesk) y restaura automáticamente ese respaldo si falla la copia o la verificación posterior.
 - **Datos reales verificados**: `/Users/dreffty/Library/Application Support/FocusDesk/workspace.json` conserva la tarea existente «Prueba de conexión · FocusDesk» (`id: 99912E1A-20CF-4918-A22F-BD9B8B42DE7A`), el `calendarEventID` y el `calendarID` conectado (`80D4ACAD-AF3C-4D99-B828-258CAA5DD149`), además de generar `workspace.backup.json`.
 
 ## 4. Comprobaciones pendientes de interacción en sesión de usuario
