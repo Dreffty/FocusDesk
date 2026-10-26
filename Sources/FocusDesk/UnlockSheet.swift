@@ -33,7 +33,12 @@ struct UnlockSheet: View {
                     .foregroundStyle(challenge.emergency ? Palette.warning : Palette.mint)
                 Text(challenge.title).font(.app(20, weight: .semibold, design: .rounded))
             }
-            if let change = challenge.runUp {
+            if let ruleChange = challenge.generalRule {
+                Text(generalRuleLine(ruleChange, challenge: challenge))
+                    .font(.app(12))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let change = challenge.runUp {
                 Text(runUpLine(change, challenge: challenge))
                     .font(.app(12))
                     .foregroundStyle(Palette.muted)
@@ -45,6 +50,15 @@ struct UnlockSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func generalRuleLine(_ change: GeneralRuleChange, challenge: PendingStopChallenge) -> String {
+        let rule = change.rule
+        let action = challenge.generalRuleAction.prefix(1).lowercased() + challenge.generalRuleAction.dropFirst()
+        if challenge.emergency {
+            return "«\(rule.name)» está activa en «Hasta el final». Para \(action) usa esta salida de emergencia, que queda anotada."
+        }
+        return "«\(rule.name)» está activa y protegida. Teclea el código si de verdad quieres \(action)."
     }
 
     private func runUpLine(_ change: RunUpChange, challenge: PendingStopChallenge) -> String {
@@ -129,11 +143,14 @@ struct UnlockSheet: View {
 
     @ViewBuilder private func footer(_ challenge: PendingStopChallenge) -> some View {
         HStack {
-            Button(challenge.runUp == nil ? "Seguir trabajando" : "Dejarla como está") { model.dismissStopChallenge() }
-                .buttonStyle(.focusSecondary)
-                .keyboardShortcut(.cancelAction)
+            Button(challenge.generalRule != nil || challenge.runUp != nil ? "Dejarla como está" : "Seguir trabajando") {
+                model.dismissStopChallenge()
+            }
+            .buttonStyle(.focusSecondary)
+            .keyboardShortcut(.cancelAction)
             Spacer()
             Button(challenge.quitAfter ? "Salir de FocusDesk"
+                   : challenge.generalRule != nil ? challenge.generalRuleAction
                    : challenge.runUp != nil ? challenge.runUpAction
                    : buttonTitle(challenge.reason)) {
                 model.submitStopChallenge()

@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
     var showSettings: ((SettingsSectionTab?) -> Void)?
     @Published var selectedDate = Date()
     @Published var editingTask: FocusTask?
+    @Published var editingGeneralRule: GeneralBlockRule?
     @Published var showCompletion = false
     @Published var accessible = MacActivity.accessibility
     /// macOS says the permission is granted but every call fails: the block cannot act and has to say so.
@@ -58,7 +59,7 @@ final class AppModel: ObservableObject {
     var lastDistractionNotifyAt = Date.distantPast
     /// Host of the current visit outside the task's domains; one interruption and one notice per visit.
     var domainEpisodeHost: String?
-    private var screenIsLocked = false
+    var screenIsLocked = false
     /// Tasks already started on their own (or skipped because another session was running), so it happens once.
     private var autoStartHandled: Set<String> = []
     /// Whether any FocusDesk window or the menu-bar panel is on screen (set by the app delegate).
@@ -67,7 +68,7 @@ final class AppModel: ObservableObject {
     private var lastBraveReadAt = Date.distantPast
     private var lastTitleAppID: String?
     private var lastTitleReadAt = Date.distantPast
-    private var lastTitle: (title: String?, status: String?) = (nil, nil)
+    var lastTitle: (title: String?, status: String?) = (nil, nil)
 
     /// Undo and redo for direct agenda edits (drag, snooze, inbox, delete), in the Edit menu with ⌘Z and ⇧⌘Z
     /// (`undo-and-redo.md › Desktop`). The main window hands this manager to AppKit. Each step only applies while
@@ -97,7 +98,7 @@ final class AppModel: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var subscriptions = Set<AnyCancellable>()
     private var lastPrunedDay = Calendar.current.startOfDay(for: Date())
-    private var writable = true
+    var writable = true
     var lastAllowed: NSRunningApplication?
     var strictTracker = StrictRedirectTracker()
     /// Times an allowed app was opened because none was running; reset when one is seen in front.
@@ -136,6 +137,27 @@ final class AppModel: ObservableObject {
     /// Kept in memory only: quitting FocusDesk just means waiting again, which is never a way out.
     var runUpWaits: [UUID: StopRequest] = [:]
     var runUpWaitsNotified: Set<UUID> = []
+    /// A change to an active protected general rule whose code was just typed: lets it through once.
+    var authorizedGeneralRule: UUID?
+    var generalRuleWaitsNotified: Set<UUID> = []
+    /// Last timestamp when `.dailyLimit` usage seconds were credited.
+    var lastGeneralQuotaAt: Date?
+    /// Last observed `(host, path)` per browser bundle ID for general rules and daily limit timers.
+    var lastObservedBrowserPage: [String: (host: String, path: String, at: Date)] = [:]
+    /// Daily-limit rules that already notified exhaustion today (`dayKey-ruleID`).
+    var quotaExhaustedNotifiedToday: Set<String> = []
+    /// Pre-block reminder keys sent today (`dayKey-ruleID-5m`, `dayKey-ruleID-1m`).
+    var quotaWarningsSentToday: Set<String> = []
+    /// Continuous active screen-work seconds accumulated before triggering a rest break (`tickAsScreenBreak`).
+    @Published var continuousActiveWorkSeconds: TimeInterval = 0
+    /// Active continuous screen-work rest break deadline, when triggered.
+    @Published var activeContinuousBreakDeadline: TrustedDeadline?
+    /// Rotating motivational message chosen for the active continuous break.
+    @Published var activeContinuousBreakMessage: String = ""
+    /// Discreet non-activating floating countdown pill in the top-right corner of the screen (`showTimer`).
+    let floatingPill = FloatingTimerPillController()
+    /// Dismissed break key (`dayKey-breakID-startHour:startMinute`) so the user can snooze/dismiss a break banner once.
+    @Published var dismissedBreakKey: String?
     /// One Finder question at a time: a slow Finder must not pile up `osascript` processes.
     var finderCheckBusy = false
     /// The Finder permission is asked for by macOS; if it was refused, this is said once per session.
@@ -370,15 +392,30 @@ final class AppModel: ObservableObject {
 
     /// A protected session is defending itself right now: the settings and data that could end it stay as they are.
     var protectedSessionRunning: Bool {
-        guard let s = session else { return false }
-        return s.task.protection != .none && s.enforcing(at: Date(), uptime: uptime)
+        if let s = session, s.task.protection != .none, s.enforcing(at: Date(), uptime: uptime) {
+            return true
+        }
+        return activeProtectedGeneralRule != nil
     }
 
-    /// Says no, with the reason, when `action` would weaken a protected session. Returns true when it refused.
+    var activeProtectedGeneralRule: GeneralBlockRule? {
+        let instant = Date()
+        return workspace.generalRules.first { rule in
+            rule.protection != .none && isRuleEnforcing(rule, at: instant)
+        }
+    }
+
+    /// Says no, with the reason, when `action` would weaken a protected session or active general block rule. Returns true when it refused.
     func refuseWhileProtected(_ action: String) -> Bool {
-        guard protectedSessionRunning, let s = session else { return false }
-        notice = "No se puede \(action) mientras «\(s.task.title)» está protegida. \(s.task.protection.wayOut)"
-        return true
+        if let s = session, s.task.protection != .none, s.enforcing(at: Date(), uptime: uptime) {
+            notice = "No se puede \(action) mientras «\(s.task.title)» está protegida. \(s.task.protection.wayOut)"
+            return true
+        }
+        if let rule = activeProtectedGeneralRule {
+            notice = "No se puede \(action) mientras la regla «\(rule.name)» está activa y protegida (\(rule.protection.label))."
+            return true
+        }
+        return false
     }
 
     /// The run-up margin can always grow. Shrinking it while a task is already inside it would be the cheapest way
@@ -911,6 +948,19 @@ final class AppModel: ObservableObject {
         head.profileID = draft.profileID
         head.isFixedAppointment = draft.isFixedAppointment
         head.autoStart = draft.autoStart
+        head.protection = draft.protection
+        head.unlockChars = draft.unlockChars
+        head.stopDelayMinutes = draft.stopDelayMinutes
+        head.blockAction = draft.blockAction
+        head.webBlockAction = draft.webBlockAction
+        head.guardSystemPanes = draft.guardSystemPanes
+        head.punisherEnabled = draft.punisherEnabled
+        head.blockedFolders = draft.blockedFolders
+        head.appListMode = draft.appListMode
+        head.webListMode = draft.webListMode
+        head.blockedTitleKeywords = draft.blockedTitleKeywords
+        head.customRedirectURL = draft.customRedirectURL
+        head.motivationalMessage = draft.motivationalMessage
     }
 
     /// Applies to `date` the same move (whole days, then wall-clock time) that took `original` to `edited`.
@@ -1812,11 +1862,17 @@ final class AppModel: ObservableObject {
     }
 
     /// The visible clock only needs to tick every second when something shows it changing: a session, an imminent
-    /// task's countdown, or a FocusDesk window on screen. Otherwise every view and the Dock were redrawn once a
-    /// second all day for nothing.
+    /// task's countdown, an active general timer/quota, an active break, or a FocusDesk window on screen.
     private func needsLiveClock(at instant: Date) -> Bool {
         if session != nil { return true }
         if isInterfaceVisible?() ?? true { return true }
+        if workspace.generalRules.contains(where: {
+            $0.enabled && ($0.kind == .countdown || $0.kind == .dailyLimit || $0.kind == .workGoal || $0.kind == .launchLimit || $0.isMicroPaused(at: instant))
+        }) {
+            return true
+        }
+        if !workspace.temporaryAllows.isEmpty { return true }
+        if activeBreak(at: instant) != nil || activeContinuousBreak(at: instant) != nil { return true }
         return workspace.tasks.contains { task in
             !task.completed && task.isScheduled && task.scheduledAt > instant &&
             task.scheduledAt.timeIntervalSince(instant) <= Double(max(task.leadMinutes, 1)) * 60
@@ -1845,6 +1901,9 @@ final class AppModel: ObservableObject {
         startDueAutoStartTasks()
         checkStopRequestReady()
         checkRunUpWaitsReady()
+        checkGeneralRuleWaitsReady()
+        tickContinuousBreak(at: instant)
+        updateFloatingPill(at: instant)
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility
             observe()
@@ -1854,8 +1913,9 @@ final class AppModel: ObservableObject {
         }
         if ticks.isMultiple(of: 10) {
             checkClockDrift()
+            refreshWitness()
             // The permission can look granted and not work; a block that cannot act must not pretend otherwise.
-            if session?.task.strict == true, accessible {
+            if (session?.task.strict == true || !enforcingGeneralRules.isEmpty), accessible {
                 accessibilityBroken = !AccessibilityProbe.actuallyGranted()
             } else {
                 accessibilityBroken = false
@@ -1887,6 +1947,8 @@ final class AppModel: ObservableObject {
                 s.checkpoint(at: now, uptime: uptime)
                 workspace.session = s
                 _ = persist()
+            } else if workspace.generalRules.contains(where: { $0.enabled && ($0.kind == .dailyLimit || $0.kind == .workGoal || $0.kind == .launchLimit) }) {
+                _ = persist()
             }
         }
         if ticks.isMultiple(of: 15) {
@@ -1897,17 +1959,17 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Per-task auto-start from the design: only on an unlocked Mac, never retroactively (a start time that passed
-    /// while the Mac slept stays a reminder), and never on top of another session.
+    /// Per-task auto-start from the design: only on an unlocked Mac, while the task's scheduled window `[scheduledAt, end)`
+    /// is active, and never on top of another session.
     private func startDueAutoStartTasks() {
-        guard writable, !busy else { return }
+        guard writable, !busy, !screenIsLocked else { return }
         let reference = Date()
         // Keyed by task and time, so a task snoozed to a new time starts on its own again at that time.
         func key(_ task: FocusTask) -> String { "\(task.id.uuidString)@\(Int(task.scheduledAt.timeIntervalSinceReferenceDate))" }
         // Not the task already running: started by hand a few minutes early, it got «no ha empezado sola» at its time.
         guard let due = workspace.tasks.first(where: {
             $0.autoStart && !$0.completed && $0.isScheduled && $0.id != session?.task.id && !autoStartHandled.contains(key($0)) &&
-            $0.scheduledAt <= reference && reference.timeIntervalSince($0.scheduledAt) < 90
+            $0.scheduledAt <= reference && reference < $0.end
         }) else { return }
         autoStartHandled.insert(key(due))
         if let current = session {
@@ -1921,7 +1983,6 @@ final class AppModel: ObservableObject {
             }
             return
         }
-        guard !screenIsLocked else { return }
         start(due)
         if !preview {
             reminders.notify("Empezada a su hora · \(due.title)", body: "Tienes \(due.minutes) minutos. Puedes pausarla con ⌃⌥⌘P.")
@@ -1929,15 +1990,30 @@ final class AppModel: ObservableObject {
     }
 
     func observe() {
-        guard writable, let s = session, !s.paused, s.endedAt == nil else { return }
+        guard writable, !screenIsLocked else {
+            lastGeneralQuotaAt = nil
+            return
+        }
+        let activeSession: WorkSession? = {
+            guard let s = session, !s.paused, s.endedAt == nil else { return nil }
+            return s
+        }()
+        let hasEnabledRules = workspace.generalRules.contains(where: \.enabled)
+        guard activeSession != nil || hasEnabledRules else {
+            lastGeneralQuotaAt = nil
+            return
+        }
         let excludedIDs = Set(workspace.settings.excludedTitleApps.map(\.id))
+        let needsTitles = workspace.settings.observeTitles
+            || (activeSession.map { !FocusRules.parseTitleKeywords($0.task.blockedTitleKeywords).isEmpty } ?? false)
+            || workspace.generalRules.contains { $0.enabled && !FocusRules.parseTitleKeywords($0.blockedTitleKeywords).isEmpty }
         // Window titles are read through Accessibility on the main thread (up to 0.15 s each): on a change of app,
         // or every 15 s for the same app, instead of every 5 s.
         let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let refreshTitle = workspace.settings.observeTitles && (frontID != lastTitleAppID || Date().timeIntervalSince(lastTitleReadAt) >= 15)
+        let refreshTitle = needsTitles && (frontID != lastTitleAppID || Date().timeIntervalSince(lastTitleReadAt) >= 15)
         guard var fg = MacActivity.foreground(readTitle: refreshTitle, excludedAppIDs: excludedIDs),
-              let id = fg.app.bundleIdentifier else { return }
-        if workspace.settings.observeTitles {
+               let id = fg.app.bundleIdentifier else { return }
+        if needsTitles {
             if refreshTitle {
                 lastTitleAppID = id
                 lastTitleReadAt = Date()
@@ -1948,88 +2024,117 @@ final class AppModel: ObservableObject {
         }
         let appChanged = id != lastObservedAppID
         lastObservedAppID = id
-        // System Settings is exempt as a distraction — you may need the Wi-Fi mid-session — but two of its panes
-        // are the way out of the block, so they are checked before the exemption applies.
-        if SystemSettingsGuard.bundleIDs.contains(id) {
-            guardSystemSettingsIfNeeded(bundleID: id, pid: fg.app.processIdentifier, session: s)
-        }
-        // The Finder is exempt too — you may need your files — but not the folders this task closes.
-        if !s.task.blockedFolders.isEmpty {
-            guardBlockedFolders(frontBundleID: id, frontApp: fg.app, session: s)
-        }
-        var exemptions = FocusRules.systemExemptBundleIDs
-        if let ownID = Bundle.main.bundleIdentifier { exemptions.insert(ownID) }
-        guard !exemptions.contains(id) else { return }
-        // A FocusDesk open or save panel left on screen used to switch the whole block off (this returned early
-        // while `NSApp.modalWindow` was set). The panel is FocusDesk's own window, already exempt, and the
-        // out-of-process panel service is on the exempt list: nothing else needs to stop the block.
+        var sessionReadBrowser = false
 
-        // A Chromium "web app" is a real app with its own icon wrapping a single site: judge it by that site,
-        // so installing a blocked page as an app is not a way around the rules.
-        let webAppHost = workspace.settings.inspectEmbeddedPages && WebRules.looksLikeChromiumWebApp(bundleID: id)
-            ? AppInspector.chromiumWebAppHost(for: fg.app)
-            : nil
-        var allowed = s.task.apps.isEmpty || s.task.apps.contains { $0.id == id }
-        if allowed, let webAppHost, s.task.webBlockAction != .warn,
-           !FocusRules.domainAllowed(webAppHost, list: s.task.domains) {
-            allowed = false
-        }
-        let at = Date()
-        let currentUptime = uptime
+        if let s = activeSession {
+            // System Settings is exempt as a distraction — you may need the Wi-Fi mid-session — but two of its panes
+            // are the way out of the block, so they are checked before the exemption applies.
+            if SystemSettingsGuard.bundleIDs.contains(id) {
+                guardSystemSettingsIfNeeded(bundleID: id, pid: fg.app.processIdentifier, session: s)
+            }
+            // The Finder is exempt too — you may need your files — but not the folders this task closes.
+            if !s.task.blockedFolders.isEmpty {
+                guardBlockedFolders(frontBundleID: id, frontApp: fg.app, session: s)
+            }
+            var exemptions = FocusRules.systemExemptBundleIDs
+            if let ownID = Bundle.main.bundleIdentifier { exemptions.insert(ownID) }
+            if !exemptions.contains(id) {
+                // A Chromium "web app" is a real app with its own icon wrapping a single site: judge it by that site,
+                // so installing a blocked page as an app is not a way around the rules.
+                let webAppHost = workspace.settings.inspectEmbeddedPages && WebRules.looksLikeChromiumWebApp(bundleID: id)
+                    ? AppInspector.chromiumWebAppHost(for: fg.app)
+                    : nil
+                let at = Date()
+                let isTempAllowedApp = workspace.isTemporarilyAllowed(bundleID: id, at: at)
+                    || (webAppHost.map { workspace.isTemporarilyAllowed(host: $0, at: at) } ?? false)
+                var allowed = isTempAllowedApp || s.task.apps.isEmpty || FocusRules.appAllowed(bundleID: id, apps: s.task.apps, mode: s.task.appListMode)
+                if !isTempAllowedApp, allowed, let webAppHost, s.task.webBlockAction != .warn,
+                   !FocusRules.webAllowed(host: webAppHost, path: "", list: s.task.domains, mode: s.task.webListMode) {
+                    allowed = false
+                }
+                let matchedTitleKeyword = isTempAllowedApp ? nil : FocusRules.matchesTitleKeyword(fg.title, keywords: s.task.blockedTitleKeywords)
+                if matchedTitleKeyword != nil {
+                    allowed = false
+                }
+                let currentUptime = uptime
 
-        if allowed {
-            lastAllowed = fg.app
-            strictTracker.registerAllowedAppObserved()
-            strictLaunchAttempts = 0
+                if allowed {
+                    lastAllowed = fg.app
+                    strictTracker.registerAllowedAppObserved()
+                    strictLaunchAttempts = 0
+                }
+
+                let isNewInterruption = workspace.session?.observeForeground(
+                    appID: id,
+                    name: fg.app.localizedName ?? id,
+                    title: fg.title,
+                    titleStatus: fg.titleStatus,
+                    allowed: allowed,
+                    at: at,
+                    uptime: currentUptime
+                ) ?? false
+
+                if allowed, !WebRules.isBrowser(id) { domainEpisodeHost = nil }
+                // A browser, or a site saved as an app from Safari, whose address cannot be read: websites are not blocked
+                // there, and a task that blocks them says so once instead of pretending.
+                if allowed, s.task.webBlockAction != .warn,
+                   WebRules.unreadableBrowsers.contains(id) || WebRules.looksLikeSafariWebApp(bundleID: id),
+                   !warnedUnreadableBrowsers.contains(id) {
+                    warnedUnreadableBrowsers.insert(id)
+                    notice = "\(fg.app.localizedName ?? id) no deja leer qué web tiene abierta: en ella FocusDesk no puede bloquear webs. Para esta tarea usa Safari, Chrome, Brave, Edge o Arc."
+                }
+
+                if isNewInterruption {
+                    if let kw = matchedTitleKeyword {
+                        notice = "La ventana de \(fg.app.localizedName ?? id) contiene «\(kw)», que está bloqueada en esta tarea."
+                    } else {
+                        notice = webAppHost.map { "\(fg.app.localizedName ?? id) abre \($0), que no entra en esta tarea." }
+                            ?? "\(fg.app.localizedName ?? id) está fuera del perfil de esta tarea."
+                    }
+                    if !s.task.strict && matchedTitleKeyword == nil && !preview { notifyDistraction(notice ?? "", session: s) }
+                }
+
+                if let kw = matchedTitleKeyword {
+                    fg.app.hide()
+                    workspace.session?.registerBlock()
+                    notice = "«\(kw)» está bloqueada por título de ventana en «\(s.task.title)»: he ocultado \(fg.app.localizedName ?? id)."
+                    return
+                }
+
+                if !allowed && s.task.strict {
+                    guard enforceApp(fg.app, bundleID: id, session: s, isNewInterruption: isNewInterruption, at: at) else { return }
+                }
+                // A site saved as a Chromium app is that site. With websites blocked it is hidden even when the task does
+                // not block apps, or installing YouTube as an app walked past a block that only looked at browser tabs.
+                if !s.task.strict, s.task.webBlockAction != .warn, let webAppHost,
+                   !FocusRules.webAllowed(host: webAppHost, path: "", list: s.task.domains, mode: s.task.webListMode) {
+                    fg.app.hide()
+                    workspace.session?.registerBlock()
+                    notice = "\(fg.app.localizedName ?? id) abre \(webAppHost), que no entra en esta tarea: la he ocultado."
+                    return
+                }
+
+                // The address bar of any browser FocusDesk knows, not just Brave: one `osascript` per browser, on switching
+                // to it and then every 15 s — every 5 s when the task blocks websites, so a blocked page opened without
+                // leaving the browser (or reached again with Back) does not stay up for long.
+                let webReadInterval: TimeInterval = s.task.webBlockAction != .warn ? 5 : 15
+                if WebRules.isBrowser(id), workspace.settings.observeBrave || s.task.webBlockAction != .warn,
+                   appChanged || Date().timeIntervalSince(lastWebReadAt[id] ?? .distantPast) >= webReadInterval - 0.5 {
+                    lastWebReadAt[id] = Date()
+                    sessionReadBrowser = true
+                    inspectBrowser(bundleID: id, session: s)
+                }
+            }
         }
 
-        let isNewInterruption = workspace.session?.observeForeground(
-            appID: id,
-            name: fg.app.localizedName ?? id,
-            title: fg.title,
-            titleStatus: fg.titleStatus,
-            allowed: allowed,
-            at: at,
-            uptime: currentUptime
-        ) ?? false
-
-        if allowed, !WebRules.isBrowser(id) { domainEpisodeHost = nil }
-        // A browser, or a site saved as an app from Safari, whose address cannot be read: websites are not blocked
-        // there, and a task that blocks them says so once instead of pretending.
-        if allowed, s.task.webBlockAction != .warn,
-           WebRules.unreadableBrowsers.contains(id) || WebRules.looksLikeSafariWebApp(bundleID: id),
-           !warnedUnreadableBrowsers.contains(id) {
-            warnedUnreadableBrowsers.insert(id)
-            notice = "\(fg.app.localizedName ?? id) no deja leer qué web tiene abierta: en ella FocusDesk no puede bloquear webs. Para esta tarea usa Safari, Chrome, Brave, Edge o Arc."
-        }
-
-        if isNewInterruption {
-            notice = webAppHost.map { "\(fg.app.localizedName ?? id) abre \($0), que no entra en esta tarea." }
-                ?? "\(fg.app.localizedName ?? id) está fuera del perfil de esta tarea."
-            if !s.task.strict && !preview { notifyDistraction(notice ?? "", session: s) }
-        }
-
-        if !allowed && s.task.strict {
-            guard enforceApp(fg.app, bundleID: id, session: s, isNewInterruption: isNewInterruption, at: at) else { return }
-        }
-        // A site saved as a Chromium app is that site. With websites blocked it is hidden even when the task does
-        // not block apps, or installing YouTube as an app walked past a block that only looked at browser tabs.
-        if !s.task.strict, s.task.webBlockAction != .warn, let webAppHost,
-           !FocusRules.domainAllowed(webAppHost, list: s.task.domains) {
-            fg.app.hide()
-            workspace.session?.registerBlock()
-            notice = "\(fg.app.localizedName ?? id) abre \(webAppHost), que no entra en esta tarea: la he ocultado."
-            return
-        }
-
-        // The address bar of any browser FocusDesk knows, not just Brave: one `osascript` per browser, on switching
-        // to it and then every 15 s — every 5 s when the task blocks websites, so a blocked page opened without
-        // leaving the browser (or reached again with Back) does not stay up for long.
-        let webReadInterval: TimeInterval = s.task.webBlockAction != .warn ? 5 : 15
-        if WebRules.isBrowser(id), workspace.settings.observeBrave || s.task.webBlockAction != .warn,
-           appChanged || Date().timeIntervalSince(lastWebReadAt[id] ?? .distantPast) >= webReadInterval - 0.5 {
-            lastWebReadAt[id] = Date()
-            inspectBrowser(bundleID: id, session: s)
+        if hasEnabledRules {
+            observeGeneralRules(
+                fg: fg,
+                bundleID: id,
+                appChanged: appChanged,
+                sessionAlreadyReadBrowser: sessionReadBrowser,
+                at: Date()
+            )
         }
     }
 
@@ -2163,6 +2268,7 @@ final class AppModel: ObservableObject {
                 enqueueProjectionForTask(s.task, session: s, now: Date())
             }
         }
+        floatingPill.hide()
         _ = persist()
         syncCalendar()
         if !preview { focusMode.turnOffNowIfOurs() }

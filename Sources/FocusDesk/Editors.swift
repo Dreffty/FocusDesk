@@ -228,160 +228,9 @@ struct TaskEditor: View {
                         }
                     }
 
-                    // Workspace Apps & Domains
-                    Card(padding: 18) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            SectionHeader("Tu espacio de trabajo", icon: "macwindow") {
-                                Button { chooseApps() } label: { Label("Elegir apps", systemImage: "plus") }
-                                    .buttonStyle(.focus(.secondary, compact: true))
-                            }
-                            if draft.apps.isEmpty {
-                                Text("Sin selección: se admiten todas las apps. Añade las necesarias para distinguir distracciones.").font(.app(12)).foregroundStyle(Palette.muted)
-                            } else {
-                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 8)], spacing: 8) {
-                                    ForEach(draft.apps) { app in
-                                        HStack(spacing: 8) {
-                                            Image(nsImage: NSWorkspace.shared.icon(forFile: app.path)).resizable().frame(width: 20, height: 20)
-                                            Text(app.name).font(.app(10, weight: .medium)).lineLimit(1)
-                                            Spacer(minLength: 4)
-                                            Button {
-                                                draft.apps.removeAll { $0.id == app.id }
-                                            } label: {
-                                                Image(systemName: "xmark")
-                                            }
-                                            .accessibilityLabel("Quitar \(app.name)")
-                                            .help("Quitar \(app.name) de esta tarea")
-                                            .buttonStyle(FocusIconButtonStyle(size: 20))
-                                        }
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .background(Palette.elevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                    }
-                                }
-                            }
-                            Toggle("Bloquear las apps que distraen", isOn: $draft.strict).toggleStyle(.switch)
-                            Text("Si abres una app que no está en la lista, FocusDesk la oculta y te devuelve a una permitida\(model.workspace.settings.focusDuringStrict ? "; además pone No molestar mientras dura la sesión" : ""). \(draft.protection == .none ? "Puedes pausar en cualquier momento." : "Para parar antes de tiempo, lo que elijas abajo en «Si quieres dejarlo a medias».") Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
-                            if draft.strict && draft.apps.isEmpty {
-                                Text("Elige al menos una app permitida para poder bloquear las demás.").font(.app(10)).foregroundStyle(Palette.warning)
-                            }
+                    workspaceCard
 
-                            Divider().overlay(Palette.stroke)
-
-                            // Domain Validation & Normalization (Item 15)
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text("DOMINIOS PARA ESTA TAREA · OPCIONAL").fieldLabelStyle()
-                                    Spacer()
-                                    if !draft.domains.isEmpty && FocusRules.normalizeDomains(draft.domains) != draft.domains {
-                                        Button("Normalizar URLs") {
-                                            draft.domains = FocusRules.normalizeDomains(draft.domains)
-                                        }.buttonStyle(.focus(.ghost, compact: true))
-                                    }
-                                }
-                                TextField("chatgpt.com, claude.ai (se aceptan URLs como https://claude.ai/)", text: $draft.domains)
-                                    .textFieldStyle(.roundedBorder)
-                                if !domainParse.invalid.isEmpty {
-                                    Text("Entradas no reconocidas como dominio (se ignorarán): \(domainParse.invalid.joined(separator: ", "))")
-                                        .font(.app(10))
-                                        .foregroundStyle(Palette.warning)
-                                } else if !domainParse.valid.isEmpty {
-                                    Text("Dominios activos: \(domainParse.valid.joined(separator: ", "))")
-                                        .font(.app(10))
-                                        .foregroundStyle(Palette.mint)
-                                }
-                                Picker("Si abres otra web", selection: $draft.webBlockAction) {
-                                    ForEach(WebBlockAction.allCases, id: \.self) { action in
-                                        Text(action.label).tag(action)
-                                    }
-                                }
-                                .pickerStyle(.radioGroup)
-                                if draft.webBlockAction != .warn && domainParse.valid.isEmpty {
-                                    Text("Para bloquear webs hace falta decir cuáles sí. Sin lista, se bloquearía todo.")
-                                        .font(.app(10))
-                                        .foregroundStyle(Palette.warning)
-                                } else {
-                                    Text(webHint).font(.app(10)).foregroundStyle(Palette.muted)
-                                }
-                            }
-
-                            Divider().overlay(Palette.stroke)
-                            BlockedFoldersField(folders: $draft.blockedFolders)
-                        }
-                    }
-
-                    // How firmly this session defends itself
-                    Card(padding: 18) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            SectionHeader("Si quieres dejarlo a medias", icon: "lock.shield")
-                            Text("Lo decides ahora, con la cabeza fría, para el momento en que no la tengas.")
-                                .font(.app(11))
-                                .foregroundStyle(Palette.muted)
-                            Picker("Protección", selection: $draft.protection) {
-                                ForEach(SessionProtection.allCases, id: \.self) { level in
-                                    Text(level.label).tag(level)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                            Text(draft.protection.explanation).font(.app(11)).foregroundStyle(Palette.muted)
-                            if let saved = model.workspace.tasks.first(where: { $0.id == draft.id }),
-                               model.protectedBeforeStart(saved) {
-                                Label("Ya está protegida: empieza a las \(saved.scheduledAt.formatted(date: .omitted, time: .shortened)). Retrasarla o ablandarla costará lo mismo que pararla; adelantarla, alargarla o endurecerla, no.",
-                                      systemImage: "lock.fill")
-                                    .font(.app(10, weight: .medium))
-                                    .foregroundStyle(Palette.warning)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            } else if draft.protection != .none, model.workspace.settings.runUpMinutes > 0, draft.isScheduled {
-                                Text("Protege la tarea desde \(model.workspace.settings.runUpMinutes) min antes de empezar: a esa hora, borrarla o retrasarla ya cuesta lo mismo que pararla. El margen se cambia en Ajustes.")
-                                    .font(.app(10))
-                                    .foregroundStyle(Palette.muted)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            if draft.protection == .challenge {
-                                Stepper("Código de \(draft.unlockChars) caracteres", value: $draft.unlockChars, in: UnlockChallenge.lengthRange, step: 4)
-                                    .font(.app(12))
-                                Text(draft.unlockChars >= 32 ? "Teclearlo cuesta cerca de un minuto. Suficiente para que se pase el impulso." : "Unos \(max(10, draft.unlockChars * 2)) segundos de teclear sin poder pegar.")
-                                    .font(.app(10))
-                                    .foregroundStyle(Palette.muted)
-                            }
-                            if draft.protection == .delay {
-                                Stepper("Esperar \(draft.stopDelayMinutes) minutos", value: $draft.stopDelayMinutes, in: 1...60)
-                                    .font(.app(12))
-                                Text("La sesión sigue durante la espera: muchas veces se te pasan las ganas antes de que acabe.")
-                                    .font(.app(10))
-                                    .foregroundStyle(Palette.muted)
-                            }
-                            if draft.protection == .forced {
-                                Text("Queda la salida de emergencia: 60 caracteres y una anotación en el historial. Úsala si de verdad pasa algo.")
-                                    .font(.app(10))
-                                    .foregroundStyle(Palette.warning)
-                            }
-
-                            if draft.strict {
-                                Divider().overlay(Palette.stroke)
-                                Text("QUÉ HACER CON LAS APPS QUE NO TOCAN").fieldLabelStyle()
-                                Picker("Acción", selection: $draft.blockAction) {
-                                    ForEach(AppBlockAction.allCases, id: \.self) { action in
-                                        Text(action.label).tag(action)
-                                    }
-                                }
-                                .pickerStyle(.segmented)
-                                .labelsHidden()
-                                Text(draft.blockAction.explanation).font(.app(10)).foregroundStyle(Palette.muted)
-                            }
-
-                            Divider().overlay(Palette.stroke)
-                            Toggle("Endurecer si insistes", isOn: $draft.punisherEnabled).toggleStyle(.switch)
-                            Text("Tras cuatro intentos seguidos en pocos minutos, durante un rato FocusDesk cierra esas apps en vez de ocultarlas.")
-                                .font(.app(10))
-                                .foregroundStyle(Palette.muted)
-                            Toggle("Proteger los ajustes que desarman el bloqueo", isOn: $draft.guardSystemPanes).toggleStyle(.switch)
-                            Text("Cierra «Privacidad y seguridad», «Fecha y hora» y «Usuarios y grupos» mientras dura la sesión. El resto de Ajustes del Sistema sigue a mano.")
-                                .font(.app(10))
-                                .foregroundStyle(Palette.muted)
-                        }
-                    }
+                    protectionCard
 
                     // Checklist & Output Folder
                     Card(padding: 18) {
@@ -459,6 +308,221 @@ struct TaskEditor: View {
         .tint(Palette.mint)
     }
 
+    @ViewBuilder private var workspaceCard: some View {
+        Card(padding: 18) {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Tu espacio de trabajo", icon: "macwindow") {
+                    Button { chooseApps() } label: { Label("Elegir apps", systemImage: "plus") }
+                        .buttonStyle(.focus(.secondary, compact: true))
+                }
+                Picker("Modo de lista de apps", selection: $draft.appListMode) {
+                    ForEach(AppListMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Text(draft.appListMode.explanation).font(.app(10)).foregroundStyle(Palette.muted)
+                if draft.apps.isEmpty {
+                    Text(draft.appListMode == .allowListed
+                         ? "Sin selección: se admiten todas las apps. Añade las necesarias para distinguir distracciones."
+                         : "Elige las apps concretas que quieras bloquear durante esta tarea.").font(.app(12)).foregroundStyle(Palette.muted)
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 8)], spacing: 8) {
+                        ForEach(draft.apps) { app in
+                            HStack(spacing: 8) {
+                                Image(nsImage: NSWorkspace.shared.icon(forFile: app.path)).resizable().frame(width: 20, height: 20)
+                                Text(app.name).font(.app(10, weight: .medium)).lineLimit(1)
+                                Spacer(minLength: 4)
+                                Button {
+                                    draft.apps.removeAll { $0.id == app.id }
+                                } label: {
+                                    Image(systemName: "xmark")
+                                }
+                                .accessibilityLabel("Quitar \(app.name)")
+                                .help("Quitar \(app.name) de esta tarea")
+                                .buttonStyle(FocusIconButtonStyle(size: 20))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Palette.elevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        }
+                    }
+                }
+                Toggle("Bloquear las apps que distraen", isOn: $draft.strict).toggleStyle(.switch)
+                Text("Si abres una app bloqueada (o fuera de tu lista blanca), FocusDesk la oculta o cierra\(model.workspace.settings.focusDuringStrict ? " y activa No molestar mientras dura la sesión" : ""). \(draft.protection == .none ? "Puedes pausar en cualquier momento." : "Para parar antes de tiempo, lo que elijas abajo en «Si quieres dejarlo a medias».") Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
+                if draft.strict && draft.apps.isEmpty {
+                    Text(draft.appListMode == .allowListed
+                         ? "Elige al menos una app permitida para poder bloquear las demás."
+                         : "Elige al menos una app en la lista negra para bloquearla.").font(.app(10)).foregroundStyle(Palette.warning)
+                }
+
+                Divider().overlay(Palette.stroke)
+                domainsAndWebSection
+
+                Divider().overlay(Palette.stroke)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("PALABRAS BLOQUEADAS EN EL TÍTULO DE VENTANA · OPCIONAL").fieldLabelStyle()
+                    TextField("Shorts, Reels, Netflix, Twitch (separadas por comas)", text: $draft.blockedTitleKeywords)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Si el título de la ventana activa contiene alguna de estas palabras, FocusDesk oculta esa app al instante.")
+                        .font(.app(10))
+                        .foregroundStyle(Palette.muted)
+                }
+
+                Divider().overlay(Palette.stroke)
+                BlockedFoldersField(folders: $draft.blockedFolders)
+            }
+        }
+    }
+
+    @ViewBuilder private var domainsAndWebSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("WEBS Y SUBRUTAS PARA ESTA TAREA · OPCIONAL").fieldLabelStyle()
+                Spacer()
+                if !draft.domains.isEmpty && FocusRules.normalizeDomains(draft.domains) != draft.domains {
+                    Button("Normalizar URLs") {
+                        draft.domains = FocusRules.normalizeDomains(draft.domains)
+                    }.buttonStyle(.focus(.ghost, compact: true))
+                }
+            }
+            Picker("Modo de lista de webs", selection: $draft.webListMode) {
+                ForEach(WebListMode.allCases, id: \.self) { mode in
+                    Text(mode.shortLabel).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            if draft.webListMode != .blockAll {
+                TextField(
+                    draft.webListMode == .allowListed
+                        ? "chatgpt.com, claude.ai, github.com/apple/swift"
+                        : "youtube.com/shorts, instagram.com/reels, x.com, reddit.com",
+                    text: $draft.domains
+                )
+                .textFieldStyle(.roundedBorder)
+                if draft.webListMode == .blockListed {
+                    DistractionPresetChipsView(domains: $draft.domains, keywords: $draft.blockedTitleKeywords)
+                }
+                if !domainParse.invalid.isEmpty {
+                    Text("Entradas no reconocidas como dominio o ruta (se ignorarán): \(domainParse.invalid.joined(separator: ", "))")
+                        .font(.app(10))
+                        .foregroundStyle(Palette.warning)
+                } else if !domainParse.valid.isEmpty {
+                    Text("\(draft.webListMode == .allowListed ? "Webs permitidas" : "Webs/rutas bloqueadas"): \(domainParse.valid.joined(separator: ", "))")
+                        .font(.app(10))
+                        .foregroundStyle(Palette.mint)
+                }
+            } else {
+                Text("Se bloquearán todas las páginas web abiertas en Safari, Chrome, Brave, Edge, Arc y Vivaldi.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+            }
+            Picker("Si abres una web no permitida", selection: $draft.webBlockAction) {
+                ForEach(WebBlockAction.allCases, id: \.self) { action in
+                    Text(action.label).tag(action)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            if draft.webBlockAction != .warn && draft.webListMode != .blockAll && domainParse.valid.isEmpty {
+                Text(draft.webListMode == .allowListed
+                     ? "Para bloquear webs hace falta decir cuáles sí. Sin lista, se bloquearía todo."
+                     : "Indica al menos una web o ruta (ej. youtube.com/shorts) para bloquearla.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.warning)
+            } else {
+                Text(webHint).font(.app(10)).foregroundStyle(Palette.muted)
+            }
+            if draft.webBlockAction == .redirect {
+                VStack(alignment: .leading, spacing: 5) {
+                    TextField("Frase de recordatorio en la página de bloqueo (opcional)", text: $draft.motivationalMessage)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.app(11))
+                    TextField("URL de redirección personalizada https://… (opcional; vacío = página de bloqueo de FocusDesk)", text: $draft.customRedirectURL)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.app(11))
+                }
+                .padding(.top, 4)
+            }
+        }
+    }
+
+    @ViewBuilder private var protectionCard: some View {
+        Card(padding: 18) {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Si quieres dejarlo a medias", icon: "lock.shield")
+                Text("Lo decides ahora, con la cabeza fría, para el momento en que no la tengas.")
+                    .font(.app(11))
+                    .foregroundStyle(Palette.muted)
+                Picker("Protección", selection: $draft.protection) {
+                    ForEach(SessionProtection.allCases, id: \.self) { level in
+                        Text(level.label).tag(level)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Text(draft.protection.explanation).font(.app(11)).foregroundStyle(Palette.muted)
+                if let saved = model.workspace.tasks.first(where: { $0.id == draft.id }),
+                   model.protectedBeforeStart(saved) {
+                    Label("Ya está protegida: empieza a las \(saved.scheduledAt.formatted(date: .omitted, time: .shortened)). Retrasarla o ablandarla costará lo mismo que pararla; adelantarla, alargarla o endurecerla, no.",
+                          systemImage: "lock.fill")
+                        .font(.app(10, weight: .medium))
+                        .foregroundStyle(Palette.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if draft.protection != .none, model.workspace.settings.runUpMinutes > 0, draft.isScheduled {
+                    Text("Protege la tarea desde \(model.workspace.settings.runUpMinutes) min antes de empezar: a esa hora, borrarla o retrasarla ya cuesta lo mismo que pararla. El margen se cambia en Ajustes.")
+                        .font(.app(10))
+                        .foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if draft.protection == .challenge {
+                    Stepper("Código de \(draft.unlockChars) caracteres", value: $draft.unlockChars, in: UnlockChallenge.lengthRange, step: 4)
+                        .font(.app(12))
+                    Text(draft.unlockChars >= 32 ? "Teclearlo cuesta cerca de un minuto. Suficiente para que se pase el impulso." : "Unos \(max(10, draft.unlockChars * 2)) segundos de teclear sin poder pegar.")
+                        .font(.app(10))
+                        .foregroundStyle(Palette.muted)
+                }
+                if draft.protection == .delay {
+                    Stepper("Esperar \(draft.stopDelayMinutes) minutos", value: $draft.stopDelayMinutes, in: 1...60)
+                        .font(.app(12))
+                    Text("La sesión sigue durante la espera: muchas veces se te pasan las ganas antes de que acabe.")
+                        .font(.app(10))
+                        .foregroundStyle(Palette.muted)
+                }
+                if draft.protection == .forced {
+                    Text("Queda la salida de emergencia: 60 caracteres y una anotación en el historial. Úsala si de verdad pasa algo.")
+                        .font(.app(10))
+                        .foregroundStyle(Palette.warning)
+                }
+
+                if draft.strict {
+                    Divider().overlay(Palette.stroke)
+                    Text("QUÉ HACER CON LAS APPS QUE NO TOCAN").fieldLabelStyle()
+                    Picker("Acción", selection: $draft.blockAction) {
+                        ForEach(AppBlockAction.allCases, id: \.self) { action in
+                            Text(action.label).tag(action)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text(draft.blockAction.explanation).font(.app(10)).foregroundStyle(Palette.muted)
+                }
+
+                Divider().overlay(Palette.stroke)
+                Toggle("Endurecer si insistes", isOn: $draft.punisherEnabled).toggleStyle(.switch)
+                Text("Tras cuatro intentos seguidos en pocos minutos, durante un rato FocusDesk cierra esas apps en vez de ocultarlas.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                Toggle("Proteger los ajustes que desarman el bloqueo", isOn: $draft.guardSystemPanes).toggleStyle(.switch)
+                Text("Cierra «Privacidad y seguridad», «Fecha y hora» y «Usuarios y grupos» mientras dura la sesión. El resto de Ajustes del Sistema sigue a mano.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+            }
+        }
+    }
+
     private func chooseApps() {
         let panel = NSOpenPanel()
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
@@ -503,7 +567,12 @@ struct TaskEditor: View {
             webBlockAction: draft.webBlockAction,
             guardSystemPanes: draft.guardSystemPanes,
             punisherEnabled: draft.punisherEnabled,
-            blockedFolders: draft.blockedFolders
+            blockedFolders: draft.blockedFolders,
+            appListMode: draft.appListMode,
+            webListMode: draft.webListMode,
+            blockedTitleKeywords: draft.blockedTitleKeywords,
+            customRedirectURL: draft.customRedirectURL,
+            motivationalMessage: draft.motivationalMessage
         )
         model.saveProfile(profile)
         draft.profileID = profile.id
@@ -968,6 +1037,19 @@ struct SettingsView: View {
                         Text("Si lo ocultas, el tiempo sigue en el Dock y FocusDesk se abre con su atajo o desde el Dock.")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
+                        Toggle("Mostrar píldora flotante de cuenta atrás al usar un presupuesto diario o visita", isOn: Binding(
+                            get: { model.workspace.settings.showFloatingTimerPill },
+                            set: { value in
+                                model.updateSettings { $0.showFloatingTimerPill = value }
+                                model.updateFloatingPill(at: Date())
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        Toggle("Avisarme cuando queden 5 min y 1 min de un presupuesto diario o visita", isOn: Binding(
+                            get: { model.workspace.settings.preBlockRemindersEnabled },
+                            set: { value in model.updateSettings { $0.preBlockRemindersEnabled = value } }
+                        ))
+                        .toggleStyle(.switch)
                     }
                 }
                 DoNotDisturbSettings(model: model, focusMode: model.focusMode)
@@ -1118,6 +1200,13 @@ struct SettingsView: View {
                         }
                         Divider().overlay(Palette.stroke)
                         Text("Descansos habituales").font(.app(12, weight: .medium))
+                        Toggle("Mostrar aviso y cuenta atrás cuando empiece un descanso", isOn: Binding(
+                            get: { model.workspace.settings.enforceBreaks },
+                            set: { value in model.updateSettings { $0.enforceBreaks = value } }
+                        ))
+                        Text("Durante el descanso aparece un temporizador en vivo en Hoy y en el panel de la barra de menús para recordar que apartes la vista de la pantalla.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
                         ForEach(model.workspace.settings.breaks) { brk in
                             HStack {
                                 Chip("\(String(format: "%02d:%02d", brk.startHour, brk.startMinute)) · \(brk.durationMinutes) min", icon: "cup.and.saucer")
@@ -1145,6 +1234,33 @@ struct SettingsView: View {
                                 }
                             }.buttonStyle(.focus(.secondary, compact: true))
                         }
+                        Divider().overlay(Palette.stroke)
+                        Text("Descansos por tiempo de uso continuo").font(.app(12, weight: .medium))
+                        Toggle("Sugerir un descanso breve tras usar el Mac de forma continua", isOn: Binding(
+                            get: { model.workspace.settings.continuousBreakEnabled },
+                            set: { value in model.updateSettings { $0.continuousBreakEnabled = value } }
+                        ))
+                        .toggleStyle(.switch)
+                        if model.workspace.settings.continuousBreakEnabled {
+                            HStack(spacing: 16) {
+                                Stepper("Cada \(model.workspace.settings.continuousWorkMinutes) min de trabajo continuo", value: Binding(
+                                    get: { model.workspace.settings.continuousWorkMinutes },
+                                    set: { val in model.updateSettings { $0.continuousWorkMinutes = val } }
+                                ), in: 15...180, step: 5)
+                                Stepper("Descansar \(model.workspace.settings.continuousBreakDurationMinutes) min", value: Binding(
+                                    get: { model.workspace.settings.continuousBreakDurationMinutes },
+                                    set: { val in model.updateSettings { $0.continuousBreakDurationMinutes = val } }
+                                ), in: 1...30)
+                                Stepper("Máx. \(model.workspace.settings.continuousBreakMaxSkipsPerDay) saltos/día", value: Binding(
+                                    get: { model.workspace.settings.continuousBreakMaxSkipsPerDay },
+                                    set: { val in model.updateSettings { $0.continuousBreakMaxSkipsPerDay = val } }
+                                ), in: 0...10)
+                            }
+                            .font(.app(11))
+                        }
+                        Text("Si te levantas o dejas el teclado unos minutos, el contador continuo se reinicia solo.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
                         Divider().overlay(Palette.stroke)
                         Text("Categorías y colores").font(.app(12, weight: .medium))
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 8) {
@@ -1453,6 +1569,10 @@ struct ProfileEditorSheet: View {
                 Stepper("Duración: \(draft.minutes) min", value: $draft.minutes, in: 5...720, step: 5)
             }
             Toggle("Bloquear las apps que distraen", isOn: $draft.strict)
+            Picker("Modo de apps", selection: $draft.appListMode) {
+                ForEach(AppListMode.allCases, id: \.self) { Text($0.shortLabel).tag($0) }
+            }
+            .pickerStyle(.segmented)
             Toggle("Empezar sola a su hora", isOn: $draft.autoStart)
             HStack {
                 Text("Aplicaciones (\(draft.apps.count))").font(.app(12, weight: .medium))
@@ -1480,7 +1600,14 @@ struct ProfileEditorSheet: View {
                         .accessibilityLabel("Quitar \(app.name)")
                 }
             }
-            TextField("Dominios (ej. chatgpt.com, claude.ai)", text: $draft.domains).textFieldStyle(.roundedBorder)
+            Picker("Modo de webs", selection: $draft.webListMode) {
+                ForEach(WebListMode.allCases, id: \.self) { Text($0.shortLabel).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            if draft.webListMode != .blockAll {
+                TextField("Dominios o rutas (ej. youtube.com/shorts, claude.ai)", text: $draft.domains).textFieldStyle(.roundedBorder)
+            }
+            TextField("Palabras bloqueadas en título (ej. Shorts, Reels, Netflix)", text: $draft.blockedTitleKeywords).textFieldStyle(.roundedBorder)
             BlockedFoldersField(folders: $draft.blockedFolders)
             Text("Checklist (un paso por línea)").font(.app(10)).foregroundStyle(Palette.muted)
             TextEditor(text: $draft.checklist).frame(height: 70).overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.stroke))
@@ -1588,5 +1715,527 @@ struct BlockedFoldersField: View {
     static func abbreviated(_ path: String) -> String {
         let home = NSHomeDirectory()
         return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+    }
+}
+
+/// One-click preset chips that append common distracting domains/subpaths and window title keywords.
+struct DistractionPresetChipsView: View {
+    @Binding var domains: String
+    @Binding var keywords: String
+    var webListMode: Binding<WebListMode>? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Añadir lote rápido en 1 clic:").font(.app(10)).foregroundStyle(Palette.muted)
+            HStack(spacing: 6) {
+                ForEach(DistractionPreset.allCases) { preset in
+                    Button {
+                        apply(preset)
+                    } label: {
+                        Label(preset.label, systemImage: preset.icon)
+                    }
+                    .buttonStyle(SelectableChipStyle(selected: isApplied(preset)))
+                    .help("Añadir \(preset.domains.joined(separator: ", "))")
+                }
+            }
+        }
+    }
+
+    private func isApplied(_ preset: DistractionPreset) -> Bool {
+        let current = Set(FocusRules.parseDomains(domains).valid)
+        return !preset.domains.isEmpty && preset.domains.allSatisfy { current.contains($0) }
+    }
+
+    private func apply(_ preset: DistractionPreset) {
+        if webListMode?.wrappedValue == .allowListed {
+            webListMode?.wrappedValue = .blockListed
+        }
+        let existingDomains = FocusRules.parseDomains(domains).valid
+        let mergedDomains = existingDomains + preset.domains.filter { !existingDomains.contains($0) }
+        domains = mergedDomains.joined(separator: ", ")
+
+        let existingKeywords = FocusRules.parseTitleKeywords(keywords)
+        let mergedKeywords = existingKeywords + preset.titleKeywords.filter { kw in
+            !existingKeywords.contains(where: { $0.lowercased() == kw.lowercased() })
+        }
+        keywords = mergedKeywords.joined(separator: ", ")
+    }
+}
+
+/// Sheet to create or edit a standalone `GeneralBlockRule` (daily usage timer, countdown lock, schedule, or 24/7).
+struct GeneralRuleEditor: View {
+    @ObservedObject var model: AppModel
+    @State var draft: GeneralBlockRule
+    @State private var startCountdownOnSave = true
+    @Environment(\.dismiss) private var dismiss
+
+    private var lockedOriginal: GeneralBlockRule? {
+        guard let current = model.workspace.generalRules.first(where: { $0.id == draft.id }),
+              current.protection != .none,
+              model.isRuleEnforcing(current, at: model.now) else { return nil }
+        return current
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.workspace.generalRules.contains(where: { $0.id == draft.id }) ? "Editar regla de bloqueo" : "Nueva regla o temporizador de bloqueo")
+                        .font(.app(20, weight: .semibold, design: .rounded))
+                    Text("Funciona en segundo plano aunque no tengas ninguna tarea de la agenda en marcha.")
+                        .font(.app(11))
+                        .foregroundStyle(Palette.muted)
+                }
+                Spacer()
+                Button { dismiss() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(FocusIconButtonStyle(size: 26))
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityLabel("Cerrar")
+            }
+            .padding(.horizontal, 26)
+            .padding(.top, 22)
+            .padding(.bottom, 14)
+
+            Rectangle().fill(Palette.stroke).frame(height: 1)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if let locked = lockedOriginal {
+                        HStack(spacing: 8) {
+                            Image(systemName: "lock.fill")
+                            Text("Esta regla está activa y protegida («\(locked.protection.label)»). Puedes endurecerla libremente; para ablandarla te pedirá su desbloqueo al guardar.")
+                        }
+                        .font(.app(11))
+                        .foregroundStyle(Palette.mint)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Palette.mint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+
+                    // Name & Kind
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("NOMBRE Y TIPO DE TEMPORIZADOR").fieldLabelStyle()
+                        TextField("Ej. Límite diario de Shorts y redes, Cuenta atrás de estudio…", text: $draft.name)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.app(15, weight: .medium))
+
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 185), spacing: 8)], spacing: 8) {
+                            ForEach(GeneralRuleKind.allCases, id: \.self) { kind in
+                                Button {
+                                    draft.kind = kind
+                                } label: {
+                                    Label(kind.label, systemImage: kind.icon)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .buttonStyle(SelectableChipStyle(selected: draft.kind == kind))
+                            }
+                        }
+
+                        kindConfigurationBox
+                    }
+
+                    Divider().overlay(Palette.stroke)
+
+                    // Selectors: Webs, URL subpaths, Presets, Title keywords, Apps, Folders
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("QUÉ BLOQUEA O CONTROLA ESTA REGLA").fieldLabelStyle()
+
+                        DistractionPresetChipsView(
+                            domains: $draft.domains,
+                            keywords: $draft.blockedTitleKeywords,
+                            webListMode: $draft.webListMode
+                        )
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("WEBS Y SUBRUTAS URL").fieldLabelStyle()
+                                Spacer()
+                                Picker("Modo de webs", selection: $draft.webListMode) {
+                                    ForEach(WebListMode.allCases, id: \.self) { mode in
+                                        Text(mode.shortLabel).tag(mode)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                                .frame(maxWidth: 320)
+                            }
+                            if draft.webListMode == .blockAll {
+                                Text("Se bloqueará cualquier página abierta en Safari, Brave, Chrome, Arc, Edge o Vivaldi.")
+                                    .font(.app(10))
+                                    .foregroundStyle(Palette.warning)
+                            } else {
+                                TextField(
+                                    draft.webListMode == .allowListed
+                                        ? "Solo permitir estos dominios o rutas: docs.swift.org, github.com"
+                                        : "Dominios o rutas a bloquear: youtube.com/shorts, x.com, instagram.com/reels",
+                                    text: $draft.domains
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                .font(.app(13))
+                                .onChange(of: draft.domains) { _, val in
+                                    if val.contains("://") { draft.domains = FocusRules.normalizeDomains(val) }
+                                }
+                                Text("Puedes escribir un dominio entero (x.com) o solo una ruta concreta (youtube.com/shorts) dejando el resto de la web libre.")
+                                    .font(.app(10))
+                                    .foregroundStyle(Palette.muted)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("PALABRAS EN EL TÍTULO DE VENTANA · OPCIONAL").fieldLabelStyle()
+                            TextField("Shorts, Reels, Netflix, Twitch, Partida…", text: $draft.blockedTitleKeywords)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.app(13))
+                            Text("Detecta distracciones por el título de cualquier ventana o pestaña aunque cambie el dominio.")
+                                .font(.app(10))
+                                .foregroundStyle(Palette.muted)
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("APLICACIONES").fieldLabelStyle()
+                                Spacer()
+                                Picker("Modo de apps", selection: $draft.appListMode) {
+                                    ForEach(AppListMode.allCases, id: \.self) { mode in
+                                        Text(mode.label).tag(mode)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                                .frame(maxWidth: 340)
+                                Button("Elegir de /Applications…") { pickRuleApplications() }
+                                    .buttonStyle(.focus(.secondary, compact: true))
+                            }
+                            if draft.apps.isEmpty {
+                                Text(draft.appListMode == .blockListed
+                                     ? "Ninguna app en la lista negra. Si solo quieres limitar webs o palabras del título, déjalo vacío."
+                                     : "Ninguna app restringida. Si añades apps aquí en lista blanca, solo esas podrán estar al frente.")
+                                    .font(.app(10))
+                                    .foregroundStyle(Palette.muted)
+                            } else {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 6) {
+                                        ForEach(draft.apps) { app in
+                                            HStack(spacing: 6) {
+                                                Text(app.name).font(.app(11, weight: .medium))
+                                                Button { draft.apps.removeAll { $0.id == app.id } } label: { Image(systemName: "xmark") }
+                                                    .buttonStyle(FocusIconButtonStyle(size: 18))
+                                            }
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(Palette.mint.opacity(0.14), in: Capsule())
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        BlockedFoldersField(folders: $draft.blockedFolders)
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("PÁGINA DE BLOQUEO Y REDIRECCIÓN · OPCIONAL").fieldLabelStyle()
+                            TextField("Frase motivadora para mostrar al bloquear (ej. Primero el código, luego YouTube)", text: $draft.motivationalMessage)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.app(12))
+                            TextField("URL de redirección personalizada https://… (vacío = página de bloqueo de FocusDesk)", text: $draft.customRedirectURL)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.app(12))
+                        }
+                    }
+
+                    Divider().overlay(Palette.stroke)
+
+                    // Micro-pauses
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("MICRO-PAUSAS CONTADAS AL DÍA · OPCIONAL").fieldLabelStyle()
+                        HStack(spacing: 16) {
+                            Stepper("Pausas permitidas hoy: \(draft.dailyMicroPausesAllowed)", value: $draft.dailyMicroPausesAllowed, in: 0...10)
+                                .font(.app(12))
+                            if draft.dailyMicroPausesAllowed > 0 {
+                                Stepper("Duración de cada pausa: \(draft.microPauseMinutes) min", value: $draft.microPauseMinutes, in: 1...30)
+                                    .font(.app(12))
+                            }
+                        }
+                        Text(draft.dailyMicroPausesAllowed == 0
+                             ? "Sin micro-pausas: no podrás pausar brevemente esta regla cuando esté bloqueando."
+                             : "Permite hasta \(draft.dailyMicroPausesAllowed) micro-pausa(s) de \(draft.microPauseMinutes) min al día con re-bloqueo automático al terminar.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                    }
+
+                    Divider().overlay(Palette.stroke)
+
+                    // Protection
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("PROTECCIÓN CUANDO ESTÉ BLOQUEANDO").fieldLabelStyle()
+                        Picker("Protección", selection: $draft.protection) {
+                            ForEach(SessionProtection.allCases, id: \.self) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        Text(draft.protection.explanation)
+                            .font(.app(10))
+                            .foregroundStyle(draft.protection == .forced ? Palette.warning : Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.horizontal, 26)
+                .padding(.vertical, 20)
+            }
+
+            Rectangle().fill(Palette.stroke).frame(height: 1)
+
+            HStack {
+                Button("Cancelar") { dismiss() }
+                    .buttonStyle(.focusSecondary)
+                Spacer()
+                Button("Guardar regla") {
+                    commitSave()
+                }
+                .buttonStyle(FocusPrimaryButton())
+                .keyboardShortcut(.defaultAction)
+                .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.horizontal, 26)
+            .padding(.vertical, 16)
+        }
+        .frame(width: 680, height: 720)
+        .background(Palette.background)
+        .tint(Palette.mint)
+    }
+
+    @ViewBuilder private var kindConfigurationBox: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch draft.kind {
+            case .dailyLimit:
+                HStack(spacing: 12) {
+                    Image(systemName: "hourglass.bottomhalf.filled")
+                        .font(.app(18))
+                        .foregroundStyle(Palette.mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Temporizador de presupuesto diario: \(draft.dailyLimitMinutes) min al día")
+                            .font(.app(13, weight: .semibold))
+                        Text("El reloj solo descuenta segundos cuando tienes una de estas webs, rutas, títulos o apps abierta en primer plano. Al llegar a 00:00 se bloquean hasta medianoche.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                HStack(spacing: 6) {
+                    ForEach([10, 15, 20, 30, 45, 60, 90, 120], id: \.self) { mins in
+                        Button("\(mins) min") { draft.dailyLimitMinutes = mins }
+                            .buttonStyle(SelectableChipStyle(selected: draft.dailyLimitMinutes == mins))
+                    }
+                    Spacer()
+                    Stepper("", value: $draft.dailyLimitMinutes, in: 5...360, step: 5)
+                        .labelsHidden()
+                }
+
+            case .workGoal:
+                HStack(spacing: 12) {
+                    Image(systemName: "flag.checkered")
+                        .font(.app(18))
+                        .foregroundStyle(Palette.mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Primero el trabajo, luego el ocio: \(draft.goalMinutesRequired) min de enfoque requeridos hoy")
+                            .font(.app(13, weight: .semibold))
+                        Text("Mantiene bloqueadas estas apps y webs hasta que acumules los minutos exigidos en sesiones de tareas de FocusDesk hoy.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                HStack(spacing: 6) {
+                    ForEach([25, 45, 60, 90, 120, 180], id: \.self) { mins in
+                        Button("\(mins) min trabajo") { draft.goalMinutesRequired = mins }
+                            .buttonStyle(SelectableChipStyle(selected: draft.goalMinutesRequired == mins))
+                    }
+                    Spacer()
+                    Stepper("", value: $draft.goalMinutesRequired, in: 10...600, step: 15)
+                        .labelsHidden()
+                }
+                HStack(spacing: 12) {
+                    Toggle("Limitar recompensa por bloque trabajado", isOn: Binding(
+                        get: { draft.goalRewardMinutes > 0 },
+                        set: { enabled in draft.goalRewardMinutes = enabled ? max(15, draft.goalRewardMinutes) : 0 }
+                    ))
+                    .font(.app(12))
+                    if draft.goalRewardMinutes > 0 {
+                        Stepper("Recompensa: \(draft.goalRewardMinutes) min de ocio por cada \(draft.goalMinutesRequired) min trabajados", value: $draft.goalRewardMinutes, in: 5...240, step: 5)
+                            .font(.app(12))
+                    } else {
+                        Text("Libre el resto del día tras cumplir la meta")
+                            .font(.app(11))
+                            .foregroundStyle(Palette.mint)
+                    }
+                }
+
+            case .launchLimit:
+                HStack(spacing: 12) {
+                    Image(systemName: "door.left.hand.open")
+                        .font(.app(18))
+                        .foregroundStyle(Palette.mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Límite de \(draft.maxDailyLaunches) aperturas al día · máx. \(draft.maxLaunchDurationMinutes) min por visita")
+                            .font(.app(13, weight: .semibold))
+                        Text("Ideal para correo, mensajería o redes: permite entrar contadas veces al día durante unos minutos y aplica un enfriamiento obligatorio entre visitas.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                HStack(spacing: 18) {
+                    Stepper("Aperturas/día: \(draft.maxDailyLaunches)", value: $draft.maxDailyLaunches, in: 1...50)
+                        .font(.app(12))
+                    Stepper("Duración visita: \(draft.maxLaunchDurationMinutes) min", value: $draft.maxLaunchDurationMinutes, in: 1...120)
+                        .font(.app(12))
+                    Stepper("Enfriamiento: \(draft.launchCooldownMinutes) min", value: $draft.launchCooldownMinutes, in: 0...240, step: 5)
+                        .font(.app(12))
+                }
+
+            case .countdown:
+                HStack(spacing: 12) {
+                    Image(systemName: "timer")
+                        .font(.app(18))
+                        .foregroundStyle(Palette.mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Temporizador de bloqueo directo: \(draft.countdownMinutes) min")
+                            .font(.app(13, weight: .semibold))
+                        Text("Bloquea de inmediato durante el tiempo elegido con reloj monotónico (resistente a cambios de hora del sistema).")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                HStack(spacing: 6) {
+                    ForEach([15, 30, 45, 60, 90, 120, 180, 240], id: \.self) { mins in
+                        Button(mins >= 60 && mins % 60 == 0 ? "\(mins / 60) h" : "\(mins) min") {
+                            draft.countdownMinutes = mins
+                        }
+                        .buttonStyle(SelectableChipStyle(selected: draft.countdownMinutes == mins))
+                    }
+                    Spacer()
+                    Stepper("", value: $draft.countdownMinutes, in: 5...720, step: 15)
+                        .labelsHidden()
+                }
+                Toggle("Iniciar la cuenta atrás nada más guardar", isOn: $startCountdownOnSave)
+                    .font(.app(12))
+
+            case .schedule:
+                HStack(spacing: 12) {
+                    Image(systemName: "calendar.badge.clock")
+                        .font(.app(18))
+                        .foregroundStyle(Palette.mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Horario automático (\(draft.scheduleLabel))")
+                            .font(.app(13, weight: .semibold))
+                        Text("Se activa sola los días elegidos entre las dos horas (admite tramos nocturnos como 22:30–07:30).")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                    }
+                }
+                HStack(spacing: 6) {
+                    ForEach([(2, "Lun"), (3, "Mar"), (4, "Mié"), (5, "Jue"), (6, "Vie"), (7, "Sáb"), (1, "Dom")], id: \.0) { day, label in
+                        let selected = draft.scheduleDays.contains(day)
+                        Button(label) {
+                            if selected && draft.scheduleDays.count > 1 {
+                                draft.scheduleDays.remove(day)
+                            } else {
+                                draft.scheduleDays.insert(day)
+                            }
+                        }
+                        .buttonStyle(SelectableChipStyle(selected: selected))
+                    }
+                }
+                HStack(spacing: 18) {
+                    HStack(spacing: 6) {
+                        Text("Desde:").font(.app(12))
+                        Picker("Hora inicio", selection: Binding(
+                            get: { draft.startMinutes / 60 },
+                            set: { draft.startMinutes = $0 * 60 + (draft.startMinutes % 60) }
+                        )) {
+                            ForEach(0..<24, id: \.self) { h in Text(String(format: "%02d h", h)).tag(h) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 76)
+                        Picker("Minuto inicio", selection: Binding(
+                            get: { (draft.startMinutes % 60 / 15) * 15 },
+                            set: { draft.startMinutes = (draft.startMinutes / 60) * 60 + $0 }
+                        )) {
+                            ForEach([0, 15, 30, 45], id: \.self) { m in Text(String(format: ":%02d", m)).tag(m) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 64)
+                    }
+                    HStack(spacing: 6) {
+                        Text("Hasta:").font(.app(12))
+                        Picker("Hora fin", selection: Binding(
+                            get: { draft.endMinutes / 60 },
+                            set: { draft.endMinutes = $0 * 60 + (draft.endMinutes % 60) }
+                        )) {
+                            ForEach(0..<24, id: \.self) { h in Text(String(format: "%02d h", h)).tag(h) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 76)
+                        Picker("Minuto fin", selection: Binding(
+                            get: { (draft.endMinutes % 60 / 15) * 15 },
+                            set: { draft.endMinutes = (draft.endMinutes / 60) * 60 + $0 }
+                        )) {
+                            ForEach([0, 15, 30, 45], id: \.self) { m in Text(String(format: ":%02d", m)).tag(m) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 64)
+                    }
+                }
+
+            case .alwaysOn:
+                HStack(spacing: 12) {
+                    Image(systemName: "lock.shield")
+                        .font(.app(18))
+                        .foregroundStyle(Palette.mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Bloqueo permanente 24/7")
+                            .font(.app(13, weight: .semibold))
+                        Text("Permanece activo todo el día mientras el interruptor de la regla esté encendido.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func pickRuleApplications() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let bundle = Bundle(url: url), let id = bundle.bundleIdentifier,
+                  !draft.apps.contains(where: { $0.id == id }) else { continue }
+            let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+                ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
+                ?? url.deletingPathExtension().lastPathComponent
+            draft.apps.append(AllowedApp(id: id, name: name, path: url.path))
+        }
+    }
+
+    private func commitSave() {
+        var rule = draft
+        rule.name = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        rule.domains = FocusRules.normalizeDomains(rule.domains)
+        rule.blockedTitleKeywords = FocusRules.normalizeTitleKeywords(rule.blockedTitleKeywords)
+        if rule.kind == .countdown && startCountdownOnSave {
+            rule.startCountdown(minutes: rule.countdownMinutes)
+        }
+        model.saveGeneralRule(rule)
+        dismiss()
     }
 }

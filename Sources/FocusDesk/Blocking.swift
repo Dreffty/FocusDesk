@@ -120,7 +120,7 @@ enum AppInspector {
 // MARK: - Reading and steering browser tabs
 
 enum WebReadResult: Sendable, Equatable {
-    case page(host: String)
+    case page(host: String, path: String = "")
     case noWindowOrTab
     case notRunning
     case permissionDenied
@@ -138,6 +138,10 @@ final class WebInspector {
         guard let kind = WebRules.browserKind(for: bundleID) else { completion(.unknown); return }
         guard isRunning(bundleID) else { completion(.notRunning); return }
         guard !busy.contains(bundleID) else { return }
+        if kind == .accessibility {
+            completion(Self.readAccessibilityBrowser(bundleID: bundleID))
+            return
+        }
         busy.insert(bundleID)
         let script: String
         switch kind {
@@ -159,6 +163,10 @@ final class WebInspector {
              end tell
             end timeout
             """
+        case .accessibility:
+            busy.remove(bundleID)
+            completion(.unknown)
+            return
         }
         run(script, timeout: 3) { [weak self] output, errorText, status, timedOut in
             self?.busy.remove(bundleID)
@@ -169,6 +177,19 @@ final class WebInspector {
     /// Sends only the offending tab to `url`, leaving every other tab and window where they were.
     func redirectActiveTab(bundleID: String, to url: URL, completion: @escaping (Bool) -> Void) {
         guard let kind = WebRules.browserKind(for: bundleID), isRunning(bundleID) else { completion(false); return }
+        if kind == .accessibility {
+            // Firefox, Zen, Waterfox and DuckDuckGo do not expose active-tab URL mutation via AppleScript:
+            // close the offending tab immediately, and if a custom web redirect URL was configured, open it.
+            let closed = Self.closeAccessibilityTab(bundleID: bundleID)
+            if ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+               let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                let config = NSWorkspace.OpenConfiguration()
+                config.activates = false
+                NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: config, completionHandler: nil)
+            }
+            completion(closed)
+            return
+        }
         let target = url.absoluteString
         // The address is one FocusDesk built (its own blocked page); nothing from the web reaches this text.
         let script: String
@@ -191,6 +212,9 @@ final class WebInspector {
              end tell
             end timeout
             """
+        case .accessibility:
+            completion(false)
+            return
         }
         run(script, timeout: 4) { _, _, status, timedOut in
             completion(status == 0 && !timedOut)
@@ -201,6 +225,10 @@ final class WebInspector {
     /// the user would get pressing ⌘W.
     func closeActiveTab(bundleID: String, completion: @escaping (Bool) -> Void) {
         guard let kind = WebRules.browserKind(for: bundleID), isRunning(bundleID) else { completion(false); return }
+        if kind == .accessibility {
+            completion(Self.closeAccessibilityTab(bundleID: bundleID))
+            return
+        }
         let script: String
         switch kind {
         case .safari:
@@ -221,10 +249,145 @@ final class WebInspector {
              end tell
             end timeout
             """
+        case .accessibility:
+            completion(false)
+            return
         }
         run(script, timeout: 4) { _, _, status, timedOut in
             completion(status == 0 && !timedOut)
         }
+    }
+
+    /// Reads the active page URL from browsers that do not expose an AppleScript dictionary for tabs
+    /// (Firefox, Zen Browser, Waterfox, DuckDuckGo Browser) using the macOS Accessibility tree (`AXUIElement`).
+    private static func readAccessibilityBrowser(bundleID: String) -> WebReadResult {
+        guard AXIsProcessTrusted() else { return .permissionDenied }
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID && !$0.isTerminated }) else {
+            return .notRunning
+        }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(appElement, 0.25)
+        AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+
+        var windowRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &windowRef) != .success || windowRef == nil {
+            var windowsRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+               let windows = windowsRef as? [AXUIElement], let first = windows.first {
+                windowRef = first
+            }
+        }
+        guard let windowRef, CFGetTypeID(windowRef) == AXUIElementGetTypeID() else {
+            return .noWindowOrTab
+        }
+        let window = windowRef as! AXUIElement
+        var webAreaURL: String?
+        var addressBarCandidate: String?
+        findAccessibilityURL(in: window, depth: 0, maxDepth: 9, webAreaURL: &webAreaURL, addressBarCandidate: &addressBarCandidate)
+
+        if let raw = webAreaURL ?? addressBarCandidate, let parsed = parseBrowserAddress(raw) {
+            return .page(host: parsed.host, path: parsed.path)
+        }
+        return .unknown
+    }
+
+    private static func findAccessibilityURL(
+        in element: AXUIElement,
+        depth: Int,
+        maxDepth: Int,
+        webAreaURL: inout String?,
+        addressBarCandidate: inout String?
+    ) {
+        guard depth <= maxDepth, webAreaURL == nil else { return }
+        var roleValue: CFTypeRef?
+        let role = (AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success)
+            ? (roleValue as? String ?? "")
+            : ""
+
+        if role == "AXWebArea" {
+            var urlValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXURLAttribute as CFString, &urlValue) == .success {
+                if let url = urlValue as? URL {
+                    webAreaURL = url.absoluteString
+                    return
+                } else if let str = urlValue as? String, !str.isEmpty {
+                    webAreaURL = str
+                    return
+                }
+            }
+        } else if role == (kAXTextFieldRole as String) || role == (kAXComboBoxRole as String) {
+            // Skip address bars while the user is actively typing in them.
+            var focusedValue: CFTypeRef?
+            let isFocused = (AXUIElementCopyAttributeValue(element, kAXFocusedAttribute as CFString, &focusedValue) == .success)
+                && ((focusedValue as? Bool) == true)
+            if !isFocused {
+                var idValue: CFTypeRef?
+                let identifier = (AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &idValue) == .success)
+                    ? (idValue as? String ?? "")
+                    : ""
+                var valRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valRef) == .success,
+                   let value = valRef as? String {
+                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if identifier.contains("addressBar") || identifier.contains("urlbar") || looksLikeAddressBarValue(trimmed) {
+                        if addressBarCandidate == nil {
+                            addressBarCandidate = trimmed
+                        }
+                    }
+                }
+            }
+        }
+
+        var childrenValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+              let children = childrenValue as? [AXUIElement] else { return }
+        for child in children.prefix(35) {
+            findAccessibilityURL(in: child, depth: depth + 1, maxDepth: maxDepth, webAreaURL: &webAreaURL, addressBarCandidate: &addressBarCandidate)
+            if webAreaURL != nil { return }
+        }
+    }
+
+    private static func looksLikeAddressBarValue(_ raw: String) -> Bool {
+        guard !raw.isEmpty, !raw.contains(" ") else { return false }
+        if raw.hasPrefix("https://") || raw.hasPrefix("http://") { return true }
+        guard let slash = raw.firstIndex(of: "/") ?? Optional(raw.endIndex) else { return false }
+        let hostPart = String(raw[..<slash])
+        let parts = hostPart.split(separator: ".")
+        guard parts.count >= 2, let tld = parts.last, tld.count >= 2, tld.allSatisfy({ $0.isLetter }) else { return false }
+        return true
+    }
+
+    private static func parseBrowserAddress(_ raw: String) -> (host: String, path: String)? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains(" ") else { return nil }
+        let withScheme: String
+        if trimmed.contains("://") {
+            withScheme = trimmed
+        } else {
+            withScheme = "https://" + trimmed
+        }
+        guard let url = URL(string: withScheme),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host?.lowercased(),
+              host.contains(".") else { return nil }
+        return (host, url.path)
+    }
+
+    private static func closeAccessibilityTab(bundleID: String) -> Bool {
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID && !$0.isTerminated }) else {
+            return false
+        }
+        // Send ⌘W (virtual key 13) directly to the browser process so only the active tab closes.
+        if let src = CGEventSource(stateID: .hidSystemState),
+           let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 13, keyDown: true),
+           let keyUp = CGEvent(keyboardEventSource: src, virtualKey: 13, keyDown: false) {
+            keyDown.flags = .maskCommand
+            keyUp.flags = .maskCommand
+            keyDown.postToPid(app.processIdentifier)
+            keyUp.postToPid(app.processIdentifier)
+            return true
+        }
+        return WindowCloser.closeFrontWindow(pid: app.processIdentifier)
     }
 
     private func isRunning(_ bundleID: String) -> Bool {
@@ -241,7 +404,7 @@ final class WebInspector {
         guard status == 0, let url = URL(string: output),
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               let host = url.host?.lowercased() else { return .unknown }
-        return .page(host: host)
+        return .page(host: host, path: url.path)
     }
 
     private func run(_ source: String, timeout: TimeInterval, completion: @escaping (String, String, Int32, Bool) -> Void) {
@@ -388,6 +551,8 @@ enum BlockPage {
         remaining: TimeInterval,
         endsAt: Date,
         allowedDomains: [String],
+        motivationalMessage: String = "",
+        checklistSteps: [String] = [],
         in directory: URL
     ) -> URL? {
         let target = url(in: directory)
@@ -395,6 +560,18 @@ enum BlockPage {
         let safeHost = escape(host)
         let clock = FocusRules.clock(max(0, remaining))
         let ends = endsAt.formatted(date: .omitted, time: .shortened)
+        let trimmedMotivation = motivationalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let motivationBlock = trimmedMotivation.isEmpty
+            ? ""
+            : "<blockquote class=\"motivation\">«\(escape(trimmedMotivation))»</blockquote>"
+        let cleanSteps = checklistSteps.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let stepsBlock: String
+        if cleanSteps.isEmpty {
+            stepsBlock = ""
+        } else {
+            let items = cleanSteps.prefix(5).map { "<li>\(escape($0))</li>" }.joined()
+            stepsBlock = "<div class=\"steps\"><div class=\"steps-title\">Siguientes pasos pendientes</div><ul>\(items)</ul></div>"
+        }
         let allowed = allowedDomains.isEmpty
             ? ""
             : "<p class=\"allowed\">Para esta tarea sí: \(escape(allowedDomains.joined(separator: " · ")))</p>"
@@ -426,6 +603,15 @@ enum BlockPage {
           .clock { font-family: ui-monospace, SFMono-Regular, monospace; font-size:42px;
                    color:var(--mint); margin:26px 0 4px; font-variant-numeric: tabular-nums; }
           .label { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+          .motivation { margin:18px 0 0; padding:12px 16px; border-radius:12px;
+                        background:color-mix(in srgb, var(--mint) 10%, transparent);
+                        color:var(--ink); font-style:italic; font-size:14px; line-height:1.5; }
+          .steps { margin-top:20px; padding:14px 18px; border-radius:12px; border:1px solid var(--line);
+                   text-align:left; font-size:13px; }
+          .steps-title { font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+                         color:var(--muted); margin-bottom:8px; }
+          .steps ul { margin:0; padding-left:18px; color:var(--ink); }
+          .steps li { margin:4px 0; line-height:1.45; }
           .allowed { margin-top:22px; padding-top:18px; border-top:1px solid var(--line); font-size:12px; }
         </style>
         </head>
@@ -434,8 +620,10 @@ enum BlockPage {
             <div class="dot">◎</div>
             <h1>Ahora no.</h1>
             <p>Estás con <strong>\(safeTitle)</strong>, y <span class="host">\(safeHost)</span> no entra en esa tarea.</p>
+            \(motivationBlock)
             <div class="clock" id="clock">\(clock)</div>
             <div class="label">para terminar · \(ends)</div>
+            \(stepsBlock)
             \(allowed)
           </main>
           <script>
@@ -468,5 +656,113 @@ enum BlockPage {
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
             .replacingOccurrences(of: "'", with: "&#39;")
+    }
+}
+
+// MARK: - Discreet floating countdown pill (FocusMe's showTimer HUD)
+
+/// A tiny non-activating floating pill in the top-right corner of the screen that shows the live countdown
+/// when a user is consuming a daily budget, a timed launch visit, a work-goal reward, a micro-pause, or a break.
+/// It ignores mouse events (`ignoresMouseEvents = true`) so it never steals focus or blocks clicks.
+@MainActor
+final class FloatingTimerPillController {
+    private var panel: NSPanel?
+    private var dotView: NSView?
+    private var labelField: NSTextField?
+
+    enum Urgency {
+        case normal
+        case warning
+        case critical
+        case pauseOrBreak
+    }
+
+    func update(title: String, remaining: TimeInterval, urgency: Urgency) {
+        let panel = ensurePanel()
+        let clock = FocusRules.clock(max(0, remaining))
+        let cleanTitle = title.count > 26 ? String(title.prefix(25)) + "…" : title
+        labelField?.stringValue = "\(clock)  ·  \(cleanTitle)"
+        let dotColor: NSColor
+        switch urgency {
+        case .normal:
+            dotColor = NSColor(calibratedRed: 0.14, green: 0.56, blue: 0.42, alpha: 1.0)
+        case .warning:
+            dotColor = NSColor(calibratedRed: 0.88, green: 0.54, blue: 0.14, alpha: 1.0)
+        case .critical:
+            dotColor = NSColor(calibratedRed: 0.85, green: 0.25, blue: 0.22, alpha: 1.0)
+        case .pauseOrBreak:
+            dotColor = NSColor(calibratedRed: 0.28, green: 0.52, blue: 0.86, alpha: 1.0)
+        }
+        dotView?.layer?.backgroundColor = dotColor.cgColor
+
+        labelField?.sizeToFit()
+        let textSize = labelField?.frame.size ?? NSSize(width: 150, height: 18)
+        let width = max(148, min(320, ceil(textSize.width) + 42))
+        let height: CGFloat = 30
+        labelField?.frame = NSRect(x: 28, y: (height - textSize.height) / 2, width: width - 38, height: textSize.height)
+        dotView?.frame = NSRect(x: 12, y: (height - 8) / 2, width: 8, height: 8)
+
+        if let screen = NSScreen.main ?? NSScreen.screens.first {
+            let visible = screen.visibleFrame
+            let frame = NSRect(
+                x: visible.maxX - width - 16,
+                y: visible.maxY - height - 12,
+                width: width,
+                height: height
+            )
+            panel.setFrame(frame, display: true)
+        }
+        if !panel.isVisible {
+            panel.orderFrontRegardless()
+        }
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+    }
+
+    private func ensurePanel() -> NSPanel {
+        if let panel { return panel }
+        let p = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 30),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        p.level = .floating
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.ignoresMouseEvents = true
+        p.hidesOnDeactivate = false
+
+        let container = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
+        container.autoresizingMask = [.width, .height]
+        container.material = .hudWindow
+        container.blendingMode = .behindWindow
+        container.state = .active
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 15
+        container.layer?.masksToBounds = true
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+
+        let dot = NSView(frame: NSRect(x: 12, y: 11, width: 8, height: 8))
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 4
+        container.addSubview(dot)
+
+        let label = NSTextField(labelWithString: "")
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .labelColor
+        label.lineBreakMode = .byTruncatingTail
+        container.addSubview(label)
+
+        p.contentView = container
+        self.panel = p
+        self.dotView = dot
+        self.labelField = label
+        return p
     }
 }

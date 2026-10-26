@@ -74,7 +74,9 @@ struct MainView: View {
                 TopBar(model: model)
                 Rectangle().fill(Palette.stroke).frame(height: 1)
                 if model.error != nil || model.notice != nil || model.resumePrompt != nil
-                    || model.accessibilityBroken || model.session?.stopRequest != nil {
+                    || model.accessibilityBroken || model.session?.stopRequest != nil
+                    || model.activeBreak() != nil
+                    || model.workspace.generalRules.contains(where: { $0.stopRequest != nil }) {
                     BannerStack(model: model)
                         .padding(.horizontal, 28)
                         .padding(.top, 14)
@@ -86,6 +88,7 @@ struct MainView: View {
                         case .today: TodayPage(model: model, onDelete: { model.taskPendingDeletion = $0 })
                         case .week: WeekPage(model: model, onDelete: { model.taskPendingDeletion = $0 })
                         case .history: HistoryPage(model: model, onDeleteRecord: { deleteRecordID = $0 })
+                        case .blocking: BlockingPage(model: model)
                         case .settings: SettingsView(model: model, bridge: model.calendar, reminders: model.reminders)
                         }
                     }
@@ -104,6 +107,7 @@ struct MainView: View {
         .background(Palette.background)
         .tint(Palette.mint)
         .sheet(item: $model.editingTask) { task in TaskEditor(model: model, draft: task) }
+        .sheet(item: $model.editingGeneralRule) { rule in GeneralRuleEditor(model: model, draft: rule) }
         .sheet(isPresented: $model.showCompletion) { CompletionView(model: model) }
         // Leaving a protected session: the code has to be typed before anything happens. Keyed by the challenge,
         // so asking again always brings the sheet up (a true-to-true Bool never re-presented a dropped one).
@@ -202,6 +206,11 @@ struct SidebarView: View {
             }
             .padding(.top, 14)
 
+            if !model.enforcingGeneralRules.isEmpty || !model.trackingGeneralRules.isEmpty {
+                SidebarGeneralRulesCard(model: model)
+                    .padding(.top, 10)
+            }
+
             Spacer(minLength: 16)
 
             HStack(spacing: 8) {
@@ -232,8 +241,60 @@ struct SidebarView: View {
             let startOfToday = Calendar.current.startOfDay(for: model.now)
             let overdue = model.scheduledTasks.filter { $0.scheduledAt < startOfToday }.count
             return overdue + model.unscheduledTasks.filter { ($0.dueDate ?? .distantFuture) < model.now }.count
+        case .blocking:
+            return model.enforcingGeneralRules.count
         default: return 0
         }
+    }
+}
+
+private struct SidebarGeneralRulesCard: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        let enforcing = model.enforcingGeneralRules
+        let tracking = model.trackingGeneralRules
+        Button { model.go(to: .blocking) } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Image(systemName: enforcing.isEmpty ? "hourglass" : "shield.lefthalf.filled")
+                        .font(.app(11))
+                        .foregroundStyle(Palette.mint)
+                    Text(enforcing.isEmpty ? "TEMPORIZADOR DIARIO" : "BLOQUEO ACTIVO")
+                        .font(.app(9, weight: .bold))
+                        .tracking(1.1)
+                        .foregroundStyle(Palette.muted)
+                    Spacer()
+                }
+                if let first = enforcing.first {
+                    let used = model.workspace.usedSecondsToday(for: first.id, at: model.now)
+                    let left = first.remainingLockSeconds(at: model.now, usedTodaySeconds: used)
+                    Text(first.name).font(.app(12, weight: .semibold)).lineLimit(1)
+                    if left > 0 && first.kind == .countdown {
+                        Text("Quedan \(FocusRules.clock(left))")
+                            .font(.app(11, design: .monospaced))
+                            .foregroundStyle(Palette.mint)
+                    } else {
+                        Text(first.kind == .dailyLimit ? "Cuota diaria agotada" : first.scheduleLabel)
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                    }
+                } else if let first = tracking.first {
+                    let used = model.workspace.usedSecondsToday(for: first.id, at: model.now)
+                    let left = first.remainingQuotaSeconds(usedTodaySeconds: used)
+                    Text(first.name).font(.app(12, weight: .semibold)).lineLimit(1)
+                    Text("Quedan \(FocusRules.clock(left)) hoy")
+                        .font(.app(11, design: .monospaced))
+                        .foregroundStyle(Palette.mint)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.mint.opacity(0.22), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Abrir Bloqueo y temporizadores (⌘4)")
     }
 }
 
@@ -394,7 +455,13 @@ private struct TopBar: View {
                 .buttonStyle(.focus(.warning, compact: true))
                 .help("Reintentar ahora la sincronización con Calendar")
             }
-            if model.currentPage != .settings {
+            if model.currentPage == .blocking {
+                Button { model.editingGeneralRule = GeneralBlockRule(name: "Nuevo límite o regla") } label: {
+                    Label("Nueva regla o temporizador", systemImage: "plus")
+                }
+                .buttonStyle(FocusPrimaryButton())
+                .disabled(model.readOnly)
+            } else if model.currentPage != .settings {
                 Button { model.editingTask = model.newTaskDraft() } label: { Label("Nueva tarea", systemImage: "plus") }
                     .buttonStyle(FocusPrimaryButton())
                     .disabled(model.readOnly)
@@ -413,6 +480,63 @@ private struct BannerStack: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if let activeBreak = model.activeBreak() {
+                HStack(spacing: 10) {
+                    Image(systemName: "cup.and.saucer.fill")
+                    Text("Descanso activo: «\(activeBreak.period.title)» · quedan \(FocusRules.clock(activeBreak.remaining)) para apartar la vista de la pantalla.")
+                        .font(.app(12, weight: .medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button("Ocultar este descanso") { model.dismissActiveBreak(activeBreak.period) }
+                        .buttonStyle(.focus(.secondary, compact: true))
+                }
+                .padding(12)
+                .foregroundStyle(Palette.mint)
+                .background(Palette.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.mint.opacity(0.28), lineWidth: 1))
+            }
+            if let cBreak = model.activeContinuousBreak(at: model.now) {
+                HStack(spacing: 10) {
+                    Image(systemName: "figure.walk")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Descanso por uso continuo · quedan \(FocusRules.clock(cBreak.remaining))")
+                            .font(.app(12, weight: .semibold))
+                        Text(cBreak.message)
+                            .font(.app(11))
+                            .foregroundStyle(Palette.text.opacity(0.85))
+                    }
+                    Spacer(minLength: 8)
+                    if cBreak.skipsRemaining > 0 {
+                        Button("Posponer (\(cBreak.skipsRemaining))") { model.skipContinuousBreak() }
+                            .buttonStyle(.focus(.secondary, compact: true))
+                    }
+                }
+                .padding(12)
+                .foregroundStyle(Palette.mint)
+                .background(Palette.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.mint.opacity(0.28), lineWidth: 1))
+            }
+            ForEach(model.workspace.generalRules.filter { $0.stopRequest != nil }) { rule in
+                if let request = rule.stopRequest {
+                    let left = request.remaining()
+                    let confirmLeft = request.confirmWindowRemaining()
+                    HStack(spacing: 10) {
+                        Image(systemName: left > 0 ? "hourglass" : "checkmark.circle.fill")
+                        Text(left > 0
+                             ? "Espera para modificar «\(rule.name)»: faltan \(FocusRules.clock(left))."
+                             : "Ventana abierta (\(FocusRules.clock(confirmLeft))) para modificar «\(rule.name)» antes de que vuelva a bloquearse.")
+                            .font(.app(12, weight: .medium))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Button("Ver en Bloqueo") { model.go(to: .blocking) }
+                            .buttonStyle(.focus(.secondary, compact: true))
+                    }
+                    .padding(12)
+                    .foregroundStyle(left > 0 ? Palette.muted : Palette.mint)
+                    .background(Palette.elevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.stroke, lineWidth: 1))
+                }
+            }
             // Waits for an answer instead of fading away: the Mac paused this session while nobody was watching.
             if let prompt = model.resumePrompt {
                 HStack(spacing: 10) {
@@ -441,11 +565,12 @@ private struct BannerStack: View {
             // A wait the user asked for: visible the whole time, with the way back.
             if let session = model.session, let request = session.stopRequest {
                 let left = request.remaining()
+                let confirmLeft = request.confirmWindowRemaining()
                 HStack(spacing: 10) {
                     Image(systemName: left > 0 ? "hourglass" : "checkmark.circle.fill")
                     Text(left > 0
                          ? "Has pedido \(request.reason.verb) «\(session.task.title)». Faltan \(FocusRules.clock(left)) y la sesión sigue."
-                         : "Ya puedes \(request.reason.verb) «\(session.task.title)». Si se te pasaron las ganas, sigue trabajando.")
+                         : "Ya puedes \(request.reason.verb) «\(session.task.title)» (ventana de \(FocusRules.clock(confirmLeft))). Si se te pasaron las ganas, sigue trabajando.")
                         .font(.app(12, weight: .medium))
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
@@ -2138,6 +2263,24 @@ struct MenuPanel: View {
                     .accessibilityLabel("Abrir planificador")
             }
 
+            if let activeBreak = model.activeBreak() {
+                HStack(spacing: 8) {
+                    Image(systemName: "cup.and.saucer.fill").foregroundStyle(Palette.mint)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(activeBreak.period.title).font(.app(11, weight: .semibold))
+                        Text("Descanso · quedan \(FocusRules.clock(activeBreak.remaining))")
+                            .font(.app(10, design: .monospaced))
+                            .foregroundStyle(Palette.mint)
+                    }
+                    Spacer()
+                    Button { model.dismissActiveBreak(activeBreak.period) } label: { Image(systemName: "xmark") }
+                        .buttonStyle(FocusIconButtonStyle(size: 20))
+                        .help("Ocultar aviso de descanso")
+                }
+                .padding(8)
+                .background(Palette.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+
             if let s = model.session {
                 sessionSection(s)
             } else if let next = model.next {
@@ -2162,10 +2305,14 @@ struct MenuPanel: View {
                     .buttonStyle(FocusPrimaryButton())
             }
 
+            generalBlockingMenuSection
+
             QuickCaptureField(model: model)
             Rectangle().fill(Palette.stroke).frame(height: 1)
             HStack {
                 Button { model.showWindow?() } label: { Label("Planificador", systemImage: "calendar") }
+                    .buttonStyle(.focus(.ghost, compact: true))
+                Button { model.showWindow?(); model.go(to: .blocking) } label: { Label("Bloqueo", systemImage: "shield.lefthalf.filled") }
                     .buttonStyle(.focus(.ghost, compact: true))
                 Spacer()
                 Button { NSApp.terminate(nil) } label: { Label("Salir", systemImage: "power") }
@@ -2177,6 +2324,46 @@ struct MenuPanel: View {
         .frame(width: 360)
         .background(Palette.background)
         .tint(Palette.mint)
+    }
+
+    @ViewBuilder private var generalBlockingMenuSection: some View {
+        let enforcing = model.enforcingGeneralRules
+        let tracking = model.trackingGeneralRules
+        VStack(alignment: .leading, spacing: 6) {
+            if !enforcing.isEmpty || !tracking.isEmpty {
+                ForEach((enforcing + tracking).prefix(2)) { rule in
+                    let used = model.workspace.usedSecondsToday(for: rule.id, at: model.now)
+                    let isEnf = rule.isEnforcing(at: model.now, usedTodaySeconds: used)
+                    let left = rule.remainingLockSeconds(at: model.now, usedTodaySeconds: used)
+                    HStack(spacing: 6) {
+                        Image(systemName: isEnf ? "shield.lefthalf.filled" : "hourglass")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.mint)
+                        Text(rule.name).font(.app(11, weight: .medium)).lineLimit(1)
+                        Spacer()
+                        if isEnf && left > 0 {
+                            Text(FocusRules.clock(left)).font(.app(10, design: .monospaced)).foregroundStyle(Palette.mint)
+                        } else if rule.kind == .dailyLimit {
+                            let quotaLeft = rule.remainingQuotaSeconds(usedTodaySeconds: used)
+                            Text(quotaLeft > 0 ? "Quedan \(FocusRules.clock(quotaLeft))" : "Agotado hoy")
+                                .font(.app(10, design: .monospaced))
+                                .foregroundStyle(quotaLeft > 0 ? Palette.muted : Palette.warning)
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 6) {
+                Text("Bloqueo rápido:").font(.app(10)).foregroundStyle(Palette.muted)
+                ForEach([15, 30, 60], id: \.self) { mins in
+                    Button(mins == 60 ? "1 h" : "\(mins)m") {
+                        model.startQuickBlock(minutes: mins)
+                    }
+                    .buttonStyle(.focus(.secondary, compact: true))
+                    .help("Bloquear redes y vídeos cortos durante \(mins) minutos")
+                }
+                Spacer()
+            }
+        }
     }
 
     @ViewBuilder private func sessionSection(_ s: WorkSession) -> some View {
@@ -2233,5 +2420,566 @@ struct MenuPanel: View {
                     .lineLimit(1)
             }
         }
+    }
+}
+
+// MARK: - Blocking & Daily Limit Timers Page (⌘4)
+
+struct BlockingPage: View {
+    @ObservedObject var model: AppModel
+    @State private var quickPreset: DistractionPreset? = nil
+    @State private var quickProtection: SessionProtection = .challenge
+    @State private var rulePendingDeletion: GeneralBlockRule?
+    @State private var tempAllowDomain: String = ""
+    @State private var tempAllowMinutes: Int = 10
+
+    var body: some View {
+        let enforcingCount = model.enforcingGeneralRules.count
+        let trackingCount = model.trackingGeneralRules.count
+        let activeAllows = model.activeTemporaryAllows(at: model.now)
+
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 12) {
+                StatPill(label: "Bloqueando ahora", value: "\(enforcingCount)", icon: "shield.lefthalf.filled", tint: enforcingCount > 0 ? Palette.mint : Palette.muted)
+                StatPill(label: "Presupuestos en vivo", value: "\(trackingCount)", icon: "hourglass", tint: trackingCount > 0 ? Palette.mint : Palette.muted)
+                StatPill(label: "Trabajado hoy", value: "\(Int(model.workedSeconds(on: model.now) / 60)) min", icon: "flag.checkered", tint: Palette.mint)
+                StatPill(label: "Reglas configuradas", value: "\(model.workspace.generalRules.count)", icon: "slider.horizontal.3", tint: Palette.muted)
+            }
+
+            // Quick Block Timer Hero Card
+            Card(padding: 20) {
+                VStack(alignment: .leading, spacing: 14) {
+                    SectionHeader("Temporizador rápido de bloqueo en 1 clic", icon: "timer") {
+                        Picker("Protección", selection: $quickProtection) {
+                            ForEach(SessionProtection.allCases, id: \.self) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .frame(maxWidth: 260)
+                    }
+                    Text("Activa al instante una cuenta atrás monotónica para cortar distracciones aunque no tengas ninguna tarea en la agenda.")
+                        .font(.app(12))
+                        .foregroundStyle(Palette.muted)
+
+                    HStack(spacing: 6) {
+                        Text("Qué bloquear:").font(.app(11, weight: .medium)).foregroundStyle(Palette.muted)
+                        Button("Redes + Shorts") { quickPreset = nil }
+                            .buttonStyle(SelectableChipStyle(selected: quickPreset == nil))
+                        ForEach(DistractionPreset.allCases) { preset in
+                            Button {
+                                quickPreset = preset
+                            } label: {
+                                Label(preset.label, systemImage: preset.icon)
+                            }
+                            .buttonStyle(SelectableChipStyle(selected: quickPreset == preset))
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        ForEach([(15, "15 min"), (30, "30 min"), (45, "45 min"), (60, "1 hora"), (120, "2 horas")], id: \.0) { mins, label in
+                            Button {
+                                model.startQuickBlock(minutes: mins, preset: quickPreset, protection: quickProtection)
+                            } label: {
+                                Label(label, systemImage: "play.fill")
+                            }
+                            .buttonStyle(mins == 30 ? FocusButtonStyle(kind: .primary, compact: false) : FocusButtonStyle(kind: .secondary, compact: false))
+                            .disabled(model.readOnly)
+                        }
+                        Button {
+                            let rem = max(15, Self.minutesUntilEndOfDay(from: model.now))
+                            model.startQuickBlock(minutes: rem, preset: quickPreset, protection: quickProtection)
+                        } label: {
+                            Label("Resto del día", systemImage: "moon.stars.fill")
+                        }
+                        .buttonStyle(.focusSecondary)
+                        .disabled(model.readOnly)
+                    }
+                }
+            }
+
+            // Temporary Exceptions with Auto-Expiry + Continuous Work Break Status
+            HStack(alignment: .top, spacing: 14) {
+                Card(padding: 16) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SectionHeader("Excepción temporal con caducidad automática", icon: "clock.badge.checkmark")
+                        Text("Permite consultar una web o app puntual durante unos minutos; al llegar a 00:00 se vuelve a bloquear sola.")
+                            .font(.app(11))
+                            .foregroundStyle(Palette.muted)
+                        HStack(spacing: 8) {
+                            TextField("Dominio o ruta (ej. docs.swift.org, youtube.com/watch)", text: $tempAllowDomain)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.app(12))
+                            Picker("Minutos", selection: $tempAllowMinutes) {
+                                ForEach([5, 10, 15, 30], id: \.self) { m in
+                                    Text("\(m) min").tag(m)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 84)
+                            Button("Permitir") {
+                                model.addTemporaryAllow(target: tempAllowDomain, isAppBundleID: false, minutes: tempAllowMinutes)
+                                if model.error == nil { tempAllowDomain = "" }
+                            }
+                            .buttonStyle(.focus(.secondary, compact: true))
+                            .disabled(tempAllowDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.readOnly)
+                        }
+                        if !activeAllows.isEmpty {
+                            VStack(spacing: 6) {
+                                ForEach(activeAllows) { entry in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: entry.isAppBundleID ? "app.badge.checkmark" : "globe")
+                                            .foregroundStyle(Palette.mint)
+                                        Text(entry.label.isEmpty ? entry.target : "\(entry.label) (\(entry.target))")
+                                            .font(.app(11, weight: .medium))
+                                        Spacer()
+                                        Text(FocusRules.clock(entry.remaining(wall: model.now)))
+                                            .font(.app(11, weight: .semibold, design: .monospaced))
+                                            .foregroundStyle(Palette.mint)
+                                        Button("Cerrar ya") {
+                                            model.removeTemporaryAllow(entry.id)
+                                        }
+                                        .buttonStyle(.focus(.ghost, compact: true))
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Palette.mint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Card(padding: 16) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SectionHeader("Descansos por uso continuo", icon: "figure.walk") {
+                            Toggle("", isOn: Binding(
+                                get: { model.workspace.settings.continuousBreakEnabled },
+                                set: { val in model.updateSettings { $0.continuousBreakEnabled = val } }
+                            ))
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                        }
+                        if model.workspace.settings.continuousBreakEnabled {
+                            let targetSec = Double(max(10, model.workspace.settings.continuousWorkMinutes)) * 60
+                            let frac = min(1.0, model.continuousActiveWorkSeconds / targetSec)
+                            Text("Cada \(model.workspace.settings.continuousWorkMinutes) min de pantalla activa te propone \(model.workspace.settings.continuousBreakDurationMinutes) min de pausa.")
+                                .font(.app(11))
+                                .foregroundStyle(Palette.muted)
+                            ProgressView(value: frac)
+                                .tint(Palette.mint)
+                            HStack {
+                                Text("Uso continuo actual: \(FocusRules.clock(model.continuousActiveWorkSeconds)) / \(model.workspace.settings.continuousWorkMinutes) min")
+                                    .font(.app(11, design: .monospaced))
+                                    .foregroundStyle(Palette.muted)
+                                Spacer()
+                                Button("Descansar ahora") {
+                                    model.startContinuousBreakNow()
+                                }
+                                .buttonStyle(.focus(.secondary, compact: true))
+                            }
+                        } else {
+                            Text("Actívalo para que FocusDesk mida tu tiempo continuo frente al Mac y te recuerde descansar la vista y estirar.")
+                                .font(.app(11))
+                                .foregroundStyle(Palette.muted)
+                        }
+                    }
+                }
+                .frame(width: 320)
+            }
+
+            // General Rules & Daily Usage Timers
+            HStack(spacing: 8) {
+                Text("Reglas generales, metas de trabajo y límites diarios")
+                    .font(.app(16, weight: .semibold))
+                Spacer()
+                Button {
+                    model.editingGeneralRule = GeneralBlockRule(
+                        name: "Primero el trabajo, luego el ocio",
+                        kind: .workGoal,
+                        goalMinutesRequired: 60,
+                        goalRewardMinutes: 20,
+                        webListMode: .blockListed,
+                        domains: (DistractionPreset.social.domains + DistractionPreset.streaming.domains).joined(separator: ", "),
+                        blockedTitleKeywords: (DistractionPreset.social.titleKeywords + DistractionPreset.streaming.titleKeywords).joined(separator: ", ")
+                    )
+                } label: {
+                    Label("Nueva meta de trabajo", systemImage: "flag.checkered")
+                }
+                .buttonStyle(.focus(.secondary, compact: true))
+                .disabled(model.readOnly)
+
+                Button {
+                    model.editingGeneralRule = GeneralBlockRule(
+                        name: "Visitas contadas",
+                        kind: .launchLimit,
+                        maxDailyLaunches: 4,
+                        maxLaunchDurationMinutes: 5,
+                        launchCooldownMinutes: 30,
+                        webListMode: .blockListed,
+                        domains: DistractionPreset.social.domains.joined(separator: ", ")
+                    )
+                } label: {
+                    Label("Nuevo límite de aperturas", systemImage: "door.left.hand.open")
+                }
+                .buttonStyle(.focus(.secondary, compact: true))
+                .disabled(model.readOnly)
+
+                Button {
+                    model.editingGeneralRule = GeneralBlockRule(
+                        name: "Presupuesto diario",
+                        kind: .dailyLimit,
+                        dailyLimitMinutes: 20,
+                        webListMode: .blockListed,
+                        domains: DistractionPreset.shortVideos.domains.joined(separator: ", "),
+                        blockedTitleKeywords: DistractionPreset.shortVideos.titleKeywords.joined(separator: ", ")
+                    )
+                } label: {
+                    Label("Nuevo límite diario", systemImage: "hourglass.badge.plus")
+                }
+                .buttonStyle(.focus(.secondary, compact: true))
+                .disabled(model.readOnly)
+            }
+
+            if model.workspace.generalRules.isEmpty {
+                EmptyStateView(
+                    title: "Sin reglas generales configuradas",
+                    detail: "Crea un presupuesto diario (ej. 20 min al día de YouTube/Shorts o X), una cuenta atrás o un horario nocturno automático.",
+                    icon: "shield.lefthalf.filled"
+                )
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(model.workspace.generalRules) { rule in
+                        GeneralRuleCard(
+                            model: model,
+                            rule: rule,
+                            onDelete: { rulePendingDeletion = rule }
+                        )
+                    }
+                }
+            }
+        }
+        .confirmationDialog(
+            "¿Eliminar la regla «\(rulePendingDeletion?.name ?? "")»?",
+            isPresented: Binding(get: { rulePendingDeletion != nil }, set: { if !$0 { rulePendingDeletion = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Eliminar regla", role: .destructive) {
+                if let rule = rulePendingDeletion { model.deleteGeneralRule(rule) }
+                rulePendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) { rulePendingDeletion = nil }
+        }
+    }
+
+    private static func minutesUntilEndOfDay(from now: Date) -> Int {
+        let cal = Calendar.current
+        let parts = cal.dateComponents([.hour, .minute], from: now)
+        let current = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        return max(15, 24 * 60 - current)
+    }
+}
+
+private struct GeneralRuleCard: View {
+    @ObservedObject var model: AppModel
+    let rule: GeneralBlockRule
+    let onDelete: () -> Void
+
+    var body: some View {
+        let used = model.usedSecondsToday(for: rule, at: model.now)
+        let enforcing = model.isRuleEnforcing(rule, at: model.now)
+        let tracking = model.isRuleTrackingQuota(rule, at: model.now)
+        let microPaused = rule.isMicroPaused(at: model.now)
+
+        Card(padding: 18) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: rule.kind.icon)
+                        .font(.app(18, weight: .semibold))
+                        .foregroundStyle(enforcing ? Palette.onAccent : Palette.mint)
+                        .frame(width: 34, height: 34)
+                        .background(enforcing ? Palette.mint : Palette.mint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 6) {
+                            Text(rule.name).font(.app(16, weight: .semibold))
+                            Chip(rule.kind.label, icon: rule.kind.icon)
+                            if microPaused {
+                                let mpLeft = rule.activeMicroPauseDeadline?.remainingAfterPossibleReboot(wall: model.now) ?? 0
+                                Chip("Micro-pausa \(FocusRules.clock(mpLeft))", icon: "cup.and.saucer.fill", color: Palette.warning)
+                            } else if enforcing {
+                                Chip("Bloqueando ahora", icon: "shield.fill", color: Palette.mint)
+                            } else if tracking {
+                                Chip("Midiendo uso hoy", icon: "hourglass", color: Palette.mint)
+                            } else if !rule.enabled {
+                                Chip("Apagada", color: Palette.muted)
+                            } else {
+                                Chip("En espera", color: Palette.muted)
+                            }
+                            if rule.protection != .none {
+                                Chip(rule.protection.label, icon: "lock.shield", color: enforcing ? Palette.mint : Palette.muted)
+                                    .help(rule.protection.explanation)
+                            }
+                        }
+
+                        Text(selectorSummary)
+                            .font(.app(11))
+                            .foregroundStyle(Palette.muted)
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Toggle("", isOn: Binding(
+                        get: { rule.enabled },
+                        set: { value in model.toggleGeneralRule(rule, enabled: value) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .disabled(model.readOnly)
+                    .help(rule.enabled ? "Apagar esta regla" : "Encender esta regla")
+                }
+
+                // Live timer / progress row depending on kind
+                liveTimerSection(used: used, enforcing: enforcing)
+
+                HStack(spacing: 8) {
+                    if rule.kind == .countdown {
+                        ForEach([15, 30, 60, 120], id: \.self) { mins in
+                            Button(mins >= 60 ? "\(mins / 60) h" : "\(mins) min") {
+                                model.startGeneralCountdown(for: rule, minutes: mins)
+                            }
+                            .buttonStyle(.focus(.secondary, compact: true))
+                            .disabled(model.readOnly)
+                        }
+                    } else if (rule.kind == .dailyLimit || rule.kind == .workGoal || rule.kind == .launchLimit) && (used > 0 || model.launchesToday(for: rule, at: model.now) > 0) {
+                        Button("Reiniciar contador de hoy") {
+                            model.resetDailyQuota(for: rule)
+                        }
+                        .buttonStyle(.focus(.ghost, compact: true))
+                        .disabled(model.readOnly)
+                    }
+                    if model.canStartMicroPause(for: rule, at: model.now) {
+                        let pausesLeft = model.remainingMicroPausesToday(for: rule, at: model.now)
+                        Button("Micro-pausa \(rule.microPauseMinutes) min (\(pausesLeft))") {
+                            model.startMicroPause(for: rule)
+                        }
+                        .buttonStyle(.focus(.secondary, compact: true))
+                        .disabled(model.readOnly)
+                        .help("Pausa temporal controlada. Al agotarse los \(rule.microPauseMinutes) min, la regla vuelve a bloquear automáticamente.")
+                    }
+                    Spacer()
+                    Button("Editar") { model.editingGeneralRule = rule }
+                        .buttonStyle(.focus(.secondary, compact: true))
+                        .disabled(model.readOnly)
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(FocusIconButtonStyle(size: 26, tint: Palette.danger))
+                    .disabled(model.readOnly)
+                    .help("Eliminar «\(rule.name)»")
+                    .accessibilityLabel("Eliminar \(rule.name)")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func liveTimerSection(used: TimeInterval, enforcing: Bool) -> some View {
+        let lockLeft = model.remainingRuleLockSeconds(rule, at: model.now)
+        switch rule.kind {
+        case .dailyLimit:
+            let total = Double(max(1, rule.dailyLimitMinutes)) * 60
+            let left = max(0, total - used)
+            let fraction = min(1.0, max(0, used / total))
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Label(
+                        left > 0
+                            ? "Tiempo restante hoy: \(FocusRules.clock(left))"
+                            : "Presupuesto de hoy agotado · bloqueado hasta medianoche",
+                        systemImage: left > 0 ? "hourglass" : "lock.fill"
+                    )
+                    .font(.app(13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(left > 0 ? Palette.mint : Palette.warning)
+                    Spacer()
+                    Text("Usado: \(FocusRules.clock(used)) de \(rule.dailyLimitMinutes) min")
+                        .font(.app(11, design: .monospaced))
+                        .foregroundStyle(Palette.muted)
+                }
+                ProgressView(value: fraction)
+                    .tint(left > 0 ? Palette.mint : Palette.warning)
+            }
+            .padding(10)
+            .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+        case .workGoal:
+            let worked = model.workedSeconds(on: model.now)
+            let required = Double(max(5, rule.goalMinutesRequired)) * 60
+            let workFraction = min(1.0, max(0, worked / required))
+            let goalMet = worked >= required
+            let rewardLeft = rule.remainingGoalRewardSeconds(workedTodaySeconds: worked, usedTodaySeconds: used)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    if !goalMet {
+                        let workNeeded = max(0, required - worked)
+                        Label(
+                            "Meta pendiente: faltan \(FocusRules.clock(workNeeded)) de trabajo enfocado hoy",
+                            systemImage: "flag.checkered"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.warning)
+                    } else if rule.goalRewardMinutes <= 0 {
+                        Label(
+                            "Meta cumplida (\(FocusRules.clock(worked))) · desbloqueado hoy",
+                            systemImage: "checkmark.seal.fill"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.mint)
+                    } else if rewardLeft > 0 {
+                        Label(
+                            "Tiempo de recompensa disponible: \(FocusRules.clock(rewardLeft))",
+                            systemImage: "gift.fill"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.mint)
+                    } else {
+                        Label(
+                            "Recompensa agotada · completa más minutos de tarea para ganar más",
+                            systemImage: "lock.fill"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.warning)
+                    }
+                    Spacer()
+                    Text("Trabajado hoy: \(FocusRules.clock(worked)) / \(rule.goalMinutesRequired) min")
+                        .font(.app(11, design: .monospaced))
+                        .foregroundStyle(Palette.muted)
+                }
+                ProgressView(value: workFraction)
+                    .tint(goalMet ? Palette.mint : Palette.warning)
+            }
+            .padding(10)
+            .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+        case .launchLimit:
+            let launches = model.launchesToday(for: rule, at: model.now)
+            let maxLaunches = max(1, rule.maxDailyLaunches)
+            let visitRem = rule.activeLaunchDeadline?.remainingAfterPossibleReboot(wall: model.now) ?? 0
+            let cooldownRem = rule.launchCooldownDeadline?.remainingAfterPossibleReboot(wall: model.now) ?? 0
+            let fraction = min(1.0, Double(launches) / Double(maxLaunches))
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    if visitRem > 0 {
+                        Label(
+                            "Visita activa: quedan \(FocusRules.clock(visitRem))",
+                            systemImage: "timer"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.mint)
+                        Button("Terminar visita") {
+                            model.endLaunchVisitEarly(for: rule)
+                        }
+                        .buttonStyle(.focus(.ghost, compact: true))
+                        .disabled(model.readOnly)
+                    } else if cooldownRem > 0 {
+                        Label(
+                            "En enfriamiento: faltan \(FocusRules.clock(cooldownRem)) para poder abrir de nuevo",
+                            systemImage: "snowflake"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.warning)
+                    } else if launches >= maxLaunches {
+                        Label(
+                            "Límite de \(maxLaunches) aperturas agotado hoy · bloqueado hasta medianoche",
+                            systemImage: "lock.fill"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.warning)
+                    } else {
+                        let left = maxLaunches - launches
+                        Label(
+                            "Quedan \(left) apertura(s) hoy · \(rule.maxLaunchDurationMinutes) min por visita",
+                            systemImage: "door.left.hand.open"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.mint)
+                    }
+                    Spacer()
+                    Text("Aperturas: \(launches)/\(maxLaunches) · pausa \(rule.launchCooldownMinutes)m")
+                        .font(.app(11, design: .monospaced))
+                        .foregroundStyle(Palette.muted)
+                }
+                ProgressView(value: fraction)
+                    .tint(launches < maxLaunches && cooldownRem <= 0 ? Palette.mint : Palette.warning)
+            }
+            .padding(10)
+            .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+        case .countdown:
+            if enforcing && lockLeft > 0 {
+                HStack {
+                    Label("Cuenta atrás en marcha: quedan \(FocusRules.clock(lockLeft))", systemImage: "timer")
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.mint)
+                    Spacer()
+                    let ends = model.now.addingTimeInterval(lockLeft)
+                    Text("Termina a las \(ends.formatted(date: .omitted, time: .shortened))")
+                        .font(.app(11))
+                        .foregroundStyle(Palette.muted)
+                }
+                .padding(10)
+                .background(Palette.mint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            } else {
+                Text("Temporizador listo (\(rule.countdownMinutes) min predeterminados). Pulsa un botón de tiempo para iniciarlo.")
+                    .font(.app(11))
+                    .foregroundStyle(Palette.muted)
+            }
+
+        case .schedule:
+            HStack {
+                Label("Horario: \(rule.scheduleLabel)", systemImage: "calendar.badge.clock")
+                    .font(.app(12, weight: .medium))
+                    .foregroundStyle(enforcing ? Palette.mint : Palette.muted)
+                Spacer()
+                if enforcing && lockLeft > 0 {
+                    Text("Quedan \(FocusRules.clock(lockLeft)) de tramo")
+                        .font(.app(11, design: .monospaced))
+                        .foregroundStyle(Palette.mint)
+                }
+            }
+            .padding(10)
+            .background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+        case .alwaysOn:
+            Text(rule.enabled ? "Activo de forma permanente 24/7." : "Desactivado.")
+                .font(.app(11))
+                .foregroundStyle(rule.enabled ? Palette.mint : Palette.muted)
+        }
+    }
+
+    private var selectorSummary: String {
+        var parts: [String] = []
+        if rule.webListMode == .blockAll {
+            parts.append("Todas las webs bloqueadas")
+        } else {
+            let doms = FocusRules.parseDomains(rule.domains).valid
+            if !doms.isEmpty {
+                let prefix = rule.webListMode == .allowListed ? "Solo webs: " : "Webs: "
+                let shown = doms.prefix(5).joined(separator: ", ")
+                let extra = doms.count > 5 ? " (+\(doms.count - 5))" : ""
+                parts.append(prefix + shown + extra)
+            }
+        }
+        let kws = FocusRules.parseTitleKeywords(rule.blockedTitleKeywords)
+        if !kws.isEmpty {
+            parts.append("Títulos: " + kws.prefix(4).joined(separator: ", "))
+        }
+        if !rule.apps.isEmpty {
+            let prefix = rule.appListMode == .allowListed ? "Solo apps: " : "Apps: "
+            parts.append(prefix + rule.apps.map(\.name).joined(separator: ", "))
+        }
+        if !rule.blockedFolders.isEmpty {
+            parts.append("\(rule.blockedFolders.count) carpeta(s)")
+        }
+        return parts.isEmpty ? "Sin selectores configurados todavía · pulsa Editar para añadir webs, rutas o apps" : parts.joined(separator: " · ")
     }
 }

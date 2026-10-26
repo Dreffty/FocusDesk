@@ -109,6 +109,7 @@ enum AppPage: String, CaseIterable, Identifiable {
     case today = "Hoy"
     case week = "Semana"
     case history = "Historial"
+    case blocking = "Bloqueo"
     case settings = "Ajustes"
 
     var id: String { rawValue }
@@ -118,6 +119,7 @@ enum AppPage: String, CaseIterable, Identifiable {
         case .today: return "sun.max"
         case .week: return "calendar"
         case .history: return "chart.bar.xaxis"
+        case .blocking: return "shield.lefthalf.filled"
         case .settings: return "slider.horizontal.3"
         }
     }
@@ -127,6 +129,7 @@ enum AppPage: String, CaseIterable, Identifiable {
         case .today: return "⌘1"
         case .week: return "⌘2"
         case .history: return "⌘3"
+        case .blocking: return "⌘4"
         case .settings: return "⌘,"
         }
     }
@@ -136,6 +139,7 @@ enum AppPage: String, CaseIterable, Identifiable {
         case .today: return "Haz espacio para lo importante."
         case .week: return "Una semana con intención."
         case .history: return "Lo que has hecho cuenta."
+        case .blocking: return "Tus límites diarios y reglas generales."
         case .settings: return "A tu manera."
         }
     }

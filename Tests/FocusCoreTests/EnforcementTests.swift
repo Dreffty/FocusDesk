@@ -408,4 +408,303 @@ final class EnforcementTests: XCTestCase {
         XCTAssertTrue(protectedTask().enforces)
         XCTAssertTrue(FocusTask(title: "Solo código", protection: .challenge).enforces)
     }
+
+    // MARK: - Blocklist modes, URL subpaths, title keywords, and GeneralBlockRule timers
+
+    func testWebSubpathMatchingAndWebListModes() {
+        let rawList = "youtube.com/shorts, instagram.com/reels, x.com"
+        let list = FocusRules.parseDomains(rawList).valid
+        XCTAssertEqual(list, ["youtube.com/shorts", "instagram.com/reels", "x.com"])
+
+        // Blocklist mode: youtube.com/shorts is blocked, but youtube.com/watch is allowed
+        XCTAssertFalse(FocusRules.webAllowed(host: "www.youtube.com", path: "/shorts/xyz123", list: rawList, mode: .blockListed))
+        XCTAssertTrue(FocusRules.webAllowed(host: "www.youtube.com", path: "/watch", list: rawList, mode: .blockListed))
+        XCTAssertFalse(FocusRules.webAllowed(host: "x.com", path: "/home", list: rawList, mode: .blockListed))
+        XCTAssertTrue(FocusRules.webAllowed(host: "docs.swift.org", path: "/swift-book", list: rawList, mode: .blockListed))
+
+        // Block all mode
+        XCTAssertFalse(FocusRules.webAllowed(host: "docs.swift.org", path: "/", list: "", mode: .blockAll))
+
+        // Allowlist mode
+        let allowed = "docs.swift.org, github.com/apple"
+        XCTAssertTrue(FocusRules.webAllowed(host: "docs.swift.org", path: "/guide", list: allowed, mode: .allowListed))
+        XCTAssertTrue(FocusRules.webAllowed(host: "github.com", path: "/apple/swift", list: allowed, mode: .allowListed))
+        XCTAssertFalse(FocusRules.webAllowed(host: "github.com", path: "/torvalds/linux", list: allowed, mode: .allowListed))
+    }
+
+    func testAppListModeAllowlistAndBlocklist() {
+        let apps = [AllowedApp(id: "com.tinyspeck.slackmacgap", name: "Slack", path: "/Applications/Slack.app")]
+        XCTAssertFalse(FocusRules.appAllowed(bundleID: "com.tinyspeck.slackmacgap", apps: apps, mode: .blockListed))
+        XCTAssertTrue(FocusRules.appAllowed(bundleID: "com.apple.dt.Xcode", apps: apps, mode: .blockListed))
+
+        XCTAssertTrue(FocusRules.appAllowed(bundleID: "com.tinyspeck.slackmacgap", apps: apps, mode: .allowListed))
+        XCTAssertFalse(FocusRules.appAllowed(bundleID: "com.apple.dt.Xcode", apps: apps, mode: .allowListed))
+    }
+
+    func testWindowTitleKeywordsMatching() {
+        let keywords = "Shorts, Reels, Netflix"
+        XCTAssertEqual(FocusRules.matchesTitleKeyword("YouTube - Shorts - Brave", keywords: keywords), "Shorts")
+        XCTAssertEqual(FocusRules.matchesTitleKeyword("viendo reels en directo", keywords: keywords), "Reels")
+        XCTAssertNil(FocusRules.matchesTitleKeyword("FocusDesk — Xcode", keywords: keywords))
+    }
+
+    func testDailyLimitRuleTracksQuotaAndEnforcesOnceExhausted() {
+        let rule = GeneralBlockRule(
+            name: "Límite diario de Shorts",
+            enabled: true,
+            kind: .dailyLimit,
+            dailyLimitMinutes: 20,
+            webListMode: .blockListed,
+            domains: "youtube.com/shorts, x.com",
+            blockedTitleKeywords: "Shorts"
+        )
+
+        // With 5 minutes (300s) used out of 20 minutes (1200s): tracking is active, enforcement is not yet active
+        XCTAssertTrue(rule.isTrackingQuota(usedTodaySeconds: 300))
+        XCTAssertFalse(rule.isEnforcing(at: zero, usedTodaySeconds: 300, continuous: 100))
+        XCTAssertEqual(rule.remainingQuotaSeconds(usedTodaySeconds: 300), 900)
+
+        // Once 20 minutes (1200s) are reached: quota is 0 and rule switches to enforcing for the rest of the day
+        XCTAssertFalse(rule.isTrackingQuota(usedTodaySeconds: 1200))
+        XCTAssertTrue(rule.isEnforcing(at: zero, usedTodaySeconds: 1200, continuous: 100))
+        XCTAssertEqual(rule.remainingQuotaSeconds(usedTodaySeconds: 1200), 0)
+    }
+
+    func testCountdownRuleAndOvernightScheduleRule() {
+        var countdown = GeneralBlockRule(
+            name: "Bloqueo 30 min",
+            enabled: true,
+            kind: .countdown,
+            countdownMinutes: 30,
+            webListMode: .blockListed,
+            domains: "x.com"
+        )
+        countdown.startCountdown(minutes: 30, wall: zero, continuous: 1000)
+        XCTAssertTrue(countdown.isEnforcing(at: zero.addingTimeInterval(600), usedTodaySeconds: 0, continuous: 1600))
+        let left = countdown.remainingLockSeconds(at: zero.addingTimeInterval(600), usedTodaySeconds: 0, continuous: 1600)
+        XCTAssertEqual(left, 1200, accuracy: 1)
+        XCTAssertFalse(countdown.isEnforcing(at: zero.addingTimeInterval(1801), usedTodaySeconds: 0, continuous: 2801))
+
+        // Overnight schedule: 22:30 (1350) to 07:30 (450) every day
+        let schedule = GeneralBlockRule(
+            name: "Descanso nocturno",
+            enabled: true,
+            kind: .schedule,
+            scheduleDays: Set(1...7),
+            startMinutes: 22 * 60 + 30,
+            endMinutes: 7 * 60 + 30,
+            webListMode: .blockListed,
+            domains: "x.com, youtube.com"
+        )
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let lateNight = cal.date(from: DateComponents(year: 2026, month: 4, day: 15, hour: 23, minute: 15))!
+        let earlyMorning = cal.date(from: DateComponents(year: 2026, month: 4, day: 16, hour: 6, minute: 45))!
+        let midday = cal.date(from: DateComponents(year: 2026, month: 4, day: 16, hour: 13, minute: 0))!
+
+        XCTAssertTrue(schedule.isScheduleActive(at: lateNight, calendar: cal))
+        XCTAssertTrue(schedule.isScheduleActive(at: earlyMorning, calendar: cal))
+        XCTAssertFalse(schedule.isScheduleActive(at: midday, calendar: cal))
+    }
+
+    func testRatchetProtectsBlocklistedDomainsAppsAndKeywords() {
+        let task = FocusTask(
+            title: "Bloqueo por lista negra",
+            minutes: 45,
+            strict: true,
+            apps: [
+                AllowedApp(id: "com.tinyspeck.slackmacgap", name: "Slack", path: "/Applications/Slack.app"),
+                AllowedApp(id: "com.hnc.Discord", name: "Discord", path: "/Applications/Discord.app")
+            ],
+            domains: "x.com, youtube.com/shorts",
+            protection: .challenge,
+            webBlockAction: .closeTab,
+            appListMode: .blockListed,
+            webListMode: .blockListed,
+            blockedTitleKeywords: "Shorts, Reels"
+        )
+
+        // Adding another blocked domain or keyword is hardening -> allowed
+        var harder = task
+        harder.domains = "x.com, youtube.com/shorts, tiktok.com"
+        harder.blockedTitleKeywords = "Shorts, Reels, Twitch"
+        XCTAssertNil(Ratchet.loosening(current: task, proposed: harder))
+
+        // Removing a blocked domain is loosening -> caught by Ratchet
+        var looserDomain = task
+        looserDomain.domains = "x.com"
+        XCTAssertEqual(Ratchet.loosening(current: task, proposed: looserDomain), .domainsUnblocked)
+
+        // Removing a blocked app in blocklist mode is loosening -> caught by Ratchet
+        var looserApp = task
+        looserApp.apps = [AllowedApp(id: "com.tinyspeck.slackmacgap", name: "Slack", path: "/Applications/Slack.app")]
+        XCTAssertEqual(Ratchet.loosening(current: task, proposed: looserApp), .appsUnblocked)
+
+        // Removing a blocked title keyword is loosening -> caught by Ratchet
+        var looserKeyword = task
+        looserKeyword.blockedTitleKeywords = "Shorts"
+        XCTAssertEqual(Ratchet.loosening(current: task, proposed: looserKeyword), .titleKeywordsRemoved)
+    }
+
+    func testWorkGoalRuleEnforcesUntilGoalMetAndTracksRewardBudget() {
+        let unlimitedRewardRule = GeneralBlockRule(
+            name: "Primero el trabajo (ilimitado tras meta)",
+            enabled: true,
+            kind: .workGoal,
+            goalMinutesRequired: 60,
+            goalRewardMinutes: 0,
+            webListMode: .blockListed,
+            domains: "youtube.com, reddit.com"
+        )
+
+        // Before 60 min (3600s) of focused work: blocks
+        XCTAssertTrue(unlimitedRewardRule.isEnforcing(at: zero, usedTodaySeconds: 0, workedTodaySeconds: 1800, continuous: 100))
+        XCTAssertFalse(unlimitedRewardRule.isTrackingQuota(at: zero, usedTodaySeconds: 0, workedTodaySeconds: 1800, continuous: 100))
+
+        // After 60 min (3600s) of focused work: unlocked for the rest of the day
+        XCTAssertFalse(unlimitedRewardRule.isEnforcing(at: zero, usedTodaySeconds: 5000, workedTodaySeconds: 3600, continuous: 100))
+
+        // Proportional reward mode: 15 min reward per 60 min worked
+        let proportionalRule = GeneralBlockRule(
+            name: "15 min ocio por cada 60 min de foco",
+            enabled: true,
+            kind: .workGoal,
+            goalMinutesRequired: 60,
+            goalRewardMinutes: 15,
+            webListMode: .blockListed,
+            domains: "youtube.com"
+        )
+
+        // Worked 60 min -> earned 15 min (900s). Used 300s -> 600s left, tracking quota, not enforcing
+        XCTAssertEqual(proportionalRule.remainingGoalRewardSeconds(workedTodaySeconds: 3600, usedTodaySeconds: 300), 600, accuracy: 0.5)
+        XCTAssertTrue(proportionalRule.isTrackingQuota(at: zero, usedTodaySeconds: 300, workedTodaySeconds: 3600, continuous: 100))
+        XCTAssertFalse(proportionalRule.isEnforcing(at: zero, usedTodaySeconds: 300, workedTodaySeconds: 3600, continuous: 100))
+
+        // Used all 900s -> reward exhausted -> enforcing again
+        XCTAssertEqual(proportionalRule.remainingGoalRewardSeconds(workedTodaySeconds: 3600, usedTodaySeconds: 900), 0, accuracy: 0.5)
+        XCTAssertTrue(proportionalRule.isEnforcing(at: zero, usedTodaySeconds: 900, workedTodaySeconds: 3600, continuous: 100))
+    }
+
+    func testLaunchLimitRuleEnforcesVisitsCooldownsAndDailyMax() {
+        var rule = GeneralBlockRule(
+            name: "Correo 3 veces al día",
+            enabled: true,
+            kind: .launchLimit,
+            maxDailyLaunches: 3,
+            maxLaunchDurationMinutes: 5,
+            launchCooldownMinutes: 30,
+            webListMode: .blockListed,
+            domains: "mail.google.com"
+        )
+
+        // Before any visit starts, with 0 launches used: allowed to open (not enforcing)
+        XCTAssertFalse(rule.isEnforcing(at: zero, launchesToday: 0, continuous: 100))
+
+        // Start visit 1 (5 min = 300s)
+        rule.beginLaunchVisit(wall: zero, continuous: 100)
+        XCTAssertTrue(rule.isLaunchVisitActive(at: zero.addingTimeInterval(120), continuous: 220))
+        XCTAssertFalse(rule.isEnforcing(at: zero.addingTimeInterval(120), launchesToday: 1, continuous: 220))
+
+        // Visit 1 ends at t=300s -> start 30 min (1800s) cooldown
+        let visitEndWall = zero.addingTimeInterval(300)
+        rule.endLaunchVisitAndStartCooldown(wall: visitEndWall, continuous: 400)
+        XCTAssertTrue(rule.isInLaunchCooldown(at: visitEndWall.addingTimeInterval(600), continuous: 1000))
+        XCTAssertTrue(rule.isEnforcing(at: visitEndWall.addingTimeInterval(600), launchesToday: 1, continuous: 1000))
+
+        // Cooldown expires after 1800s -> allowed to open again while launchesToday (1) < maxDailyLaunches (3)
+        let afterCooldownWall = visitEndWall.addingTimeInterval(1801)
+        XCTAssertFalse(rule.isInLaunchCooldown(at: afterCooldownWall, continuous: 2201))
+        XCTAssertFalse(rule.isEnforcing(at: afterCooldownWall, launchesToday: 1, continuous: 2201))
+
+        // Once all 3 launches are exhausted and no visit is active -> enforces for the rest of the day
+        XCTAssertTrue(rule.isEnforcing(at: afterCooldownWall, launchesToday: 3, continuous: 2201))
+    }
+
+    func testMicroPausesAndTemporaryAllowEntriesAutoExpire() {
+        var rule = GeneralBlockRule(
+            name: "Bloqueo permanente con micro-pausa",
+            enabled: true,
+            kind: .alwaysOn,
+            webListMode: .blockListed,
+            domains: "x.com",
+            dailyMicroPausesAllowed: 2,
+            microPauseMinutes: 2
+        )
+
+        XCTAssertTrue(rule.isEnforcing(at: zero, continuous: 100))
+        rule.startMicroPause(wall: zero, continuous: 100)
+        // During the 2-minute micro-pause, the rule pauses enforcement
+        XCTAssertTrue(rule.isMicroPaused(at: zero.addingTimeInterval(60), continuous: 160))
+        XCTAssertFalse(rule.isEnforcing(at: zero.addingTimeInterval(60), continuous: 160))
+        // After 121 seconds, micro-pause expires and rule automatically enforces again
+        XCTAssertFalse(rule.isMicroPaused(at: zero.addingTimeInterval(121), continuous: 221))
+        XCTAssertTrue(rule.isEnforcing(at: zero.addingTimeInterval(121), continuous: 221))
+
+        // TemporaryAllowEntry on Workspace
+        var ws = Workspace()
+        ws.temporaryAllows = [
+            TemporaryAllowEntry(target: "stackoverflow.com", isAppBundleID: false, label: "Consulta puntual", minutes: 10, wall: zero, continuous: 100),
+            TemporaryAllowEntry(target: "com.tinyspeck.slackmacgap", isAppBundleID: true, label: "Slack 5m", minutes: 5, wall: zero, continuous: 100)
+        ]
+        XCTAssertTrue(ws.isTemporarilyAllowed(host: "stackoverflow.com", path: "/questions/1", at: zero.addingTimeInterval(120), continuous: 220))
+        XCTAssertTrue(ws.isTemporarilyAllowed(bundleID: "com.tinyspeck.slackmacgap", at: zero.addingTimeInterval(120), continuous: 220))
+        // After 11 minutes (660s), both have expired
+        XCTAssertFalse(ws.isTemporarilyAllowed(host: "stackoverflow.com", path: "/questions/1", at: zero.addingTimeInterval(660), continuous: 760))
+        XCTAssertFalse(ws.isTemporarilyAllowed(bundleID: "com.tinyspeck.slackmacgap", at: zero.addingTimeInterval(660), continuous: 760))
+    }
+
+    func testStopRequestConfirmationWindowExpiryRestartsWait() {
+        let req = StopRequest(reason: .cancel, minutes: 2, confirmWindowSeconds: 180, wall: zero, continuous: 100)
+        // At t=60s: still waiting
+        XCTAssertFalse(req.ready(wall: zero.addingTimeInterval(60), continuous: 160))
+        XCTAssertFalse(req.expired(wall: zero.addingTimeInterval(60), continuous: 160))
+
+        // At t=130s (10s after 2-min wait ended): ready and within 180s confirmation window
+        let readyWall = zero.addingTimeInterval(130)
+        XCTAssertTrue(req.ready(wall: readyWall, continuous: 230))
+        XCTAssertFalse(req.expired(wall: readyWall, continuous: 230))
+        XCTAssertEqual(
+            StopGate.decide(protection: .delay, reason: .cancel, timeLeft: 900, unlockChars: 28, stopDelayMinutes: 2, pending: req, wall: readyWall, continuous: 230),
+            .waitFinished
+        )
+
+        // At t=310s (190s after 2-min wait ended, exceeding 180s confirmation window): expired -> restarts wait
+        let expiredWall = zero.addingTimeInterval(310)
+        XCTAssertTrue(req.expired(wall: expiredWall, continuous: 410))
+        XCTAssertEqual(
+            StopGate.decide(protection: .delay, reason: .cancel, timeLeft: 900, unlockChars: 28, stopDelayMinutes: 2, pending: req, wall: expiredWall, continuous: 410),
+            .waitStarted(120)
+        )
+    }
+
+    func testCustomRedirectURLAndAccessibilityBrowserClassification() {
+        XCTAssertNil(WebRules.normalizedRedirectURL("https:// Notion.so "))
+        XCTAssertEqual(WebRules.normalizedRedirectURL("https://www.notion.so/mi-panel")?.absoluteString, "https://www.notion.so/mi-panel")
+        XCTAssertEqual(WebRules.normalizedRedirectURL("notion.so")?.absoluteString, "https://notion.so")
+        XCTAssertNil(WebRules.normalizedRedirectURL("javascript:alert(1)"))
+        XCTAssertNil(WebRules.normalizedRedirectURL("   "))
+
+        XCTAssertEqual(WebRules.browserKind(for: "org.mozilla.firefox"), .accessibility)
+        XCTAssertEqual(WebRules.browserKind(for: "app.zen-browser.zen"), .accessibility)
+        XCTAssertEqual(WebRules.browserKind(for: "com.duckduckgo.macos.browser"), .accessibility)
+        XCTAssertTrue(WebRules.isBrowser("org.mozilla.firefox"))
+    }
+
+    func testProtectedRulesWitnessDetectsTampering() {
+        let protectedRule = GeneralBlockRule(
+            name: "Regla Blindada",
+            enabled: true,
+            kind: .alwaysOn,
+            webListMode: .blockListed,
+            domains: "x.com, tiktok.com",
+            protection: .challenge
+        )
+        let witness = ProtectedRulesWitness(rules: [protectedRule], savedAt: zero)
+        XCTAssertFalse(witness.isEmpty)
+
+        // If workspace.json is wiped externally while closed, witness detects missing protected rule
+        let tamperedEmpty: [GeneralBlockRule] = []
+        XCTAssertFalse(tamperedEmpty.contains(where: { $0.id == protectedRule.id }))
+        XCTAssertEqual(witness.rules.first?.id, protectedRule.id)
+    }
 }

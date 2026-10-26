@@ -153,7 +153,8 @@ final class ExitAndRecoveryTests: XCTestCase {
     // MARK: - Browsers that cannot be read
 
     func testBrowsersWhoseAddressCannotBeReadAreKnown() {
-        XCTAssertTrue(WebRules.unreadableBrowsers.contains("org.mozilla.firefox"))
+        XCTAssertTrue(WebRules.unreadableBrowsers.contains("org.torproject.torbrowser"))
+        XCTAssertEqual(WebRules.browserKind(for: "org.mozilla.firefox"), .accessibility)
         XCTAssertFalse(WebRules.unreadableBrowsers.contains("com.google.Chrome"))
         XCTAssertTrue(WebRules.looksLikeSafariWebApp(bundleID: "com.apple.Safari.WebApp.1A2B3C"))
         XCTAssertFalse(WebRules.looksLikeSafariWebApp(bundleID: "com.apple.Safari"))

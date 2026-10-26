@@ -420,7 +420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         Con FocusDesk delante
         ⌘N  Nueva tarea · ⌘,  Ajustes
-        ⌘1 ⌘2 ⌘3  Hoy, Semana, Historial
+        ⌘1 ⌘2 ⌘3 ⌘4  Hoy, Semana, Historial, Bloqueo
         ⌘[ ⌘]  Día o semana anterior y siguiente · ⌘T  Hoy
         ⌃⌥⌘S  Empezar la siguiente tarea · ⌃⌥⌘A  Ampliar 10 minutos
         ⌘Z ⇧⌘Z  Deshacer y rehacer cambios en la agenda
@@ -436,6 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func goTodayPage() { model.page = "Hoy"; show() }
     @objc private func goWeekPage() { model.page = "Semana"; show() }
     @objc private func goHistoryPage() { model.page = "Historial"; show() }
+    @objc private func goBlockingPage() { model.page = "Bloqueo"; show() }
     @objc private func prevDay() {
         model.shiftSelectedDay(by: model.currentPage == .week ? -7 : -1)
     }
@@ -549,6 +550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         add(nav, "Hoy", #selector(goTodayPage), "1", target: self)
         add(nav, "Semana", #selector(goWeekPage), "2", target: self)
         add(nav, "Historial", #selector(goHistoryPage), "3", target: self)
+        add(nav, "Bloqueo", #selector(goBlockingPage), "4", target: self)
         nav.addItem(.separator())
         add(nav, "Anterior", #selector(prevDay), "[", target: self)
         add(nav, "Siguiente", #selector(nextDay), "]", target: self)

@@ -14,9 +14,34 @@ import Security
 enum KeychainWitness {
     private static let service = "local.focusdesk.app.witness"
     private static let account = "active-session"
+    private static let rulesAccount = "protected-rules"
 
     static func save(_ witness: SessionWitness) {
-        guard let data = try? JSONEncoder().encode(witness) else { return }
+        saveItem(witness, account: account)
+    }
+
+    static func load() -> SessionWitness? {
+        loadItem(SessionWitness.self, account: account)
+    }
+
+    static func clear() {
+        clearItem(account: account)
+    }
+
+    static func saveRulesWitness(_ witness: ProtectedRulesWitness) {
+        saveItem(witness, account: rulesAccount)
+    }
+
+    static func loadRulesWitness() -> ProtectedRulesWitness? {
+        loadItem(ProtectedRulesWitness.self, account: rulesAccount)
+    }
+
+    static func clearRulesWitness() {
+        clearItem(account: rulesAccount)
+    }
+
+    private static func saveItem<T: Encodable>(_ item: T, account: String) {
+        guard let data = try? JSONEncoder().encode(item) else { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -35,7 +60,7 @@ enum KeychainWitness {
         }
     }
 
-    static func load() -> SessionWitness? {
+    private static func loadItem<T: Decodable>(_ type: T.Type, account: String) -> T? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -46,11 +71,11 @@ enum KeychainWitness {
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
               let data = item as? Data,
-              let witness = try? JSONDecoder().decode(SessionWitness.self, from: data) else { return nil }
-        return witness
+              let decoded = try? JSONDecoder().decode(T.self, from: data) else { return nil }
+        return decoded
     }
 
-    static func clear() {
+    private static func clearItem(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -322,9 +347,16 @@ enum RelaunchWatcher {
             relaunches.removeAll { now.timeIntervalSince($0) > RelaunchDecision.window }
             let appRunning = interfaceRunning()
             // The data file is only read while FocusDesk is gone, never under its feet.
-            let session = appRunning ? nil : (try? store.load())?.session
+            let loadedWorkspace = appRunning ? nil : (try? store.load())
+            let session = loadedWorkspace?.session
+            let hasActiveProtectedRule = loadedWorkspace.map { ws in
+                ws.generalRules.contains { rule in
+                    rule.protection != .none && rule.isEnforcing(at: now, usedTodaySeconds: ws.usedSecondsToday(for: rule.id, at: now))
+                }
+            } ?? false
             let relaunch = RelaunchDecision.shouldRelaunch(
                 session: session,
+                hasActiveProtectedRule: hasActiveProtectedRule,
                 appRunning: appRunning,
                 watcherAge: now.timeIntervalSince(started),
                 recentRelaunches: relaunches.count,

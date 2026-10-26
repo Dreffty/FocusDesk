@@ -43,6 +43,11 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
     public var punisherEnabled: Bool
     /// Folders that close as soon as they are opened during the session (`FolderRules`).
     public var blockedFolders: [String]
+    public var appListMode: AppListMode
+    public var webListMode: WebListMode
+    public var blockedTitleKeywords: String
+    public var customRedirectURL: String
+    public var motivationalMessage: String
 
     public init(
         id: UUID = UUID(),
@@ -63,7 +68,12 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         webBlockAction: WebBlockAction = .warn,
         guardSystemPanes: Bool = true,
         punisherEnabled: Bool = true,
-        blockedFolders: [String] = []
+        blockedFolders: [String] = [],
+        appListMode: AppListMode = .allowListed,
+        webListMode: WebListMode = .allowListed,
+        blockedTitleKeywords: String = "",
+        customRedirectURL: String = "",
+        motivationalMessage: String = ""
     ) {
         self.id = id
         self.name = name
@@ -84,12 +94,17 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         self.guardSystemPanes = guardSystemPanes
         self.punisherEnabled = punisherEnabled
         self.blockedFolders = FolderRules.normalizeList(blockedFolders)
+        self.appListMode = appListMode
+        self.webListMode = webListMode
+        self.blockedTitleKeywords = FocusRules.normalizeTitleKeywords(blockedTitleKeywords)
+        self.customRedirectURL = customRedirectURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.motivationalMessage = motivationalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, category, minutes, leadMinutes, strict, apps, domains, folder, checklist, autoStart
         case protection, unlockChars, stopDelayMinutes, blockAction, webBlockAction, guardSystemPanes, punisherEnabled
-        case blockedFolders
+        case blockedFolders, appListMode, webListMode, blockedTitleKeywords, customRedirectURL, motivationalMessage
     }
 
     public init(from decoder: Decoder) throws {
@@ -113,6 +128,11 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         guardSystemPanes = try c.decodeIfPresent(Bool.self, forKey: .guardSystemPanes) ?? true
         punisherEnabled = try c.decodeIfPresent(Bool.self, forKey: .punisherEnabled) ?? true
         blockedFolders = try c.decodeIfPresent([String].self, forKey: .blockedFolders) ?? []
+        appListMode = try c.decodeIfPresent(AppListMode.self, forKey: .appListMode) ?? .allowListed
+        webListMode = try c.decodeIfPresent(WebListMode.self, forKey: .webListMode) ?? .allowListed
+        blockedTitleKeywords = try c.decodeIfPresent(String.self, forKey: .blockedTitleKeywords) ?? ""
+        customRedirectURL = (try c.decodeIfPresent(String.self, forKey: .customRedirectURL) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        motivationalMessage = (try c.decodeIfPresent(String.self, forKey: .motivationalMessage) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public static let defaults: [FocusProfile] = [
@@ -188,6 +208,22 @@ public struct BreakPeriod: Codable, Equatable, Identifiable, Sendable {
         self.startMinute = max(0, min(59, startMinute))
         self.durationMinutes = max(5, min(240, durationMinutes))
     }
+
+    public func interval(on date: Date, calendar: Calendar = .current) -> DateInterval? {
+        guard let start = calendar.date(bySettingHour: startHour, minute: startMinute, second: 0, of: date) else { return nil }
+        let end = start.addingTimeInterval(Double(max(5, durationMinutes)) * 60)
+        return DateInterval(start: start, end: end)
+    }
+
+    public func isActive(at now: Date, calendar: Calendar = .current) -> Bool {
+        guard let window = interval(on: now, calendar: calendar) else { return false }
+        return now >= window.start && now < window.end
+    }
+
+    public func remainingSeconds(at now: Date, calendar: Calendar = .current) -> TimeInterval {
+        guard let window = interval(on: now, calendar: calendar), now >= window.start, now < window.end else { return 0 }
+        return max(0, window.end.timeIntervalSince(now))
+    }
 }
 
 public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
@@ -232,6 +268,16 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
     /// Folders that close as soon as they are opened during the session — in the Finder, or as the document of
     /// any app (a film in QuickTime). FocusMe's «Finder locations».
     public var blockedFolders: [String]
+    /// Whether `apps` is a whitelist (`.allowListed`) or a blacklist (`.blockListed`).
+    public var appListMode: AppListMode
+    /// Whether `domains` is a whitelist (`.allowListed`), a blacklist (`.blockListed`), or blocks all sites (`.blockAll`).
+    public var webListMode: WebListMode
+    /// Comma-separated keywords that trigger a block when found in the frontmost window title.
+    public var blockedTitleKeywords: String
+    /// Optional productive URL (`https://...`) to redirect blocked tabs to instead of the local block page (`websiteRedirectUrl` in FocusMe).
+    public var customRedirectURL: String
+    /// Custom motivational message or quote shown on the block page.
+    public var motivationalMessage: String
 
     public init(
         id: UUID = UUID(),
@@ -264,7 +310,12 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         webBlockAction: WebBlockAction = .warn,
         guardSystemPanes: Bool = true,
         punisherEnabled: Bool = true,
-        blockedFolders: [String] = []
+        blockedFolders: [String] = [],
+        appListMode: AppListMode = .allowListed,
+        webListMode: WebListMode = .allowListed,
+        blockedTitleKeywords: String = "",
+        customRedirectURL: String = "",
+        motivationalMessage: String = ""
     ) {
         self.id = id
         self.title = title
@@ -297,6 +348,11 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         self.guardSystemPanes = guardSystemPanes
         self.punisherEnabled = punisherEnabled
         self.blockedFolders = FolderRules.normalizeList(blockedFolders)
+        self.appListMode = appListMode
+        self.webListMode = webListMode
+        self.blockedTitleKeywords = FocusRules.normalizeTitleKeywords(blockedTitleKeywords)
+        self.customRedirectURL = customRedirectURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.motivationalMessage = motivationalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -304,7 +360,7 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         case apps, domains, folder, checklist, repeatRule, repeatDays, skippedDates, seriesID
         case profileID, isFixedAppointment, completed, calendarEventID, calendarSnapshot, autoStart
         case protection, unlockChars, stopDelayMinutes, blockAction, webBlockAction, guardSystemPanes, punisherEnabled
-        case blockedFolders
+        case blockedFolders, appListMode, webListMode, blockedTitleKeywords, customRedirectURL, motivationalMessage
     }
 
     public init(from decoder: Decoder) throws {
@@ -340,6 +396,11 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         guardSystemPanes = try c.decodeIfPresent(Bool.self, forKey: .guardSystemPanes) ?? true
         punisherEnabled = try c.decodeIfPresent(Bool.self, forKey: .punisherEnabled) ?? true
         blockedFolders = try c.decodeIfPresent([String].self, forKey: .blockedFolders) ?? []
+        appListMode = try c.decodeIfPresent(AppListMode.self, forKey: .appListMode) ?? .allowListed
+        webListMode = try c.decodeIfPresent(WebListMode.self, forKey: .webListMode) ?? .allowListed
+        blockedTitleKeywords = try c.decodeIfPresent(String.self, forKey: .blockedTitleKeywords) ?? ""
+        customRedirectURL = (try c.decodeIfPresent(String.self, forKey: .customRedirectURL) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        motivationalMessage = (try c.decodeIfPresent(String.self, forKey: .motivationalMessage) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public var end: Date { scheduledAt.addingTimeInterval(Double(minutes) * 60) }
@@ -349,13 +410,16 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         let validDuration = (1...720).contains(minutes) && (0...60).contains(leadMinutes)
         let validStrict = !strict || !apps.isEmpty
         let validRepeat = repeatRule != .customDays || !repeatDays.isEmpty
-        // Blocking websites needs a list of what stays open; without one every page would be blocked.
-        let validWeb = webBlockAction == .warn || !FocusRules.parseDomains(domains).valid.isEmpty
+        // Blocking websites needs a list of domains unless blocking all websites (`webListMode == .blockAll`).
+        let validWeb = webBlockAction == .warn || webListMode == .blockAll || !FocusRules.parseDomains(domains).valid.isEmpty
         return hasTitle && validDuration && validStrict && validRepeat && validWeb
     }
 
     /// Whether this task defends itself at all: it blocks something, or it resists being stopped.
-    public var enforces: Bool { strict || webBlockAction != .warn || protection != .none || !blockedFolders.isEmpty }
+    public var enforces: Bool {
+        strict || webBlockAction != .warn || protection != .none || !blockedFolders.isEmpty
+            || !FocusRules.parseTitleKeywords(blockedTitleKeywords).isEmpty
+    }
 
     /// Snoozes an overdue or unscheduled task relative to `now`, or shifts a future task forward from `scheduledAt`.
     public func snoozed(minutes deltaMinutes: Int = 10, now: Date = Date()) -> FocusTask {
@@ -390,6 +454,11 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         guardSystemPanes = profile.guardSystemPanes
         punisherEnabled = profile.punisherEnabled
         blockedFolders = profile.blockedFolders
+        appListMode = profile.appListMode
+        webListMode = profile.webListMode
+        blockedTitleKeywords = profile.blockedTitleKeywords
+        customRedirectURL = profile.customRedirectURL
+        motivationalMessage = profile.motivationalMessage
         profileID = profile.id
     }
 
@@ -1053,6 +1122,29 @@ public struct Settings: Codable, Equatable, Sendable {
     public var emergencyUses: [String]
     /// Minutes before a protected task starts from which it already defends itself (`RunUp`); 0 switches it off.
     public var runUpMinutes: Int
+    /// Shows an active break timer banner/alert when a scheduled `BreakPeriod` is running.
+    public var enforceBreaks: Bool
+    /// Shows a discreet floating countdown pill on screen when consuming a daily limit, launch visit or micro-pause (`showTimer` in FocusMe).
+    public var showFloatingTimerPill: Bool
+    /// Sends pre-block warnings when 5 min and 1 min remain on a daily limit or launch visit (`timeLimitReminders` in FocusMe).
+    public var preBlockRemindersEnabled: Bool
+    /// Triggers a rest break after `continuousWorkMinutes` of continuous screen usage (`tickAsScreenBreak` in FocusMe).
+    public var continuousBreakEnabled: Bool
+    /// Minutes of continuous work before a screen break triggers (`15...180`).
+    public var continuousWorkMinutes: Int
+    /// Duration of each continuous screen break in minutes (`1...30`).
+    public var continuousBreakDurationMinutes: Int
+    /// Maximum number of times per day the user can skip a continuous screen break (`0...10`, `skipCount` in FocusMe).
+    public var continuousBreakMaxSkipsPerDay: Int
+    /// Motivational messages rotated during breaks (`breakMessages` / `pickBreakMessage` in FocusMe).
+    public var breakMessages: [String]
+
+    public static let defaultBreakMessages: [String] = [
+        "Descansa la vista 20 segundos mirando a lo lejos.",
+        "Levántate, estira los hombros y bebe un vaso de agua.",
+        "Respira hondo tres veces: el descanso también es parte del foco.",
+        "Suelta el teclado un momento para volver con la mente despejada."
+    ]
 
     public init() {
         self.calendarID = nil
@@ -1078,6 +1170,14 @@ public struct Settings: Codable, Equatable, Sendable {
         self.relaunchGuard = false
         self.emergencyUses = []
         self.runUpMinutes = RunUp.defaultMinutes
+        self.enforceBreaks = true
+        self.showFloatingTimerPill = true
+        self.preBlockRemindersEnabled = true
+        self.continuousBreakEnabled = false
+        self.continuousWorkMinutes = 50
+        self.continuousBreakDurationMinutes = 5
+        self.continuousBreakMaxSkipsPerDay = 2
+        self.breakMessages = Self.defaultBreakMessages
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1085,6 +1185,8 @@ public struct Settings: Codable, Equatable, Sendable {
         case hotKeyEnabled, hotKeyCode, hotKeyModifiers, hotKeyLabel, hotKeyTarget
         case categories, workdays, workStartHour, workEndHour, breaks, textScale, showMenuBarItem, focusDuringStrict
         case watchBackgroundWindows, inspectEmbeddedPages, relaunchGuard, emergencyUses, runUpMinutes
+        case enforceBreaks, showFloatingTimerPill, preBlockRemindersEnabled
+        case continuousBreakEnabled, continuousWorkMinutes, continuousBreakDurationMinutes, continuousBreakMaxSkipsPerDay, breakMessages
     }
 
     public init(from decoder: Decoder) throws {
@@ -1112,6 +1214,15 @@ public struct Settings: Codable, Equatable, Sendable {
         relaunchGuard = try c.decodeIfPresent(Bool.self, forKey: .relaunchGuard) ?? false
         emergencyUses = try c.decodeIfPresent([String].self, forKey: .emergencyUses) ?? []
         runUpMinutes = RunUp.clampedMinutes(try c.decodeIfPresent(Int.self, forKey: .runUpMinutes) ?? RunUp.defaultMinutes)
+        enforceBreaks = try c.decodeIfPresent(Bool.self, forKey: .enforceBreaks) ?? true
+        showFloatingTimerPill = try c.decodeIfPresent(Bool.self, forKey: .showFloatingTimerPill) ?? true
+        preBlockRemindersEnabled = try c.decodeIfPresent(Bool.self, forKey: .preBlockRemindersEnabled) ?? true
+        continuousBreakEnabled = try c.decodeIfPresent(Bool.self, forKey: .continuousBreakEnabled) ?? false
+        continuousWorkMinutes = max(15, min(180, try c.decodeIfPresent(Int.self, forKey: .continuousWorkMinutes) ?? 50))
+        continuousBreakDurationMinutes = max(1, min(30, try c.decodeIfPresent(Int.self, forKey: .continuousBreakDurationMinutes) ?? 5))
+        continuousBreakMaxSkipsPerDay = max(0, min(10, try c.decodeIfPresent(Int.self, forKey: .continuousBreakMaxSkipsPerDay) ?? 2))
+        let decodedMessages = try c.decodeIfPresent([String].self, forKey: .breakMessages) ?? Self.defaultBreakMessages
+        breakMessages = decodedMessages.isEmpty ? Self.defaultBreakMessages : decodedMessages
     }
 }
 
@@ -1187,6 +1298,18 @@ public struct Workspace: Codable, Equatable, Sendable {
     public var history: [SessionRecord]
     public var settings: Settings
     public var pendingCalendarOps: [PendingCalendarOp]
+    /// General blocking rules & daily limit timers that work independently of agenda tasks.
+    public var generalRules: [GeneralBlockRule]
+    /// Daily usage seconds per rule: `[dayKey: [ruleID.uuidString: seconds]]`.
+    public var dailyRuleUsage: [String: [String: TimeInterval]]
+    /// Daily launch counts per rule: `[dayKey: [ruleID.uuidString: launches]]`.
+    public var dailyRuleLaunches: [String: [String: Int]]
+    /// Daily micro-pauses used per rule: `[dayKey: [ruleID.uuidString: pauses]]`.
+    public var dailyMicroPausesUsed: [String: [String: Int]]
+    /// Daily skips used for continuous screen breaks: `[dayKey: skips]`.
+    public var dailyContinuousBreakSkips: [String: Int]
+    /// Auto-expiring temporary allow entries (`setAllowExpiryMinutes` in FocusMe).
+    public var temporaryAllows: [TemporaryAllowEntry]
     /// Elements that could not be read when this workspace was loaded (not saved). Above zero, the app keeps a copy
     /// of the original file before writing anything.
     public var decodingSkipped = 0
@@ -1199,10 +1322,18 @@ public struct Workspace: Codable, Equatable, Sendable {
         self.history = []
         self.settings = Settings()
         self.pendingCalendarOps = []
+        self.generalRules = GeneralBlockRule.defaults
+        self.dailyRuleUsage = [:]
+        self.dailyRuleLaunches = [:]
+        self.dailyMicroPausesUsed = [:]
+        self.dailyContinuousBreakSkips = [:]
+        self.temporaryAllows = []
     }
 
     enum CodingKeys: String, CodingKey {
         case schema, tasks, profiles, session, history, settings, pendingCalendarOps
+        case generalRules, dailyRuleUsage, dailyRuleLaunches, dailyMicroPausesUsed
+        case dailyContinuousBreakSkips, temporaryAllows
     }
 
     public init(from decoder: Decoder) throws {
@@ -1212,6 +1343,7 @@ public struct Workspace: Codable, Equatable, Sendable {
         let lossyProfiles = try c.decodeIfPresent(LossyArray<FocusProfile>.self, forKey: .profiles)
         let lossyHistory = try c.decodeIfPresent(LossyArray<SessionRecord>.self, forKey: .history)
         let lossyOps = try c.decodeIfPresent(LossyArray<PendingCalendarOp>.self, forKey: .pendingCalendarOps)
+        let lossyRules = try c.decodeIfPresent(LossyArray<GeneralBlockRule>.self, forKey: .generalRules)
         tasks = lossyTasks?.elements ?? []
         profiles = lossyProfiles?.elements ?? FocusProfile.defaults
         // A damaged running session is dropped rather than blocking everything; it is counted below.
@@ -1220,9 +1352,102 @@ public struct Workspace: Codable, Equatable, Sendable {
         history = lossyHistory?.elements ?? []
         settings = (try? c.decodeIfPresent(Settings.self, forKey: .settings)) ?? Settings()
         pendingCalendarOps = lossyOps?.elements ?? []
+        generalRules = lossyRules?.elements ?? GeneralBlockRule.defaults
+        dailyRuleUsage = (try? c.decodeIfPresent([String: [String: TimeInterval]].self, forKey: .dailyRuleUsage)) ?? [:]
+        dailyRuleLaunches = (try? c.decodeIfPresent([String: [String: Int]].self, forKey: .dailyRuleLaunches)) ?? [:]
+        dailyMicroPausesUsed = (try? c.decodeIfPresent([String: [String: Int]].self, forKey: .dailyMicroPausesUsed)) ?? [:]
+        dailyContinuousBreakSkips = (try? c.decodeIfPresent([String: Int].self, forKey: .dailyContinuousBreakSkips)) ?? [:]
+        temporaryAllows = (try? c.decodeIfPresent([TemporaryAllowEntry].self, forKey: .temporaryAllows)) ?? []
         let brokenSession = c.contains(.session) && readableSession == nil && (try? c.decodeNil(forKey: .session)) != true ? 1 : 0
         decodingSkipped = (lossyTasks?.skipped ?? 0) + (lossyProfiles?.skipped ?? 0) + (lossyHistory?.skipped ?? 0)
-            + (lossyOps?.skipped ?? 0) + brokenSession
+            + (lossyOps?.skipped ?? 0) + (lossyRules?.skipped ?? 0) + brokenSession
+    }
+
+    public func usedSecondsToday(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
+        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        return dailyRuleUsage[key]?[ruleID.uuidString] ?? 0
+    }
+
+    @discardableResult
+    public mutating func addUsedSeconds(_ delta: TimeInterval, for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
+        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        var dayMap = dailyRuleUsage[key] ?? [:]
+        let updated = max(0, (dayMap[ruleID.uuidString] ?? 0) + max(0, delta))
+        dayMap[ruleID.uuidString] = updated
+        dailyRuleUsage[key] = dayMap
+        return updated
+    }
+
+    public func launchesToday(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        return dailyRuleLaunches[key]?[ruleID.uuidString] ?? 0
+    }
+
+    @discardableResult
+    public mutating func incrementLaunches(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        var dayMap = dailyRuleLaunches[key] ?? [:]
+        let updated = (dayMap[ruleID.uuidString] ?? 0) + 1
+        dayMap[ruleID.uuidString] = updated
+        dailyRuleLaunches[key] = dayMap
+        return updated
+    }
+
+    public func microPausesUsedToday(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        return dailyMicroPausesUsed[key]?[ruleID.uuidString] ?? 0
+    }
+
+    @discardableResult
+    public mutating func incrementMicroPauses(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        var dayMap = dailyMicroPausesUsed[key] ?? [:]
+        let updated = (dayMap[ruleID.uuidString] ?? 0) + 1
+        dayMap[ruleID.uuidString] = updated
+        dailyMicroPausesUsed[key] = dayMap
+        return updated
+    }
+
+    public func continuousBreakSkipsToday(at now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        return dailyContinuousBreakSkips[key] ?? 0
+    }
+
+    @discardableResult
+    public mutating func incrementContinuousBreakSkips(at now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        let updated = (dailyContinuousBreakSkips[key] ?? 0) + 1
+        dailyContinuousBreakSkips[key] = updated
+        return updated
+    }
+
+    public func isTemporarilyAllowed(
+        host: String,
+        path: String = "",
+        at now: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) -> Bool {
+        temporaryAllows.contains { entry in
+            !entry.isAppBundleID && entry.isActive(wall: now, continuous: continuous)
+                && FocusRules.entryMatches(host: host, path: path, entry: entry.target)
+        }
+    }
+
+    public func isTemporarilyAllowed(
+        bundleID: String,
+        at now: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) -> Bool {
+        temporaryAllows.contains { entry in
+            entry.isAppBundleID && entry.isActive(wall: now, continuous: continuous) && entry.target == bundleID
+        }
+    }
+
+    public mutating func pruneExpiredTemporaryAllows(
+        at now: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) {
+        temporaryAllows.removeAll { !$0.isActive(wall: now, continuous: continuous) }
     }
 
     public mutating func prune(at now: Date) {
@@ -1233,6 +1458,12 @@ public struct Workspace: Codable, Equatable, Sendable {
             history[index].session.activities = []
             history[index].session.baseline = [:]
         }
+        let minDayKey = FocusRules.dayKey(for: cutoff)
+        dailyRuleUsage = dailyRuleUsage.filter { $0.key >= minDayKey }
+        dailyRuleLaunches = dailyRuleLaunches.filter { $0.key >= minDayKey }
+        dailyMicroPausesUsed = dailyMicroPausesUsed.filter { $0.key >= minDayKey }
+        dailyContinuousBreakSkips = dailyContinuousBreakSkips.filter { $0.key >= minDayKey }
+        pruneExpiredTemporaryAllows(at: now)
     }
 
     public mutating func enqueueCalendarOp(_ op: PendingCalendarOp) {
@@ -1316,7 +1547,9 @@ public enum FocusRules {
             : String(format: "%@%02d:%02d", prefix, value / 60, value % 60)
     }
 
-    /// Normalizes a single domain token (e.g. "https://www.claude.ai/chat?x=1" -> "claude.ai").
+    /// Normalizes a domain or domain+subpath token:
+    /// - Full URLs with scheme (`"https://www.claude.ai/chat?x=1"`) normalize to their domain (`"claude.ai"`).
+    /// - Bare domain+subpath entries (`"youtube.com/shorts"`, `"www.instagram.com/reels/"`) preserve the subpath (`"youtube.com/shorts"`).
     public static func normalizeDomainEntry(_ raw: String) -> String? {
         var token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: ",;"))
@@ -1325,9 +1558,23 @@ public enum FocusRules {
             token = String(token.dropFirst(2))
         }
         let hostCandidate: String
+        var pathCandidate = ""
         if token.contains("://"), let url = URL(string: token), let host = url.host {
             hostCandidate = host
-        } else if token.contains("/") || token.contains(":") || token.contains("?"),
+        } else if token.contains("/"), !token.contains("://") {
+            let parts = token.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            hostCandidate = String(parts[0])
+            if parts.count > 1 {
+                var sub = String(parts[1])
+                if let q = sub.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+                    sub = String(sub[..<q])
+                }
+                sub = sub.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+                if !sub.isEmpty {
+                    pathCandidate = "/" + sub
+                }
+            }
+        } else if (token.contains(":") || token.contains("?")),
                   let url = URL(string: "https://" + token), let host = url.host {
             hostCandidate = host
         } else {
@@ -1343,6 +1590,13 @@ public enum FocusRules {
               !cleaned.hasPrefix("-"),
               !cleaned.hasSuffix("-") else {
             return nil
+        }
+        if !pathCandidate.isEmpty {
+            let validPath = pathCandidate.allSatisfy {
+                $0.isLetter || $0.isNumber || $0 == "/" || $0 == "-" || $0 == "_" || $0 == "." || $0 == "~"
+            }
+            guard validPath else { return nil }
+            return cleaned + pathCandidate
         }
         return cleaned
     }
@@ -1365,12 +1619,87 @@ public enum FocusRules {
         parseDomains(list).valid.joined(separator: ", ")
     }
 
-    public static func domainAllowed(_ host: String, list: String) -> Bool {
-        let parsed = parseDomains(list).valid
-        guard !parsed.isEmpty else { return true }
+    /// True when `(host, path)` matches a normalized domain or domain+subpath entry (`"youtube.com"` or `"youtube.com/shorts"`).
+    public static func entryMatches(host: String, path: String = "", entry: String) -> Bool {
         let normalizedHost = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        return parsed.contains { allowed in
-            normalizedHost == allowed || normalizedHost.hasSuffix("." + allowed)
+        guard !normalizedHost.isEmpty else { return false }
+        let parts = entry.lowercased().split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        let entryHost = String(parts[0])
+        let hostMatch = normalizedHost == entryHost || normalizedHost.hasSuffix("." + entryHost)
+        guard hostMatch else { return false }
+        if parts.count > 1, !parts[1].isEmpty {
+            let entryPath = "/" + String(parts[1]).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            var normPath = path.lowercased()
+            if let q = normPath.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+                normPath = String(normPath[..<q])
+            }
+            if !normPath.hasPrefix("/") { normPath = "/" + normPath }
+            while normPath.count > 1 && normPath.hasSuffix("/") { normPath.removeLast() }
+            return normPath == entryPath || normPath.hasPrefix(entryPath + "/")
+        }
+        return true
+    }
+
+    public static func domainAllowed(_ host: String, list: String) -> Bool {
+        webAllowed(host: host, path: "", list: list, mode: .allowListed)
+    }
+
+    /// Evaluates whether a tab at `(host, path)` is allowed under the given `WebListMode`.
+    public static func webAllowed(host: String, path: String = "", list: String, mode: WebListMode = .allowListed) -> Bool {
+        switch mode {
+        case .blockAll:
+            return false
+        case .allowListed:
+            let parsed = parseDomains(list).valid
+            guard !parsed.isEmpty else { return true }
+            return parsed.contains { entryMatches(host: host, path: path, entry: $0) }
+        case .blockListed:
+            let parsed = parseDomains(list).valid
+            guard !parsed.isEmpty else { return true }
+            return !parsed.contains { entryMatches(host: host, path: path, entry: $0) }
+        }
+    }
+
+    /// Evaluates whether `bundleID` is allowed under the given `AppListMode`.
+    public static func appAllowed(bundleID: String, apps: [AllowedApp], mode: AppListMode) -> Bool {
+        if systemExemptBundleIDs.contains(bundleID) { return true }
+        let inList = apps.contains { $0.id == bundleID }
+        switch mode {
+        case .allowListed: return inList
+        case .blockListed: return !inList
+        }
+    }
+
+    /// Splits a comma/semicolon/newline-separated string of window title keywords.
+    public static func parseTitleKeywords(_ raw: String) -> [String] {
+        let tokens = raw
+            .split(whereSeparator: { $0 == "," || $0 == ";" || $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var seen: Set<String> = []
+        var result: [String] = []
+        for token in tokens {
+            let key = token.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "es_ES"))
+            if seen.insert(key).inserted {
+                result.append(token)
+            }
+        }
+        return result
+    }
+
+    public static func normalizeTitleKeywords(_ raw: String) -> String {
+        parseTitleKeywords(raw).joined(separator: ", ")
+    }
+
+    /// Returns the first keyword from `keywords` that appears in `title` (case- and accent-insensitive), or `nil`.
+    public static func matchesTitleKeyword(_ title: String?, keywords: String) -> String? {
+        guard let title, !title.isEmpty else { return nil }
+        let list = parseTitleKeywords(keywords)
+        guard !list.isEmpty else { return nil }
+        let foldedTitle = title.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "es_ES"))
+        return list.first { kw in
+            let foldedKw = kw.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "es_ES"))
+            return !foldedKw.isEmpty && foldedTitle.contains(foldedKw)
         }
     }
 
