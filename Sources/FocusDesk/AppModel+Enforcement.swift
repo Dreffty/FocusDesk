@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import UniformTypeIdentifiers
 import FocusCore
 
 // What happens when you try to leave a session that you asked to be protected, and what happens to the apps and
@@ -300,22 +301,41 @@ extension AppModel {
         let wasEmergency = challenge.emergency
         let shouldQuit = challenge.quitAfter
         pendingStop = nil
+        let nowInstant = Date()
+        let dayKey = FocusRules.dayKey(for: nowInstant, rolloverHour: workspace.settings.dayRolloverHour)
         if let ruleChange = challenge.generalRule {
-            if wasEmergency { workspace.settings.emergencyUses.append(FocusRules.dayKey(for: Date())) }
+            if wasEmergency { workspace.settings.emergencyUses.append(dayKey) }
+            workspace.recordAudit(
+                category: wasEmergency ? "Emergencia (regla)" : "Desbloqueo (regla)",
+                summary: "«\(ruleChange.rule.name)» · \(challenge.generalRuleAction)",
+                at: nowInstant
+            )
             applyPaidGeneralRuleChange(ruleChange)
             if wasEmergency { notice = "Salida de emergencia usada para «\(ruleChange.rule.name)». Queda anotada." }
             if shouldQuit { NSApp.terminate(nil) }
             return
         }
         if let change = challenge.runUp {
-            if wasEmergency { workspace.settings.emergencyUses.append(FocusRules.dayKey(for: Date())) }
+            if wasEmergency { workspace.settings.emergencyUses.append(dayKey) }
+            workspace.recordAudit(
+                category: wasEmergency ? "Emergencia (pre-tarea)" : "Desbloqueo (pre-tarea)",
+                summary: "«\(change.task.title)» · \(challenge.runUpAction)",
+                at: nowInstant
+            )
             applyPaidRunUpChange(change)
             if wasEmergency { notice = "Salida de emergencia usada para «\(change.task.title)». Queda anotada." }
             return
         }
         if wasEmergency {
-            workspace.settings.emergencyUses.append(FocusRules.dayKey(for: Date()))
+            workspace.settings.emergencyUses.append(dayKey)
             notice = "Salida de emergencia usada. Queda anotada en el historial de la sesión."
+        }
+        if let s = session {
+            workspace.recordAudit(
+                category: wasEmergency ? "Emergencia (sesión)" : "Desbloqueo (sesión)",
+                summary: "«\(s.task.title)» · \(reason.verb)",
+                at: nowInstant
+            )
         }
         authorizedStop = reason
         switch reason {
@@ -735,7 +755,8 @@ extension AppModel {
             domainEpisodeHost = nil
             return
         }
-        let outside = !FocusRules.webAllowed(host: host, path: path, list: s.task.domains, mode: s.task.webListMode)
+        let searchMediaHit = s.task.blockSearchMedia ? SearchMediaRules.matches(host: host, pathAndQuery: path) : nil
+        let outside = searchMediaHit != nil || !FocusRules.webAllowed(host: host, path: path, list: s.task.domains, mode: s.task.webListMode)
         let visitKey = path.isEmpty || path == "/" ? host : "\(host)\(path)"
         let changed = workspace.session?.activities.last?.domain != host
         let newVisit = outside && domainEpisodeHost != visitKey
@@ -749,7 +770,8 @@ extension AppModel {
         domainEpisodeHost = outside ? visitKey : nil
         guard outside else { return }
 
-        switch s.task.webBlockAction {
+        let effectiveWebAction: WebBlockAction = (searchMediaHit != nil && s.task.webBlockAction == .warn) ? .redirect : s.task.webBlockAction
+        switch effectiveWebAction {
         case .warn:
             if newVisit {
                 notice = "\(visitKey) no está permitido en esta tarea. El control de webs es informativo."
@@ -764,7 +786,7 @@ extension AppModel {
             lastWebBlockAt = Date()
             let punisherJustFired = workspace.session?.registerBlock() ?? false
             let hardened = punisherJustFired || (workspace.session?.punisher.isActive() ?? false)
-            let action: WebBlockAction = hardened && s.task.webBlockAction == .redirect ? .closeTab : s.task.webBlockAction
+            let action: WebBlockAction = hardened && effectiveWebAction == .redirect ? .closeTab : effectiveWebAction
             if action == .closeTab {
                 webInspector.closeActiveTab(bundleID: bundleID) { [weak self] ok in
                     guard let self else { return }
@@ -960,11 +982,18 @@ extension AppModel {
     // MARK: - General block rules, daily usage timers, work goals, launch limits & active breaks
 
     func usedSecondsToday(for rule: GeneralBlockRule, at instant: Date? = nil) -> TimeInterval {
-        workspace.usedSecondsToday(for: rule.id, at: instant ?? now)
+        workspace.usedSecondsToday(
+            for: rule.id,
+            periodUnit: rule.limitPeriodUnit,
+            at: instant ?? now
+        )
     }
 
     func launchesToday(for rule: GeneralBlockRule, at instant: Date? = nil) -> Int {
-        workspace.launchesToday(for: rule.id, at: instant ?? now)
+        workspace.launchesToday(
+            for: rule.id,
+            at: instant ?? now
+        )
     }
 
     func remainingRuleLockSeconds(_ rule: GeneralBlockRule, at instant: Date? = nil) -> TimeInterval {
@@ -980,6 +1009,16 @@ extension AppModel {
     func isRuleEnforcing(_ rule: GeneralBlockRule, at instant: Date? = nil) -> Bool {
         let ref = instant ?? now
         return rule.isEnforcing(
+            at: ref,
+            usedTodaySeconds: usedSecondsToday(for: rule, at: ref),
+            workedTodaySeconds: workedSeconds(on: ref),
+            launchesToday: launchesToday(for: rule, at: ref)
+        )
+    }
+
+    func isRuleProtected(_ rule: GeneralBlockRule, at instant: Date? = nil) -> Bool {
+        let ref = instant ?? now
+        return rule.isProtectedNow(
             at: ref,
             usedTodaySeconds: usedSecondsToday(for: rule, at: ref),
             workedTodaySeconds: workedSeconds(on: ref),
@@ -1032,6 +1071,11 @@ extension AppModel {
         workspace.generalRules[idx].startMicroPause(wall: ref)
         let used = workspace.incrementMicroPauses(for: rule.id, at: ref)
         let left = max(0, rule.dailyMicroPausesAllowed - used)
+        workspace.recordAudit(
+            category: "Micro-pausa",
+            summary: "«\(rule.name)» · \(rule.microPauseMinutes) min (\(used)/\(rule.dailyMicroPausesAllowed))",
+            at: ref
+        )
         _ = persist()
         updateFloatingPill(at: ref)
         notice = "Micro-pausa de \(rule.microPauseMinutes) min activada en «\(rule.name)». Te \(left == 1 ? "queda 1 pausa" : "quedan \(left) pausas") hoy."
@@ -1060,6 +1104,10 @@ extension AppModel {
         guard !refuseWhileProtected("añadir una excepción temporal sin desbloquear la sesión o regla protegida") else { return }
         let raw = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return }
+        if !isAppBundleID, let why = FocusRules.isAllowEntryTooBroad(raw) {
+            error = why
+            return
+        }
         let normalizedTarget: String
         if isAppBundleID {
             normalizedTarget = raw
@@ -1070,6 +1118,25 @@ extension AppModel {
                 return
             }
             normalizedTarget = first
+            if let s = session, s.task.webListMode == .blockListed, s.task.similarityProtection != .off,
+               let warn = FocusRules.checkSimilarityRestriction(
+                   allowCandidate: normalizedTarget,
+                   blockedDomains: s.task.domains,
+                   level: s.task.similarityProtection
+               ) {
+                error = warn
+                return
+            }
+            for rule in workspace.generalRules where rule.enabled && rule.webListMode == .blockListed && rule.similarityProtection != .off {
+                if let warn = FocusRules.checkSimilarityRestriction(
+                    allowCandidate: normalizedTarget,
+                    blockedDomains: rule.domains,
+                    level: rule.similarityProtection
+                ) {
+                    error = warn
+                    return
+                }
+            }
         }
         let nowInstant = Date()
         workspace.pruneExpiredTemporaryAllows(at: nowInstant)
@@ -1083,6 +1150,11 @@ extension AppModel {
             wall: nowInstant
         )
         workspace.temporaryAllows.insert(entry, at: 0)
+        workspace.recordAudit(
+            category: "Excepción temporal",
+            summary: "«\(entry.label.isEmpty ? normalizedTarget : entry.label)» · \(clamped) min",
+            at: nowInstant
+        )
         error = nil
         _ = persist()
         notice = "Excepción temporal activa durante \(clamped) min para «\(entry.label.isEmpty ? normalizedTarget : entry.label)». Al agotarse volverá a bloquearse solo."
@@ -1223,6 +1295,21 @@ extension AppModel {
                     return
                 }
             }
+            if rule.kind == .pomodoro, let pomoDeadline = rule.activePomodoroDeadline {
+                let rem = pomoDeadline.remainingAfterPossibleReboot(wall: instant)
+                if rem > 0 {
+                    let isBreak = rule.pomodoroPhase != .work
+                    let urgency: FloatingTimerPillController.Urgency = isBreak
+                        ? .pauseOrBreak
+                        : (rem <= 60 ? .critical : (rem <= 180 ? .warning : .normal))
+                    floatingPill.update(
+                        title: "\(rule.pomodoroPhase.label) (\(rule.pomodoroCurrentCycle)/\(rule.pomodoroTotalCycles)) · \(rule.name)",
+                        remaining: rem,
+                        urgency: urgency
+                    )
+                    return
+                }
+            }
             if rule.kind == .launchLimit, let visitDeadline = rule.activeLaunchDeadline {
                 let rem = visitDeadline.remainingAfterPossibleReboot(wall: instant)
                 if rem > 0 {
@@ -1254,7 +1341,7 @@ extension AppModel {
         floatingPill.hide()
     }
 
-    /// Gates any change to a `GeneralBlockRule` that is currently enforcing and protected.
+    /// Gates any change to a `GeneralBlockRule` that is currently enforcing (or in a protected Pomodoro break) and protected.
     func passesGeneralRuleGate(_ change: GeneralRuleChange, quitAfter: Bool = false) -> Bool {
         let targetID = change.rule.id
         if authorizedGeneralRule == targetID {
@@ -1263,14 +1350,14 @@ extension AppModel {
         }
         guard let current = workspace.generalRules.first(where: { $0.id == targetID }) else { return true }
         let instant = Date()
-        guard isRuleEnforcing(current, at: instant), current.protection != .none else { return true }
+        guard isRuleProtected(current, at: instant), current.protection != .none else { return true }
 
         let actionDescription: String?
         switch change {
         case .delete:
             actionDescription = GeneralBlockRule.loosening(current: current, proposed: nil, now: instant)
         case .resetQuota:
-            actionDescription = "reiniciar el límite diario de «\(current.name)»"
+            actionDescription = "reiniciar el límite de «\(current.name)»"
         case .save(let proposed):
             actionDescription = GeneralBlockRule.loosening(current: current, proposed: proposed, now: instant)
         }
@@ -1414,6 +1501,11 @@ extension AppModel {
             if rem <= 0 {
                 copy.startCountdown(minutes: copy.countdownMinutes)
             }
+        } else if enabled && copy.kind == .pomodoro {
+            let rem = copy.activePomodoroDeadline?.remainingAfterPossibleReboot() ?? 0
+            if rem <= 0 && copy.pomodoroPhase != .waitingForUser {
+                copy.startPomodoro()
+            }
         }
         guard passesGeneralRuleGate(.save(copy)) else { return }
         copy.stopRequest = nil
@@ -1425,6 +1517,87 @@ extension AppModel {
             notice = enabled
                 ? "Regla «\(copy.name)» activada."
                 : "Regla «\(copy.name)» desactivada."
+        }
+    }
+
+    func startPomodoroRule(_ rule: GeneralBlockRule) {
+        guard writable else { return }
+        var copy = rule
+        copy.startPomodoro()
+        guard passesGeneralRuleGate(.save(copy)) else { return }
+        if let idx = workspace.generalRules.firstIndex(where: { $0.id == copy.id }) {
+            workspace.generalRules[idx] = copy
+        } else {
+            workspace.generalRules.append(copy)
+        }
+        _ = persist()
+        refreshWitness()
+        observe()
+        notice = "Pomodoro «\(copy.name)» iniciado: ciclo 1/\(copy.pomodoroTotalCycles) (\(copy.pomodoroWorkMinutes) min de enfoque)."
+    }
+
+    func skipPomodoroPhase(_ rule: GeneralBlockRule) {
+        guard writable else { return }
+        let nowInstant = Date()
+        var copy = rule
+        if copy.pomodoroPhase == .work && copy.pomodoroPhase != .waitingForUser {
+            copy.skipPomodoroToBreak(wall: nowInstant)
+        } else {
+            copy.advancePomodoroPhase(wall: nowInstant)
+        }
+        guard passesGeneralRuleGate(.save(copy)) else { return }
+        if let idx = workspace.generalRules.firstIndex(where: { $0.id == copy.id }) {
+            workspace.generalRules[idx] = copy
+            _ = persist()
+            refreshWitness()
+            observe()
+            notice = "Fase avanzada en «\(copy.name)»: ahora en \(copy.pomodoroPhase.label.lowercased()) (ciclo \(copy.pomodoroCurrentCycle)/\(copy.pomodoroTotalCycles))."
+        }
+    }
+
+    func confirmNextPomodoroPhase(_ rule: GeneralBlockRule) {
+        guard writable, let idx = workspace.generalRules.firstIndex(where: { $0.id == rule.id }) else { return }
+        let nowInstant = Date()
+        workspace.generalRules[idx].advancePomodoroPhase(wall: nowInstant)
+        let updated = workspace.generalRules[idx]
+        _ = persist()
+        refreshWitness()
+        observe()
+        notice = "Pomodoro «\(updated.name)»: empieza \(updated.pomodoroPhase.label.lowercased()) (ciclo \(updated.pomodoroCurrentCycle)/\(updated.pomodoroTotalCycles))."
+    }
+
+    func tickPomodoroRules(at instant: Date) {
+        var changed = false
+        for idx in workspace.generalRules.indices {
+            let rule = workspace.generalRules[idx]
+            guard rule.enabled, rule.kind == .pomodoro, rule.pomodoroPhase != .waitingForUser,
+                  let deadline = rule.activePomodoroDeadline else { continue }
+            if deadline.remainingAfterPossibleReboot(wall: instant) <= 0 {
+                if rule.pomodoroWaitForUser {
+                    workspace.generalRules[idx].pomodoroPhase = .waitingForUser
+                    workspace.generalRules[idx].activePomodoroDeadline = nil
+                    changed = true
+                    let msg = "Fase completada en «\(rule.name)» (\(rule.pomodoroPhase.label)). Pulsa Continuar en FocusDesk para empezar la siguiente fase."
+                    notice = msg
+                    if !preview {
+                        reminders.notify("Pomodoro en espera · \(rule.name)", body: msg, identifier: "pomo-wait-" + rule.id.uuidString)
+                    }
+                } else {
+                    workspace.generalRules[idx].advancePomodoroPhase(wall: instant)
+                    let updated = workspace.generalRules[idx]
+                    changed = true
+                    let msg = "Pomodoro «\(updated.name)»: empieza \(updated.pomodoroPhase.label.lowercased()) (ciclo \(updated.pomodoroCurrentCycle)/\(updated.pomodoroTotalCycles))."
+                    notice = msg
+                    if !preview {
+                        reminders.notify("Cambio de fase · \(updated.name)", body: msg, identifier: "pomo-phase-" + updated.id.uuidString)
+                    }
+                }
+            }
+        }
+        if changed {
+            _ = persist()
+            refreshWitness()
+            observe()
         }
     }
 
@@ -1485,19 +1658,29 @@ extension AppModel {
     func resetDailyQuota(for rule: GeneralBlockRule) {
         guard writable else { return }
         guard passesGeneralRuleGate(.resetQuota(rule)) else { return }
-        let day = FocusRules.dayKey(for: Date())
+        let nowInstant = Date()
+        let rollover = workspace.settings.dayRolloverHour
+        let day = FocusRules.dayKey(for: nowInstant, rolloverHour: rollover)
+        let pKey = FocusRules.periodKey(for: nowInstant, unit: rule.limitPeriodUnit, rolloverHour: rollover)
         workspace.dailyRuleUsage[day]?[rule.id.uuidString] = 0
+        workspace.dailyRuleUsage[pKey]?[rule.id.uuidString] = 0
         workspace.dailyRuleLaunches[day]?[rule.id.uuidString] = 0
         if let idx = workspace.generalRules.firstIndex(where: { $0.id == rule.id }) {
             workspace.generalRules[idx].activeLaunchDeadline = nil
             workspace.generalRules[idx].launchCooldownDeadline = nil
         }
+        quotaExhaustedNotifiedToday.remove("\(pKey)-\(rule.id.uuidString)")
         quotaExhaustedNotifiedToday.remove("\(day)-\(rule.id.uuidString)")
-        quotaWarningsSentToday.remove("\(day)-\(rule.id.uuidString)-5m")
-        quotaWarningsSentToday.remove("\(day)-\(rule.id.uuidString)-1m")
+        quotaWarningsSentToday.remove("\(pKey)-\(rule.id.uuidString)-5m")
+        quotaWarningsSentToday.remove("\(pKey)-\(rule.id.uuidString)-1m")
+        workspace.recordAudit(
+            category: "Reinicio de presupuesto",
+            summary: "«\(rule.name)» · \(rule.limitPeriodUnit.label)",
+            at: nowInstant
+        )
         _ = persist()
         refreshWitness()
-        notice = "Presupuesto de hoy reiniciado para «\(rule.name)»."
+        notice = "Presupuesto reiniciado para «\(rule.name)»."
     }
 
     private func checkPreBlockWarning(for rule: GeneralBlockRule, remainingSeconds: TimeInterval, day: String) {
@@ -1525,18 +1708,24 @@ extension AppModel {
 
     /// Evaluates whether the current foreground app/browser/window matches `rule` (used for `.dailyLimit` usage tracking).
     func matchesRuleUsage(rule: GeneralBlockRule, bundleID: String, app: NSRunningApplication, title: String?, at: Date) -> Bool {
+        if rule.blockGameLibraries, GameLibraryRules.matchesGameApp(bundleID: bundleID, appPath: app.bundleURL?.path) != nil {
+            return true
+        }
         if rule.blockApps && !rule.apps.isEmpty {
             if !FocusRules.appAllowed(bundleID: bundleID, apps: rule.apps, mode: rule.appListMode) {
                 return true
             }
         }
-        if FocusRules.matchesTitleKeyword(title, keywords: rule.blockedTitleKeywords) != nil {
+        if FocusRules.matchesTitleKeyword(title, keywords: rule.blockedTitleKeywords, wholeWord: rule.wholeWordKeywords) != nil {
             return true
         }
-        if WebRules.isBrowser(bundleID), rule.webBlockAction != .warn,
+        if WebRules.isBrowser(bundleID), (rule.webBlockAction != .warn || rule.blockSearchMedia),
            let page = lastObservedBrowserPage[bundleID],
            at.timeIntervalSince(page.at) <= 25 {
-            if !FocusRules.webAllowed(host: page.host, path: page.path, list: rule.domains, mode: rule.webListMode) {
+            if rule.blockSearchMedia, SearchMediaRules.matches(host: page.host, pathAndQuery: page.path) != nil {
+                return true
+            }
+            if rule.webBlockAction != .warn, !FocusRules.webAllowed(host: page.host, path: page.path, list: rule.domains, mode: rule.webListMode) {
                 return true
             }
         }
@@ -1565,7 +1754,8 @@ extension AppModel {
         }
         lastGeneralQuotaAt = at
 
-        let day = FocusRules.dayKey(for: at)
+        let rollover = workspace.settings.dayRolloverHour
+        let day = FocusRules.dayKey(for: at, rolloverHour: rollover)
         let workedToday = workedSeconds(on: at)
 
         // 1. Update usage timers for `.dailyLimit`, `.workGoal` (reward mode), and `.launchLimit` rules.
@@ -1595,18 +1785,24 @@ extension AppModel {
             case .dailyLimit:
                 guard delta > 0 else { break }
                 let wasUnder = isRuleTrackingQuota(updatedRule, at: at)
-                let newUsed = workspace.addUsedSeconds(delta, for: updatedRule.id, at: at)
+                let newUsed = workspace.addUsedSeconds(
+                    delta,
+                    for: updatedRule.id,
+                    periodUnit: updatedRule.limitPeriodUnit,
+                    at: at
+                )
+                let pKey = FocusRules.periodKey(for: at, unit: updatedRule.limitPeriodUnit, rolloverHour: rollover)
                 let rem = updatedRule.remainingDailyBudgetSeconds(usedTodaySeconds: newUsed)
-                checkPreBlockWarning(for: updatedRule, remainingSeconds: rem, day: day)
-                let notifyKey = "\(day)-\(updatedRule.id.uuidString)"
+                checkPreBlockWarning(for: updatedRule, remainingSeconds: rem, day: pKey)
+                let notifyKey = "\(pKey)-\(updatedRule.id.uuidString)"
                 if wasUnder && newUsed >= updatedRule.dailyBudgetSeconds && !quotaExhaustedNotifiedToday.contains(notifyKey) {
                     quotaExhaustedNotifiedToday.insert(notifyKey)
                     _ = persist()
                     refreshWitness()
-                    let msg = "Has agotado los \(updatedRule.dailyLimitMinutes) min de hoy en «\(updatedRule.name)». Queda bloqueado hasta mañana."
+                    let msg = "Has agotado los \(updatedRule.dailyLimitMinutes) min (\(updatedRule.limitPeriodUnit.label.lowercased())) en «\(updatedRule.name)». Queda bloqueado."
                     notice = msg
                     if !preview {
-                        reminders.notify("Presupuesto diario agotado · \(updatedRule.name)", body: msg, identifier: "quota-" + updatedRule.id.uuidString)
+                        reminders.notify("Presupuesto agotado · \(updatedRule.name)", body: msg, identifier: "quota-" + updatedRule.id.uuidString)
                     }
                 }
             case .workGoal:
@@ -1647,7 +1843,7 @@ extension AppModel {
 
         // 2. If a browser is in front and any enabled general rule cares about websites (either enforcing or tracking quota),
         // read its active tab if the session did not just read it.
-        let rulesNeedWeb = workspace.generalRules.contains { $0.enabled && $0.webBlockAction != .warn }
+        let rulesNeedWeb = workspace.generalRules.contains { $0.enabled && ($0.webBlockAction != .warn || $0.blockSearchMedia) }
         if WebRules.isBrowser(id), rulesNeedWeb, !sessionAlreadyReadBrowser,
            appChanged || Date().timeIntervalSince(lastWebReadAt[id] ?? .distantPast) >= 4.5 {
             lastWebReadAt[id] = at
@@ -1678,11 +1874,20 @@ extension AppModel {
             }
             guard !exemptions.contains(id) else { continue }
 
-            if let kw = FocusRules.matchesTitleKeyword(fg.title, keywords: rule.blockedTitleKeywords) {
+            if let kw = FocusRules.matchesTitleKeyword(fg.title, keywords: rule.blockedTitleKeywords, wholeWord: rule.wholeWordKeywords) {
                 _ = mutateRuleBlock(ruleID: rule.id)
                 let verb = applyBlockAction(to: fg.app, bundleID: id, action: rule.activeBlockAction())
                 activateFallbackApp(excluding: id)
                 notice = "La ventana de \(fg.app.localizedName ?? id) contiene «\(kw)» (bloqueada por «\(rule.name)»): \(verb)."
+                scheduleStrictRecheck(after: 0.8)
+                return
+            }
+
+            if rule.blockGameLibraries, let gameLib = GameLibraryRules.matchesGameApp(bundleID: id, appPath: fg.app.bundleURL?.path) {
+                _ = mutateRuleBlock(ruleID: rule.id)
+                let verb = applyBlockAction(to: fg.app, bundleID: id, action: rule.activeBlockAction())
+                activateFallbackApp(excluding: id)
+                notice = "\(fg.app.localizedName ?? id) (\(gameLib)) está bloqueada por la protección de juegos de «\(rule.name)»: \(verb)."
                 scheduleStrictRecheck(after: 0.8)
                 return
             }
@@ -1713,7 +1918,18 @@ extension AppModel {
     @discardableResult
     private func mutateRuleBlock(ruleID: UUID) -> Bool {
         guard let idx = workspace.generalRules.firstIndex(where: { $0.id == ruleID }) else { return false }
-        return workspace.generalRules[idx].registerBlock()
+        let nowInstant = Date()
+        let penaltyApplied = workspace.generalRules[idx].applyPomodoroPenaltyIfNeeded(wall: nowInstant)
+        let fired = workspace.generalRules[idx].registerBlock()
+        if penaltyApplied {
+            let rule = workspace.generalRules[idx]
+            let msg = "Penalización Pomodoro en «\(rule.name)»: el ciclo de \(rule.pomodoroWorkMinutes) min se ha reiniciado desde cero por abrir una distracción."
+            notice = msg
+            if !preview {
+                reminders.notify("Penalización Pomodoro · \(rule.name)", body: msg, identifier: "pomo-pen-" + rule.id.uuidString)
+            }
+        }
+        return fired
     }
 
     private func activateFallbackApp(excluding blockedID: String) {
@@ -1747,8 +1963,9 @@ extension AppModel {
         // If a `.launchLimit` rule matches this site and can start a visit right now, start it instead of blocking.
         for idx in workspace.generalRules.indices {
             let rule = workspace.generalRules[idx]
-            guard rule.enabled, rule.kind == .launchLimit, !rule.isMicroPaused(at: nowInstant), rule.webBlockAction != .warn else { continue }
-            let matchesWeb = !FocusRules.webAllowed(host: host, path: path, list: rule.domains, mode: rule.webListMode)
+            guard rule.enabled, rule.kind == .launchLimit, !rule.isMicroPaused(at: nowInstant), (rule.webBlockAction != .warn || rule.blockSearchMedia) else { continue }
+            let searchHit = rule.blockSearchMedia ? SearchMediaRules.matches(host: host, pathAndQuery: path) : nil
+            let matchesWeb = searchHit != nil || (rule.webBlockAction != .warn && !FocusRules.webAllowed(host: host, path: path, list: rule.domains, mode: rule.webListMode))
             guard matchesWeb else { continue }
             if !rule.isLaunchVisitActive(at: nowInstant),
                !rule.isInLaunchCooldown(at: nowInstant),
@@ -1761,8 +1978,9 @@ extension AppModel {
             }
         }
 
-        for rule in workspace.generalRules where isRuleEnforcing(rule, at: nowInstant) && rule.webBlockAction != .warn {
-            let allowed = FocusRules.webAllowed(host: host, path: path, list: rule.domains, mode: rule.webListMode)
+        for rule in workspace.generalRules where isRuleEnforcing(rule, at: nowInstant) && (rule.webBlockAction != .warn || rule.blockSearchMedia) {
+            let searchHit = rule.blockSearchMedia ? SearchMediaRules.matches(host: host, pathAndQuery: path) : nil
+            let allowed = searchHit == nil && (rule.webBlockAction == .warn || FocusRules.webAllowed(host: host, path: path, list: rule.domains, mode: rule.webListMode))
             guard !allowed else { continue }
             let visitKey = path.isEmpty || path == "/" ? host : "\(host)\(path)"
             if lastWebBlockHost == visitKey, nowInstant.timeIntervalSince(lastWebBlockAt) < 4 { return }
@@ -1770,7 +1988,8 @@ extension AppModel {
             lastWebBlockAt = nowInstant
             let punisherFired = mutateRuleBlock(ruleID: rule.id)
             let hardened = punisherFired || rule.punisher.isActive()
-            let action: WebBlockAction = hardened && rule.webBlockAction == .redirect ? .closeTab : rule.webBlockAction
+            let baseAction: WebBlockAction = rule.webBlockAction == .warn ? .redirect : rule.webBlockAction
+            let action: WebBlockAction = hardened && baseAction == .redirect ? .closeTab : baseAction
             if action == .closeTab {
                 webInspector.closeActiveTab(bundleID: bundleID) { [weak self] ok in
                     guard let self else { return }
@@ -1842,5 +2061,125 @@ extension AppModel {
                 self.notice = "\(names) bloqueada(s) por «\(rule.name)»: el Finder vuelve a la carpeta superior."
             }
         }
+    }
+
+    // MARK: - Clipboard Guard & Import/Export Rules (PlanTemplate)
+
+    func checkClipboardGuard() {
+        let currentCount = NSPasteboard.general.changeCount
+        guard currentCount != lastClipboardChangeCount else { return }
+        lastClipboardChangeCount = currentCount
+        guard workspace.settings.protectClipboard else { return }
+
+        let nowInstant = Date()
+        let activeRules = workspace.generalRules.filter { isRuleEnforcing($0, at: nowInstant) }
+        let activeSession: WorkSession? = {
+            guard let s = session, s.enforcing(at: nowInstant, uptime: uptime) else { return nil }
+            return s
+        }()
+        guard activeSession != nil || !activeRules.isEmpty else { return }
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+
+        if let s = activeSession {
+            let blockedDomains = s.task.webListMode == .blockListed ? s.task.domains : ""
+            if let hit = ClipboardGuardRules.violation(
+                in: text,
+                domains: blockedDomains,
+                webListMode: .blockListed,
+                webBlockAction: .redirect
+            ) {
+                NSPasteboard.general.clearContents()
+                lastClipboardChangeCount = NSPasteboard.general.changeCount
+                notice = "Portapapeles limpiado: contenía «\(hit)», bloqueado en «\(s.task.title)»."
+                return
+            }
+        }
+
+        for rule in activeRules {
+            let blockedDomains = rule.webListMode == .blockListed ? rule.domains : ""
+            if let hit = ClipboardGuardRules.violation(
+                in: text,
+                domains: blockedDomains,
+                webListMode: .blockListed,
+                webBlockAction: .redirect
+            ) {
+                NSPasteboard.general.clearContents()
+                lastClipboardChangeCount = NSPasteboard.general.changeCount
+                notice = "Portapapeles limpiado: contenía «\(hit)», bloqueado por «\(rule.name)»."
+                return
+            }
+        }
+    }
+
+    func exportGeneralRules() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "FocusDesk-reglas.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(workspace.generalRules)
+            try data.write(to: url, options: .atomic)
+            notice = "Se han exportado \(workspace.generalRules.count) reglas en \(url.lastPathComponent)."
+        } catch {
+            self.error = "No se pudieron exportar las reglas: \(error.localizedDescription)"
+        }
+    }
+
+    func importGeneralRules() {
+        guard writable else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let imported = try decoder.decode([GeneralBlockRule].self, from: data)
+            let validImported = imported.filter(\.valid)
+            guard !validImported.isEmpty else {
+                self.error = "El archivo no contiene reglas generales válidas."
+                return
+            }
+            var added = 0
+            var updated = 0
+            for var item in validImported {
+                item.stopRequest = nil
+                if let idx = workspace.generalRules.firstIndex(where: { $0.id == item.id }) {
+                    let current = workspace.generalRules[idx]
+                    if isRuleProtected(current), current.protection != .none,
+                       GeneralBlockRule.loosening(current: current, proposed: item) != nil {
+                        continue
+                    }
+                    workspace.generalRules[idx] = item
+                    updated += 1
+                } else {
+                    workspace.generalRules.append(item)
+                    added += 1
+                }
+            }
+            workspace.recordAudit(
+                category: "Importación de reglas",
+                summary: "\(url.lastPathComponent) · " + "\(added) nuevas, \(updated) actualizadas"
+            )
+            _ = persist()
+            refreshWitness()
+            observe()
+            notice = "Reglas importadas: \(added) nuevas y \(updated) actualizadas."
+        } catch {
+            self.error = "No se pudieron importar las reglas: \(error.localizedDescription)"
+        }
+    }
+
+    func clearAuditLog() {
+        guard writable else { return }
+        if workspace.settings.protectActivityHistory && refuseWhileProtected("borrar el registro de auditoría") { return }
+        workspace.auditLog.removeAll()
+        _ = persist()
+        notice = "Registro de auditoría vaciado."
     }
 }

@@ -158,6 +158,8 @@ final class AppModel: ObservableObject {
     let floatingPill = FloatingTimerPillController()
     /// Dismissed break key (`dayKey-breakID-startHour:startMinute`) so the user can snooze/dismiss a break banner once.
     @Published var dismissedBreakKey: String?
+    /// Last observed `NSPasteboard.general.changeCount` for `ClipboardGuardRules`.
+    var lastClipboardChangeCount: Int = NSPasteboard.general.changeCount
     /// One Finder question at a time: a slow Finder must not pile up `osascript` processes.
     var finderCheckBusy = false
     /// The Finder permission is asked for by macOS; if it was refused, this is said once per session.
@@ -401,7 +403,7 @@ final class AppModel: ObservableObject {
     var activeProtectedGeneralRule: GeneralBlockRule? {
         let instant = Date()
         return workspace.generalRules.first { rule in
-            rule.protection != .none && isRuleEnforcing(rule, at: instant)
+            isRuleProtected(rule, at: instant)
         }
     }
 
@@ -959,8 +961,12 @@ final class AppModel: ObservableObject {
         head.appListMode = draft.appListMode
         head.webListMode = draft.webListMode
         head.blockedTitleKeywords = draft.blockedTitleKeywords
+        head.wholeWordKeywords = draft.wholeWordKeywords
         head.customRedirectURL = draft.customRedirectURL
         head.motivationalMessage = draft.motivationalMessage
+        head.blockSearchMedia = draft.blockSearchMedia
+        head.blockGameLibraries = draft.blockGameLibraries
+        head.similarityProtection = draft.similarityProtection
     }
 
     /// Applies to `date` the same move (whole days, then wall-clock time) that took `original` to `edited`.
@@ -1867,7 +1873,7 @@ final class AppModel: ObservableObject {
         if session != nil { return true }
         if isInterfaceVisible?() ?? true { return true }
         if workspace.generalRules.contains(where: {
-            $0.enabled && ($0.kind == .countdown || $0.kind == .dailyLimit || $0.kind == .workGoal || $0.kind == .launchLimit || $0.isMicroPaused(at: instant))
+            $0.enabled && ($0.kind == .countdown || $0.kind == .dailyLimit || $0.kind == .workGoal || $0.kind == .launchLimit || $0.kind == .pomodoro || $0.isMicroPaused(at: instant))
         }) {
             return true
         }
@@ -1903,10 +1909,12 @@ final class AppModel: ObservableObject {
         checkRunUpWaitsReady()
         checkGeneralRuleWaitsReady()
         tickContinuousBreak(at: instant)
+        tickPomodoroRules(at: instant)
         updateFloatingPill(at: instant)
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility
             observe()
+            checkClipboardGuard()
             // Windows on screen without the focus, and pages inside Electron apps: both have their own interval.
             sweepBackgroundWindows()
             scanEmbeddedPages()
@@ -2047,12 +2055,19 @@ final class AppModel: ObservableObject {
                 let at = Date()
                 let isTempAllowedApp = workspace.isTemporarilyAllowed(bundleID: id, at: at)
                     || (webAppHost.map { workspace.isTemporarilyAllowed(host: $0, at: at) } ?? false)
-                var allowed = isTempAllowedApp || s.task.apps.isEmpty || FocusRules.appAllowed(bundleID: id, apps: s.task.apps, mode: s.task.appListMode)
+                let matchedGameLibrary = (!isTempAllowedApp && s.task.blockGameLibraries)
+                    ? GameLibraryRules.matchesGameApp(bundleID: id, appPath: fg.app.bundleURL?.path)
+                    : nil
+                var allowed = isTempAllowedApp || (matchedGameLibrary == nil && (s.task.apps.isEmpty || FocusRules.appAllowed(bundleID: id, apps: s.task.apps, mode: s.task.appListMode)))
                 if !isTempAllowedApp, allowed, let webAppHost, s.task.webBlockAction != .warn,
                    !FocusRules.webAllowed(host: webAppHost, path: "", list: s.task.domains, mode: s.task.webListMode) {
                     allowed = false
                 }
-                let matchedTitleKeyword = isTempAllowedApp ? nil : FocusRules.matchesTitleKeyword(fg.title, keywords: s.task.blockedTitleKeywords)
+                let matchedTitleKeyword = isTempAllowedApp ? nil : FocusRules.matchesTitleKeyword(
+                    fg.title,
+                    keywords: s.task.blockedTitleKeywords,
+                    wholeWord: s.task.wholeWordKeywords
+                )
                 if matchedTitleKeyword != nil {
                     allowed = false
                 }
@@ -2077,7 +2092,7 @@ final class AppModel: ObservableObject {
                 if allowed, !WebRules.isBrowser(id) { domainEpisodeHost = nil }
                 // A browser, or a site saved as an app from Safari, whose address cannot be read: websites are not blocked
                 // there, and a task that blocks them says so once instead of pretending.
-                if allowed, s.task.webBlockAction != .warn,
+                if allowed, (s.task.webBlockAction != .warn || s.task.blockSearchMedia),
                    WebRules.unreadableBrowsers.contains(id) || WebRules.looksLikeSafariWebApp(bundleID: id),
                    !warnedUnreadableBrowsers.contains(id) {
                     warnedUnreadableBrowsers.insert(id)
@@ -2087,17 +2102,25 @@ final class AppModel: ObservableObject {
                 if isNewInterruption {
                     if let kw = matchedTitleKeyword {
                         notice = "La ventana de \(fg.app.localizedName ?? id) contiene «\(kw)», que está bloqueada en esta tarea."
+                    } else if let gameLib = matchedGameLibrary {
+                        notice = "\(fg.app.localizedName ?? id) pertenece a la biblioteca de juegos (\(gameLib)), bloqueada en esta tarea."
                     } else {
                         notice = webAppHost.map { "\(fg.app.localizedName ?? id) abre \($0), que no entra en esta tarea." }
                             ?? "\(fg.app.localizedName ?? id) está fuera del perfil de esta tarea."
                     }
-                    if !s.task.strict && matchedTitleKeyword == nil && !preview { notifyDistraction(notice ?? "", session: s) }
+                    if !s.task.strict && matchedTitleKeyword == nil && matchedGameLibrary == nil && !preview { notifyDistraction(notice ?? "", session: s) }
                 }
 
                 if let kw = matchedTitleKeyword {
                     fg.app.hide()
                     workspace.session?.registerBlock()
                     notice = "«\(kw)» está bloqueada por título de ventana en «\(s.task.title)»: he ocultado \(fg.app.localizedName ?? id)."
+                    return
+                }
+                if let gameLib = matchedGameLibrary, !s.task.strict {
+                    fg.app.hide()
+                    workspace.session?.registerBlock()
+                    notice = "\(fg.app.localizedName ?? id) (\(gameLib)) está bloqueada por la protección de juegos en «\(s.task.title)»: la he ocultado."
                     return
                 }
 
@@ -2117,8 +2140,8 @@ final class AppModel: ObservableObject {
                 // The address bar of any browser FocusDesk knows, not just Brave: one `osascript` per browser, on switching
                 // to it and then every 15 s — every 5 s when the task blocks websites, so a blocked page opened without
                 // leaving the browser (or reached again with Back) does not stay up for long.
-                let webReadInterval: TimeInterval = s.task.webBlockAction != .warn ? 5 : 15
-                if WebRules.isBrowser(id), workspace.settings.observeBrave || s.task.webBlockAction != .warn,
+                let webReadInterval: TimeInterval = (s.task.webBlockAction != .warn || s.task.blockSearchMedia) ? 5 : 15
+                if WebRules.isBrowser(id), workspace.settings.observeBrave || s.task.webBlockAction != .warn || s.task.blockSearchMedia,
                    appChanged || Date().timeIntervalSince(lastWebReadAt[id] ?? .distantPast) >= webReadInterval - 0.5 {
                     lastWebReadAt[id] = Date()
                     sessionReadBrowser = true
@@ -2178,6 +2201,7 @@ final class AppModel: ObservableObject {
 
     func deleteHistoryRecord(_ id: UUID) {
         guard writable else { return }
+        if workspace.settings.protectActivityHistory && refuseWhileProtected("borrar el historial de actividad") { return }
         workspace.history.removeAll { $0.id == id }
         _ = persist()
     }
@@ -2247,12 +2271,66 @@ final class AppModel: ObservableObject {
 
     func removeDetailedHistory() {
         guard writable else { return }
+        if workspace.settings.protectActivityHistory && refuseWhileProtected("borrar los detalles del historial de actividad") { return }
         for index in workspace.history.indices {
             workspace.history[index].preserveSummary()
             workspace.history[index].session.activities = []
             workspace.history[index].session.baseline = [:]
         }
         _ = persist()
+    }
+
+    /// Recently visited domains observed during sessions or in the live browser inspector (`HistoryTarget` equivalent).
+    var recentObservedDomains: [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        func push(_ raw: String) {
+            guard let clean = FocusRules.normalizeDomainEntry(raw),
+                  !clean.isEmpty,
+                  seen.insert(clean).inserted else { return }
+            result.append(clean)
+        }
+        for page in lastObservedBrowserPage.values {
+            push(page.host)
+        }
+        if let s = session {
+            for act in s.activities.reversed() {
+                if let dom = act.domain { push(dom) }
+            }
+        }
+        for rec in workspace.history.suffix(15).reversed() {
+            for act in rec.session.activities.reversed() {
+                if let dom = act.domain { push(dom) }
+                if result.count >= 20 { return result }
+            }
+        }
+        return result
+    }
+
+    /// Recently seen window titles observed during sessions or in the live foreground/browser inspector (`HistoryTarget` equivalent).
+    var recentObservedTitles: [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        func push(_ raw: String) {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 3, seen.insert(trimmed.lowercased()).inserted else { return }
+            result.append(trimmed)
+        }
+        if let t = lastTitle.title, !t.isEmpty {
+            push(t)
+        }
+        if let s = session {
+            for act in s.activities.reversed() {
+                if let t = act.title, !t.isEmpty { push(t) }
+            }
+        }
+        for rec in workspace.history.suffix(15).reversed() {
+            for act in rec.session.activities.reversed() {
+                if let t = act.title, !t.isEmpty { push(t) }
+                if result.count >= 20 { return result }
+            }
+        }
+        return result
     }
 
     func shutdown() {

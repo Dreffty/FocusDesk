@@ -370,7 +370,8 @@ final class WebInspector {
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               let host = url.host?.lowercased(),
               host.contains(".") else { return nil }
-        return (host, url.path)
+        let fullPath = (url.query?.isEmpty == false) ? "\(url.path)?\(url.query!)" : url.path
+        return (host, fullPath)
     }
 
     private static func closeAccessibilityTab(bundleID: String) -> Bool {
@@ -404,7 +405,8 @@ final class WebInspector {
         guard status == 0, let url = URL(string: output),
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               let host = url.host?.lowercased() else { return .unknown }
-        return .page(host: host, path: url.path)
+        let fullPath = (url.query?.isEmpty == false) ? "\(url.path)?\(url.query!)" : url.path
+        return .page(host: host, path: fullPath)
     }
 
     private func run(_ source: String, timeout: TimeInterval, completion: @escaping (String, String, Int32, Bool) -> Void) {

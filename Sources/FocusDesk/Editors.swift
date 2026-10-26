@@ -350,8 +350,11 @@ struct TaskEditor: View {
                     }
                 }
                 Toggle("Bloquear las apps que distraen", isOn: $draft.strict).toggleStyle(.switch)
+                Toggle("Bloquear bibliotecas de juegos (Steam, Epic, Battle.net, Riot, juegos de Mac…)", isOn: $draft.blockGameLibraries)
+                    .toggleStyle(.switch)
+                    .font(.app(12))
                 Text("Si abres una app bloqueada (o fuera de tu lista blanca), FocusDesk la oculta o cierra\(model.workspace.settings.focusDuringStrict ? " y activa No molestar mientras dura la sesión" : ""). \(draft.protection == .none ? "Puedes pausar en cualquier momento." : "Para parar antes de tiempo, lo que elijas abajo en «Si quieres dejarlo a medias».") Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
-                if draft.strict && draft.apps.isEmpty {
+                if draft.strict && draft.apps.isEmpty && !draft.blockGameLibraries {
                     Text(draft.appListMode == .allowListed
                          ? "Elige al menos una app permitida para poder bloquear las demás."
                          : "Elige al menos una app en la lista negra para bloquearla.").font(.app(10)).foregroundStyle(Palette.warning)
@@ -362,10 +365,30 @@ struct TaskEditor: View {
 
                 Divider().overlay(Palette.stroke)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("PALABRAS BLOQUEADAS EN EL TÍTULO DE VENTANA · OPCIONAL").fieldLabelStyle()
-                    TextField("Shorts, Reels, Netflix, Twitch (separadas por comas)", text: $draft.blockedTitleKeywords)
+                    HStack {
+                        Text("PALABRAS BLOQUEADAS EN EL TÍTULO DE VENTANA · OPCIONAL").fieldLabelStyle()
+                        Spacer()
+                        if !model.recentObservedTitles.isEmpty {
+                            Menu("Vistos recientemente…") {
+                                ForEach(model.recentObservedTitles, id: \.self) { recentTitle in
+                                    Button(recentTitle) {
+                                        let existing = FocusRules.parseTitleKeywords(draft.blockedTitleKeywords)
+                                        if !existing.contains(where: { $0.lowercased() == recentTitle.lowercased() }) {
+                                            draft.blockedTitleKeywords = (existing + [recentTitle]).joined(separator: ", ")
+                                        }
+                                    }
+                                }
+                            }
+                            .controlSize(.small)
+                            .fixedSize()
+                        }
+                    }
+                    TextField("Shorts, Reels, Netflix, *gameplay*, /partid[ao]/ (separadas por comas)", text: $draft.blockedTitleKeywords)
                         .textFieldStyle(.roundedBorder)
-                    Text("Si el título de la ventana activa contiene alguna de estas palabras, FocusDesk oculta esa app al instante.")
+                    Toggle("Exigir palabra completa (evita que «art» bloquee «article»; admite comodines * y ? o /regex/)", isOn: $draft.wholeWordKeywords)
+                        .toggleStyle(.checkbox)
+                        .font(.app(11))
+                    Text("Si el título de la ventana activa coincide con alguna de estas entradas, FocusDesk oculta esa app al instante.")
                         .font(.app(10))
                         .foregroundStyle(Palette.muted)
                 }
@@ -381,6 +404,20 @@ struct TaskEditor: View {
             HStack {
                 Text("WEBS Y SUBRUTAS PARA ESTA TAREA · OPCIONAL").fieldLabelStyle()
                 Spacer()
+                if !model.recentObservedDomains.isEmpty && draft.webListMode != .blockAll {
+                    Menu("Vistos recientemente…") {
+                        ForEach(model.recentObservedDomains, id: \.self) { dom in
+                            Button(dom) {
+                                let existing = FocusRules.parseDomains(draft.domains).valid
+                                if !existing.contains(dom) {
+                                    draft.domains = (existing + [dom]).joined(separator: ", ")
+                                }
+                            }
+                        }
+                    }
+                    .controlSize(.small)
+                    .fixedSize()
+                }
                 if !draft.domains.isEmpty && FocusRules.normalizeDomains(draft.domains) != draft.domains {
                     Button("Normalizar URLs") {
                         draft.domains = FocusRules.normalizeDomains(draft.domains)
@@ -397,8 +434,8 @@ struct TaskEditor: View {
             if draft.webListMode != .blockAll {
                 TextField(
                     draft.webListMode == .allowListed
-                        ? "chatgpt.com, claude.ai, github.com/apple/swift"
-                        : "youtube.com/shorts, instagram.com/reels, x.com, reddit.com",
+                        ? "chatgpt.com, claude.ai, github.com/apple/swift, *.edu"
+                        : "youtube.com/shorts, instagram.com/reels, *casino*, /reddit\\.com\\/r\\/all/",
                     text: $draft.domains
                 )
                 .textFieldStyle(.roundedBorder)
@@ -406,7 +443,7 @@ struct TaskEditor: View {
                     DistractionPresetChipsView(domains: $draft.domains, keywords: $draft.blockedTitleKeywords)
                 }
                 if !domainParse.invalid.isEmpty {
-                    Text("Entradas no reconocidas como dominio o ruta (se ignorarán): \(domainParse.invalid.joined(separator: ", "))")
+                    Text("Entradas no reconocidas como dominio, comodín o /regex/ (se ignorarán): \(domainParse.invalid.joined(separator: ", "))")
                         .font(.app(10))
                         .foregroundStyle(Palette.warning)
                 } else if !domainParse.valid.isEmpty {
@@ -419,13 +456,28 @@ struct TaskEditor: View {
                     .font(.app(10))
                     .foregroundStyle(Palette.muted)
             }
+            Toggle("Bloquear pestañas de Vídeos e Imágenes en buscadores (Google, Bing, DuckDuckGo, Brave, Yahoo…)", isOn: $draft.blockSearchMedia)
+                .toggleStyle(.checkbox)
+                .font(.app(11))
+            if draft.webListMode == .blockListed {
+                HStack(spacing: 8) {
+                    Text("Protección contra excepciones similares:").font(.app(11)).foregroundStyle(Palette.muted)
+                    Picker("Similitud", selection: $draft.similarityProtection) {
+                        ForEach(SimilarityProtectionLevel.allCases, id: \.self) { lvl in
+                            Text(lvl.label).tag(lvl)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 220)
+                }
+            }
             Picker("Si abres una web no permitida", selection: $draft.webBlockAction) {
                 ForEach(WebBlockAction.allCases, id: \.self) { action in
                     Text(action.label).tag(action)
                 }
             }
             .pickerStyle(.radioGroup)
-            if draft.webBlockAction != .warn && draft.webListMode != .blockAll && domainParse.valid.isEmpty {
+            if draft.webBlockAction != .warn && draft.webListMode != .blockAll && domainParse.valid.isEmpty && !draft.blockSearchMedia {
                 Text(draft.webListMode == .allowListed
                      ? "Para bloquear webs hace falta decir cuáles sí. Sin lista, se bloquearía todo."
                      : "Indica al menos una web o ruta (ej. youtube.com/shorts) para bloquearla.")
@@ -442,6 +494,16 @@ struct TaskEditor: View {
                     TextField("URL de redirección personalizada https://… (opcional; vacío = página de bloqueo de FocusDesk)", text: $draft.customRedirectURL)
                         .textFieldStyle(.roundedBorder)
                         .font(.app(11))
+                    if FocusRules.isRedirectDestinationBlocked(
+                        redirectURL: draft.customRedirectURL,
+                        list: draft.domains,
+                        mode: draft.webListMode,
+                        blockSearchMedia: draft.blockSearchMedia
+                    ) != nil {
+                        Label("Atención: la URL de redirección coincide con tus propias reglas de bloqueo y causaría un bucle infinito.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.warning)
+                    }
                 }
                 .padding(.top, 4)
             }
@@ -571,8 +633,12 @@ struct TaskEditor: View {
             appListMode: draft.appListMode,
             webListMode: draft.webListMode,
             blockedTitleKeywords: draft.blockedTitleKeywords,
+            wholeWordKeywords: draft.wholeWordKeywords,
             customRedirectURL: draft.customRedirectURL,
-            motivationalMessage: draft.motivationalMessage
+            motivationalMessage: draft.motivationalMessage,
+            blockSearchMedia: draft.blockSearchMedia,
+            blockGameLibraries: draft.blockGameLibraries,
+            similarityProtection: draft.similarityProtection
         )
         model.saveProfile(profile)
         draft.profileID = profile.id
@@ -1197,6 +1263,11 @@ struct SettingsView: View {
                                 get: { model.workspace.settings.workEndHour },
                                 set: { v in model.updateSettings { $0.workEndHour = max(v, $0.workStartHour + 1) } }
                             ), in: 8...23)
+                            Stepper("Corte de día: \(String(format: "%02d:00", model.workspace.settings.dayRolloverHour))", value: Binding(
+                                get: { model.workspace.settings.dayRolloverHour },
+                                set: { v in model.updateSettings { $0.dayRolloverHour = max(0, min(8, v)) } }
+                            ), in: 0...8)
+                            .help("Hora en la que se reinician los presupuestos diarios, aperturas y micro-pausas (útil si trabajas pasadas las 00:00).")
                         }
                         Divider().overlay(Palette.stroke)
                         Text("Descansos habituales").font(.app(12, weight: .medium))
@@ -1378,6 +1449,21 @@ struct SettingsView: View {
                             set: { value in model.updateBlockingSetting(turningOn: value) { $0.inspectEmbeddedPages = value } }
                         ))
                         Text("Páginas abiertas dentro de Discord, Slack o Notion: solo se avisa, esas ventanas llevan conversaciones y documentos. Las webs instaladas como app desde Chrome, Brave o Edge se bloquean como la web que abren.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                        Divider().overlay(Palette.stroke)
+                        Toggle("Vigilar y limpiar el portapapeles durante bloqueos activos", isOn: Binding(
+                            get: { model.workspace.settings.protectClipboard },
+                            set: { value in model.updateBlockingSetting(turningOn: value) { $0.protectClipboard = value } }
+                        ))
+                        Text("Si copias una dirección o texto que coincida con un dominio o palabra bloqueada mientras dura la sesión o regla, FocusDesk vacía el portapapeles.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                        Toggle("Proteger el historial y registro de actividad con bloqueos activos", isOn: Binding(
+                            get: { model.workspace.settings.protectActivityHistory },
+                            set: { value in model.updateBlockingSetting(turningOn: value) { $0.protectActivityHistory = value } }
+                        ))
+                        Text("Impide borrar sesiones del historial o vaciar el registro de auditoría mientras haya una sesión o regla protegida en marcha.")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
                     }
@@ -1850,6 +1936,20 @@ struct GeneralRuleEditor: View {
                             HStack {
                                 Text("WEBS Y SUBRUTAS URL").fieldLabelStyle()
                                 Spacer()
+                                if !model.recentObservedDomains.isEmpty && draft.webListMode != .blockAll {
+                                    Menu("Vistos recientemente…") {
+                                        ForEach(model.recentObservedDomains, id: \.self) { dom in
+                                            Button(dom) {
+                                                let existing = FocusRules.parseDomains(draft.domains).valid
+                                                if !existing.contains(dom) {
+                                                    draft.domains = (existing + [dom]).joined(separator: ", ")
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .controlSize(.small)
+                                    .fixedSize()
+                                }
                                 Picker("Modo de webs", selection: $draft.webListMode) {
                                     ForEach(WebListMode.allCases, id: \.self) { mode in
                                         Text(mode.shortLabel).tag(mode)
@@ -1866,8 +1966,8 @@ struct GeneralRuleEditor: View {
                             } else {
                                 TextField(
                                     draft.webListMode == .allowListed
-                                        ? "Solo permitir estos dominios o rutas: docs.swift.org, github.com"
-                                        : "Dominios o rutas a bloquear: youtube.com/shorts, x.com, instagram.com/reels",
+                                        ? "Solo permitir estos dominios o rutas: docs.swift.org, github.com, *.edu"
+                                        : "Dominios, rutas, comodines (*) o /regex/: youtube.com/shorts, *casino*, /reddit\\.com\\/r\\/all/",
                                     text: $draft.domains
                                 )
                                 .textFieldStyle(.roundedBorder)
@@ -1875,17 +1975,52 @@ struct GeneralRuleEditor: View {
                                 .onChange(of: draft.domains) { _, val in
                                     if val.contains("://") { draft.domains = FocusRules.normalizeDomains(val) }
                                 }
-                                Text("Puedes escribir un dominio entero (x.com) o solo una ruta concreta (youtube.com/shorts) dejando el resto de la web libre.")
+                                Text("Admite dominios (x.com), subrutas (youtube.com/shorts), comodines (* y ?) o expresiones regulares entre barras (/regex/).")
                                     .font(.app(10))
                                     .foregroundStyle(Palette.muted)
+                            }
+                            Toggle("Bloquear pestañas de Vídeos e Imágenes en buscadores (Google, Bing, DuckDuckGo, Brave, Yahoo…)", isOn: $draft.blockSearchMedia)
+                                .toggleStyle(.checkbox)
+                                .font(.app(11))
+                            if draft.webListMode == .blockListed {
+                                HStack(spacing: 8) {
+                                    Text("Protección contra excepciones similares:").font(.app(11)).foregroundStyle(Palette.muted)
+                                    Picker("Similitud", selection: $draft.similarityProtection) {
+                                        ForEach(SimilarityProtectionLevel.allCases, id: \.self) { lvl in
+                                            Text(lvl.label).tag(lvl)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .frame(maxWidth: 220)
+                                }
                             }
                         }
 
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("PALABRAS EN EL TÍTULO DE VENTANA · OPCIONAL").fieldLabelStyle()
-                            TextField("Shorts, Reels, Netflix, Twitch, Partida…", text: $draft.blockedTitleKeywords)
+                            HStack {
+                                Text("PALABRAS EN EL TÍTULO DE VENTANA · OPCIONAL").fieldLabelStyle()
+                                Spacer()
+                                if !model.recentObservedTitles.isEmpty {
+                                    Menu("Vistos recientemente…") {
+                                        ForEach(model.recentObservedTitles, id: \.self) { recentTitle in
+                                            Button(recentTitle) {
+                                                let existing = FocusRules.parseTitleKeywords(draft.blockedTitleKeywords)
+                                                if !existing.contains(where: { $0.lowercased() == recentTitle.lowercased() }) {
+                                                    draft.blockedTitleKeywords = (existing + [recentTitle]).joined(separator: ", ")
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .controlSize(.small)
+                                    .fixedSize()
+                                }
+                            }
+                            TextField("Shorts, Reels, Netflix, *gameplay*, /partid[ao]/…", text: $draft.blockedTitleKeywords)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.app(13))
+                            Toggle("Exigir palabra completa (evita que «art» bloquee «article»; admite comodines * y ? o /regex/)", isOn: $draft.wholeWordKeywords)
+                                .toggleStyle(.checkbox)
+                                .font(.app(11))
                             Text("Detecta distracciones por el título de cualquier ventana o pestaña aunque cambie el dominio.")
                                 .font(.app(10))
                                 .foregroundStyle(Palette.muted)
@@ -1906,9 +2041,12 @@ struct GeneralRuleEditor: View {
                                 Button("Elegir de /Applications…") { pickRuleApplications() }
                                     .buttonStyle(.focus(.secondary, compact: true))
                             }
+                            Toggle("Bloquear bibliotecas de juegos automáticamente (Steam, Epic, Battle.net, Riot, juegos de Mac…)", isOn: $draft.blockGameLibraries)
+                                .toggleStyle(.checkbox)
+                                .font(.app(11))
                             if draft.apps.isEmpty {
                                 Text(draft.appListMode == .blockListed
-                                     ? "Ninguna app en la lista negra. Si solo quieres limitar webs o palabras del título, déjalo vacío."
+                                     ? "Ninguna app en la lista negra. Si solo quieres limitar webs, juegos o palabras del título, déjalo vacío."
                                      : "Ninguna app restringida. Si añades apps aquí en lista blanca, solo esas podrán estar al frente.")
                                     .font(.app(10))
                                     .foregroundStyle(Palette.muted)
@@ -1940,6 +2078,16 @@ struct GeneralRuleEditor: View {
                             TextField("URL de redirección personalizada https://… (vacío = página de bloqueo de FocusDesk)", text: $draft.customRedirectURL)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.app(12))
+                            if FocusRules.isRedirectDestinationBlocked(
+                                redirectURL: draft.customRedirectURL,
+                                list: draft.domains,
+                                mode: draft.webListMode,
+                                blockSearchMedia: draft.blockSearchMedia
+                            ) != nil {
+                                Label("Atención: la URL de redirección coincide con tus propias reglas de bloqueo y causaría un bucle infinito.", systemImage: "exclamationmark.triangle.fill")
+                                    .font(.app(10))
+                                    .foregroundStyle(Palette.warning)
+                            }
                         }
                     }
 
@@ -2015,13 +2163,22 @@ struct GeneralRuleEditor: View {
                         .font(.app(18))
                         .foregroundStyle(Palette.mint)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Temporizador de presupuesto diario: \(draft.dailyLimitMinutes) min al día")
+                        Text("Temporizador de presupuesto: \(draft.dailyLimitMinutes) min \(draft.limitPeriodUnit.label.lowercased())")
                             .font(.app(13, weight: .semibold))
-                        Text("El reloj solo descuenta segundos cuando tienes una de estas webs, rutas, títulos o apps abierta en primer plano. Al llegar a 00:00 se bloquean hasta medianoche.")
+                        Text("El reloj solo descuenta segundos cuando tienes una de estas webs, rutas, títulos o apps abierta en primer plano. Al llegar a 00:00 se bloquean hasta el próximo corte.")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    Spacer()
+                    Picker("Unidad de periodo", selection: $draft.limitPeriodUnit) {
+                        ForEach(LimitPeriodUnit.allCases, id: \.self) { unit in
+                            Text(unit.label).tag(unit)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 210)
                 }
                 HStack(spacing: 6) {
                     ForEach([10, 15, 20, 30, 45, 60, 90, 120], id: \.self) { mins in
@@ -2029,8 +2186,43 @@ struct GeneralRuleEditor: View {
                             .buttonStyle(SelectableChipStyle(selected: draft.dailyLimitMinutes == mins))
                     }
                     Spacer()
-                    Stepper("", value: $draft.dailyLimitMinutes, in: 5...360, step: 5)
+                    Stepper("", value: $draft.dailyLimitMinutes, in: 5...600, step: 5)
                         .labelsHidden()
+                }
+
+            case .pomodoro:
+                HStack(spacing: 12) {
+                    Image(systemName: "clock.arrow.2.circlepath")
+                        .font(.app(18))
+                        .foregroundStyle(Palette.mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Ciclo Pomodoro (\(draft.pomodoroWorkMinutes)m trabajo / \(draft.pomodoroShortBreakMinutes)m descanso · \(draft.pomodoroTotalCycles) ciclos)")
+                            .font(.app(13, weight: .semibold))
+                        Text("Bloquea las distracciones durante los tramos de trabajo y las libera durante los descansos.")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                HStack(spacing: 16) {
+                    Stepper("Trabajo: \(draft.pomodoroWorkMinutes) min", value: $draft.pomodoroWorkMinutes, in: 5...180, step: 5)
+                        .font(.app(12))
+                    Stepper("Descanso corto: \(draft.pomodoroShortBreakMinutes) min", value: $draft.pomodoroShortBreakMinutes, in: 1...60)
+                        .font(.app(12))
+                    Stepper("Descanso largo: \(draft.pomodoroLongBreakMinutes) min", value: $draft.pomodoroLongBreakMinutes, in: 5...90, step: 5)
+                        .font(.app(12))
+                    Stepper("Ciclos: \(draft.pomodoroTotalCycles)", value: $draft.pomodoroTotalCycles, in: 1...12)
+                        .font(.app(12))
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Penalización Pomodoro: reiniciar el ciclo desde cero si intentas abrir una distracción", isOn: $draft.pomodoroPenaltyReset)
+                        .font(.app(11))
+                    Toggle("Proteger también los descansos (impedir editar o apagar la regla durante el descanso)", isOn: $draft.protectPomodoroBreaks)
+                        .font(.app(11))
+                    Toggle("Esperar mi confirmación manual antes de pasar a la siguiente fase", isOn: $draft.pomodoroWaitForUser)
+                        .font(.app(11))
+                    Toggle("Iniciar el primer ciclo Pomodoro al guardar", isOn: $startCountdownOnSave)
+                        .font(.app(11))
                 }
 
             case .workGoal:
@@ -2188,6 +2380,63 @@ struct GeneralRuleEditor: View {
                         .labelsHidden()
                         .frame(width: 64)
                     }
+                    Spacer()
+                    Button {
+                        draft.extraScheduleIntervals.append(ScheduleInterval(startMinutes: 14 * 60, endMinutes: 18 * 60))
+                    } label: {
+                        Label("Añadir tramo", systemImage: "plus")
+                    }
+                    .buttonStyle(.focus(.secondary, compact: true))
+                }
+                ForEach(Array(draft.extraScheduleIntervals.enumerated()), id: \.element.id) { index, interval in
+                    HStack(spacing: 14) {
+                        Text("Tramo \(index + 2):").font(.app(11, weight: .medium)).foregroundStyle(Palette.muted)
+                        HStack(spacing: 6) {
+                            Text("Desde:").font(.app(11))
+                            Picker("Hora inicio extra", selection: Binding(
+                                get: { interval.startMinutes / 60 },
+                                set: { draft.extraScheduleIntervals[index].startMinutes = $0 * 60 + (interval.startMinutes % 60) }
+                            )) {
+                                ForEach(0..<24, id: \.self) { h in Text(String(format: "%02d h", h)).tag(h) }
+                            }
+                            .labelsHidden()
+                            .frame(width: 72)
+                            Picker("Minuto inicio extra", selection: Binding(
+                                get: { (interval.startMinutes % 60 / 15) * 15 },
+                                set: { draft.extraScheduleIntervals[index].startMinutes = (interval.startMinutes / 60) * 60 + $0 }
+                            )) {
+                                ForEach([0, 15, 30, 45], id: \.self) { m in Text(String(format: ":%02d", m)).tag(m) }
+                            }
+                            .labelsHidden()
+                            .frame(width: 60)
+                        }
+                        HStack(spacing: 6) {
+                            Text("Hasta:").font(.app(11))
+                            Picker("Hora fin extra", selection: Binding(
+                                get: { interval.endMinutes / 60 },
+                                set: { draft.extraScheduleIntervals[index].endMinutes = $0 * 60 + (interval.endMinutes % 60) }
+                            )) {
+                                ForEach(0..<24, id: \.self) { h in Text(String(format: "%02d h", h)).tag(h) }
+                            }
+                            .labelsHidden()
+                            .frame(width: 72)
+                            Picker("Minuto fin extra", selection: Binding(
+                                get: { (interval.endMinutes % 60 / 15) * 15 },
+                                set: { draft.extraScheduleIntervals[index].endMinutes = (interval.endMinutes / 60) * 60 + $0 }
+                            )) {
+                                ForEach([0, 15, 30, 45], id: \.self) { m in Text(String(format: ":%02d", m)).tag(m) }
+                            }
+                            .labelsHidden()
+                            .frame(width: 60)
+                        }
+                        Spacer()
+                        Button {
+                            draft.extraScheduleIntervals.removeAll { $0.id == interval.id }
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(FocusIconButtonStyle(size: 22, tint: Palette.danger))
+                    }
                 }
 
             case .alwaysOn:
@@ -2234,6 +2483,8 @@ struct GeneralRuleEditor: View {
         rule.blockedTitleKeywords = FocusRules.normalizeTitleKeywords(rule.blockedTitleKeywords)
         if rule.kind == .countdown && startCountdownOnSave {
             rule.startCountdown(minutes: rule.countdownMinutes)
+        } else if rule.kind == .pomodoro && startCountdownOnSave && rule.activePomodoroDeadline == nil {
+            rule.startPomodoro()
         }
         model.saveGeneralRule(rule)
         dismiss()

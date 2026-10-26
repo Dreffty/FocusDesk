@@ -2589,9 +2589,29 @@ struct BlockingPage: View {
 
             // General Rules & Daily Usage Timers
             HStack(spacing: 8) {
-                Text("Reglas generales, metas de trabajo y límites diarios")
+                Text("Reglas generales, Pomodoro, metas y límites")
                     .font(.app(16, weight: .semibold))
                 Spacer()
+                Button {
+                    model.editingGeneralRule = GeneralBlockRule(
+                        name: "Pomodoro de enfoque",
+                        kind: .pomodoro,
+                        pomodoroWorkMinutes: 25,
+                        pomodoroShortBreakMinutes: 5,
+                        pomodoroLongBreakMinutes: 15,
+                        pomodoroLongBreakEvery: 4,
+                        pomodoroTotalCycles: 4,
+                        pomodoroPenaltyReset: true,
+                        webListMode: .blockListed,
+                        domains: (DistractionPreset.social.domains + DistractionPreset.shortVideos.domains).joined(separator: ", "),
+                        blockedTitleKeywords: (DistractionPreset.social.titleKeywords + DistractionPreset.shortVideos.titleKeywords).joined(separator: ", ")
+                    )
+                } label: {
+                    Label("Nuevo Pomodoro", systemImage: "clock.arrow.2.circlepath")
+                }
+                .buttonStyle(.focus(.secondary, compact: true))
+                .disabled(model.readOnly)
+
                 Button {
                     model.editingGeneralRule = GeneralBlockRule(
                         name: "Primero el trabajo, luego el ocio",
@@ -2603,7 +2623,7 @@ struct BlockingPage: View {
                         blockedTitleKeywords: (DistractionPreset.social.titleKeywords + DistractionPreset.streaming.titleKeywords).joined(separator: ", ")
                     )
                 } label: {
-                    Label("Nueva meta de trabajo", systemImage: "flag.checkered")
+                    Label("Nueva meta", systemImage: "flag.checkered")
                 }
                 .buttonStyle(.focus(.secondary, compact: true))
                 .disabled(model.readOnly)
@@ -2619,7 +2639,7 @@ struct BlockingPage: View {
                         domains: DistractionPreset.social.domains.joined(separator: ", ")
                     )
                 } label: {
-                    Label("Nuevo límite de aperturas", systemImage: "door.left.hand.open")
+                    Label("Límite aperturas", systemImage: "door.left.hand.open")
                 }
                 .buttonStyle(.focus(.secondary, compact: true))
                 .disabled(model.readOnly)
@@ -2634,16 +2654,35 @@ struct BlockingPage: View {
                         blockedTitleKeywords: DistractionPreset.shortVideos.titleKeywords.joined(separator: ", ")
                     )
                 } label: {
-                    Label("Nuevo límite diario", systemImage: "hourglass.badge.plus")
+                    Label("Nuevo límite", systemImage: "hourglass.badge.plus")
                 }
                 .buttonStyle(.focus(.secondary, compact: true))
                 .disabled(model.readOnly)
+
+                Menu {
+                    Button {
+                        model.importGeneralRules()
+                    } label: {
+                        Label("Importar reglas desde JSON…", systemImage: "square.and.arrow.down")
+                    }
+                    Button {
+                        model.exportGeneralRules()
+                    } label: {
+                        Label("Exportar reglas a JSON…", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(model.workspace.generalRules.isEmpty)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .controlSize(.small)
+                .fixedSize()
+                .help("Importar o exportar plantillas de reglas generales en JSON")
             }
 
             if model.workspace.generalRules.isEmpty {
                 EmptyStateView(
                     title: "Sin reglas generales configuradas",
-                    detail: "Crea un presupuesto diario (ej. 20 min al día de YouTube/Shorts o X), una cuenta atrás o un horario nocturno automático.",
+                    detail: "Crea un presupuesto diario (ej. 20 min al día de YouTube/Shorts o X), un ciclo Pomodoro, una cuenta atrás o un horario nocturno automático.",
                     icon: "shield.lefthalf.filled"
                 )
             } else {
@@ -2654,6 +2693,32 @@ struct BlockingPage: View {
                             rule: rule,
                             onDelete: { rulePendingDeletion = rule }
                         )
+                    }
+                }
+            }
+
+            if !model.workspace.auditLog.isEmpty {
+                Card(padding: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionHeader("Registro de auditoría de desbloqueos y cambios", icon: "list.clipboard") {
+                            Button("Vaciar") {
+                                model.clearAuditLog()
+                            }
+                            .buttonStyle(.focus(.ghost, compact: true))
+                            .disabled(model.readOnly)
+                        }
+                        ForEach(model.workspace.auditLog.prefix(8)) { entry in
+                            HStack(spacing: 8) {
+                                Text(entry.at.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.app(10, design: .monospaced))
+                                    .foregroundStyle(Palette.muted)
+                                Chip(entry.category, color: Palette.mint)
+                                Text(entry.summary)
+                                    .font(.app(11))
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                        }
                     }
                 }
             }
@@ -2751,8 +2816,33 @@ private struct GeneralRuleCard: View {
                             .buttonStyle(.focus(.secondary, compact: true))
                             .disabled(model.readOnly)
                         }
+                    } else if rule.kind == .pomodoro {
+                        if (rule.pomodoroPhase == .waitingForUser) {
+                            Button("Continuar a siguiente fase") {
+                                model.confirmNextPomodoroPhase(rule)
+                            }
+                            .buttonStyle(FocusPrimaryButton(compact: true))
+                            .disabled(model.readOnly)
+                        } else if (rule.activePomodoroDeadline?.remainingAfterPossibleReboot(wall: model.now) ?? 0) > 0 {
+                            Button("Saltar fase") {
+                                model.skipPomodoroPhase(rule)
+                            }
+                            .buttonStyle(.focus(.ghost, compact: true))
+                            .disabled(model.readOnly)
+                            Button("Reiniciar ciclo") {
+                                model.startPomodoroRule(rule)
+                            }
+                            .buttonStyle(.focus(.secondary, compact: true))
+                            .disabled(model.readOnly)
+                        } else {
+                            Button("Iniciar Pomodoro") {
+                                model.startPomodoroRule(rule)
+                            }
+                            .buttonStyle(.focus(.secondary, compact: true))
+                            .disabled(model.readOnly)
+                        }
                     } else if (rule.kind == .dailyLimit || rule.kind == .workGoal || rule.kind == .launchLimit) && (used > 0 || model.launchesToday(for: rule, at: model.now) > 0) {
-                        Button("Reiniciar contador de hoy") {
+                        Button("Reiniciar contador") {
                             model.resetDailyQuota(for: rule)
                         }
                         .buttonStyle(.focus(.ghost, compact: true))
@@ -2794,8 +2884,8 @@ private struct GeneralRuleCard: View {
                 HStack {
                     Label(
                         left > 0
-                            ? "Tiempo restante hoy: \(FocusRules.clock(left))"
-                            : "Presupuesto de hoy agotado · bloqueado hasta medianoche",
+                            ? "Tiempo restante (\(rule.limitPeriodUnit.label.lowercased())): \(FocusRules.clock(left))"
+                            : "Presupuesto (\(rule.limitPeriodUnit.label.lowercased())) agotado · bloqueado",
                         systemImage: left > 0 ? "hourglass" : "lock.fill"
                     )
                     .font(.app(13, weight: .semibold, design: .monospaced))
@@ -2807,6 +2897,44 @@ private struct GeneralRuleCard: View {
                 }
                 ProgressView(value: fraction)
                     .tint(left > 0 ? Palette.mint : Palette.warning)
+            }
+            .padding(10)
+            .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+        case .pomodoro:
+            let rem = rule.activePomodoroDeadline?.remainingAfterPossibleReboot(wall: model.now) ?? 0
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    if (rule.pomodoroPhase == .waitingForUser) {
+                        Label(
+                            "Fase completada (\(rule.pomodoroPhase.label)) · esperando confirmación",
+                            systemImage: "hand.wave.fill"
+                        )
+                        .font(.app(13, weight: .semibold))
+                        .foregroundStyle(Palette.warning)
+                    } else if rem > 0 {
+                        Label(
+                            "\(rule.pomodoroPhase.label) (ciclo \(rule.pomodoroCurrentCycle)/\(rule.pomodoroTotalCycles)): quedan \(FocusRules.clock(rem))",
+                            systemImage: rule.pomodoroPhase == .work ? "flame.fill" : "cup.and.saucer.fill"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(rule.pomodoroPhase == .work ? Palette.mint : Palette.warning)
+                    } else {
+                        Label(
+                            "Pomodoro listo (\(rule.pomodoroWorkMinutes)m trabajo / \(rule.pomodoroShortBreakMinutes)m descanso corto / \(rule.pomodoroLongBreakMinutes)m largo)",
+                            systemImage: "clock.arrow.2.circlepath"
+                        )
+                        .font(.app(12))
+                        .foregroundStyle(Palette.muted)
+                    }
+                    Spacer()
+                    if rule.pomodoroPenaltyReset {
+                        Chip("Penalización activa", icon: "arrow.counterclockwise", color: Palette.muted)
+                    }
+                    if rule.protectPomodoroBreaks {
+                        Chip("Descansos protegidos", icon: "lock.fill", color: Palette.muted)
+                    }
+                }
             }
             .padding(10)
             .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -2976,6 +3104,12 @@ private struct GeneralRuleCard: View {
         if !rule.apps.isEmpty {
             let prefix = rule.appListMode == .allowListed ? "Solo apps: " : "Apps: "
             parts.append(prefix + rule.apps.map(\.name).joined(separator: ", "))
+        }
+        if rule.blockGameLibraries {
+            parts.append("Juegos (Steam, Epic, Battle.net…)")
+        }
+        if rule.blockSearchMedia {
+            parts.append("Imágenes/Vídeos en buscadores")
         }
         if !rule.blockedFolders.isEmpty {
             parts.append("\(rule.blockedFolders.count) carpeta(s)")

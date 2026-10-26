@@ -707,4 +707,179 @@ final class EnforcementTests: XCTestCase {
         XCTAssertFalse(tamperedEmpty.contains(where: { $0.id == protectedRule.id }))
         XCTAssertEqual(witness.rules.first?.id, protectedRule.id)
     }
+
+    func testPomodoroCyclesPenaltyBreakProtectionAndWaitForUser() {
+        var rule = GeneralBlockRule(
+            name: "Pomodoro 25/5",
+            enabled: false,
+            kind: .pomodoro,
+            pomodoroWorkMinutes: 25,
+            pomodoroShortBreakMinutes: 5,
+            pomodoroLongBreakMinutes: 15,
+            pomodoroLongBreakEvery: 2,
+            pomodoroTotalCycles: 2,
+            pomodoroPenaltyReset: true,
+            protectPomodoroBreaks: true,
+            pomodoroWaitForUser: true,
+            webListMode: .blockListed,
+            domains: "youtube.com, x.com",
+            protection: .challenge
+        )
+
+        // Start Pomodoro -> enters work cycle 1 (25 min = 1500s)
+        rule.startPomodoro(wall: zero, continuous: 100)
+        XCTAssertTrue(rule.enabled)
+        XCTAssertEqual(rule.pomodoroPhase, .work)
+        XCTAssertEqual(rule.pomodoroCurrentCycle, 1)
+        XCTAssertTrue(rule.isEnforcing(at: zero.addingTimeInterval(600), continuous: 700))
+
+        // At t=600s (10 min in), user attempts a distraction -> pomodoroPenaltyReset resets work timer back to full 25m (1500s)
+        XCTAssertTrue(rule.applyPomodoroPenaltyIfNeeded(wall: zero.addingTimeInterval(600), continuous: 700))
+        XCTAssertEqual(rule.pomodoroPhaseRemainingSeconds(at: zero.addingTimeInterval(600), continuous: 700), 1500, accuracy: 1)
+
+        // Work cycle 1 finishes -> transitions to shortBreak (5 min = 300s)
+        let afterWork1 = zero.addingTimeInterval(2101)
+        rule.advancePomodoroPhase(userIsIdle: false, wall: afterWork1, continuous: 2201)
+        XCTAssertEqual(rule.pomodoroPhase, .shortBreak)
+        // During shortBreak, rule does not block websites, BUT because protectPomodoroBreaks == true, it is still protected!
+        XCTAssertFalse(rule.isEnforcing(at: afterWork1.addingTimeInterval(60), continuous: 2261))
+        XCTAssertTrue(rule.isProtectedNow(at: afterWork1.addingTimeInterval(60), continuous: 2261))
+
+        // Short break finishes while user is away (userIsIdle: true) and pomodoroWaitForUser == true -> enters .waitingForUser
+        let afterShortBreak = afterWork1.addingTimeInterval(301)
+        rule.advancePomodoroPhase(userIsIdle: true, wall: afterShortBreak, continuous: 2502)
+        XCTAssertEqual(rule.pomodoroPhase, .waitingForUser)
+        XCTAssertFalse(rule.isEnforcing(at: afterShortBreak, continuous: 2502))
+        XCTAssertTrue(rule.isProtectedNow(at: afterShortBreak, continuous: 2502))
+
+        // User returns (userIsIdle: false) -> starts work cycle 2
+        let userBack = afterShortBreak.addingTimeInterval(120)
+        rule.advancePomodoroPhase(userIsIdle: false, wall: userBack, continuous: 2622)
+        XCTAssertEqual(rule.pomodoroPhase, .work)
+        XCTAssertEqual(rule.pomodoroCurrentCycle, 2)
+        XCTAssertTrue(rule.isEnforcing(at: userBack.addingTimeInterval(60), continuous: 2682))
+
+        // Work cycle 2 finishes -> since pomodoroTotalCycles == 2 and cycle 2 is done, transitions to .idle and disables rule
+        let afterWork2 = userBack.addingTimeInterval(1501)
+        rule.advancePomodoroPhase(userIsIdle: false, wall: afterWork2, continuous: 4123)
+        XCTAssertEqual(rule.pomodoroPhase, .idle)
+        XCTAssertFalse(rule.enabled)
+    }
+
+    func testWholeWordWildcardAndRegexMatching() {
+        // 1. WholeWord keyword matching: "X" matches "Post on X" and "X / Home", but NOT "Xcode" or "Texto"
+        XCTAssertNotNil(FocusRules.matchesTitleKeyword("Xcode — Enforcement.swift", keywords: "X", wholeWord: false))
+        XCTAssertNil(FocusRules.matchesTitleKeyword("Xcode — Enforcement.swift", keywords: "X", wholeWord: true))
+        XCTAssertEqual(FocusRules.matchesTitleKeyword("Home / X — Mozilla Firefox", keywords: "X, Reddit", wholeWord: true), "X")
+
+        // 2. Wildcard title matching (`*`, `?`)
+        XCTAssertEqual(FocusRules.matchesTitleKeyword("Watch Free Slots & Poker Online", keywords: "*poker*"), "*poker*")
+        XCTAssertNil(FocusRules.matchesTitleKeyword("Xcode Project", keywords: "*poker*"))
+
+        // 3. Regex title matching (`/pattern/`)
+        XCTAssertEqual(FocusRules.matchesTitleKeyword("Episodio 12 - Temporada 3", keywords: "/episodio\\s+\\d+/"), "/episodio\\s+\\d+/")
+        XCTAssertNil(FocusRules.matchesTitleKeyword("Documentación técnica", keywords: "/episodio\\s+\\d+/"))
+
+        // 4. Wildcard domain and subpath matching
+        XCTAssertEqual(FocusRules.normalizeDomainEntry("*poker*.com"), "*poker*.com")
+        XCTAssertEqual(FocusRules.normalizeDomainEntry("reddit.com/r/*"), "reddit.com/r/*")
+        XCTAssertTrue(FocusRules.entryMatches(host: "play-poker-now.com", path: "/", entry: "*poker*.com"))
+        XCTAssertTrue(FocusRules.entryMatches(host: "www.reddit.com", path: "/r/gaming/comments/1", entry: "reddit.com/r/*"))
+        XCTAssertFalse(FocusRules.entryMatches(host: "www.reddit.com", path: "/settings", entry: "reddit.com/r/*"))
+    }
+
+    func testSimilarityProtectionBroadTargetsAndRedirectLoopCheck() {
+        // 1. Overly broad allowlist targets rejected
+        XCTAssertNotNil(FocusRules.isAllowEntryTooBroad("*"))
+        XCTAssertNotNil(FocusRules.isAllowEntryTooBroad("*.com"))
+        XCTAssertNotNil(FocusRules.isAllowEntryTooBroad("com"))
+        XCTAssertNil(FocusRules.isAllowEntryTooBroad("developer.apple.com"))
+
+        // 2. SimilarityProtectionLevel
+        let blocked = "youtube.com, reddit.com"
+        // Near-duplicate / typo-squat ("youtubee.com" has edit distance 1 from "youtube")
+        XCTAssertNotNil(FocusRules.checkSimilarityRestriction(allowCandidate: "youtubee.com", blockedDomains: blocked, level: .nearDuplicates))
+        // SpecificPagesOnly rejects whole blocked domain "youtube.com" but allows specific path "youtube.com/watch"
+        XCTAssertNotNil(FocusRules.checkSimilarityRestriction(allowCandidate: "youtube.com", blockedDomains: blocked, level: .specificPagesOnly))
+        XCTAssertNil(FocusRules.checkSimilarityRestriction(allowCandidate: "youtube.com/watch", blockedDomains: blocked, level: .specificPagesOnly))
+
+        // 3. Redirect destination loop check (`ControllerPlanWizard::redirectDestinationBlocked`)
+        XCTAssertNotNil(FocusRules.isRedirectDestinationBlocked(redirectURL: "https://youtube.com", list: "youtube.com, x.com", mode: .blockListed))
+        XCTAssertNil(FocusRules.isRedirectDestinationBlocked(redirectURL: "https://notion.so", list: "youtube.com, x.com", mode: .blockListed))
+        XCTAssertNotNil(FocusRules.isRedirectDestinationBlocked(redirectURL: "https://www.google.com/search?q=cats&tbm=isch", list: "", mode: .blockListed, blockSearchMedia: true))
+    }
+
+    func testSearchMediaRulesAndGameLibraryRulesAndClipboardGuard() {
+        // 1. SearchMediaRules blocks image/video tabs on search engines while allowing text search
+        XCTAssertNotNil(SearchMediaRules.matches(host: "www.google.com", pathAndQuery: "/search?q=swift&tbm=isch"))
+        XCTAssertNotNil(SearchMediaRules.matches(host: "www.google.com", pathAndQuery: "/search?q=swift&udm=2"))
+        XCTAssertNotNil(SearchMediaRules.matches(host: "www.google.com", pathAndQuery: "/search?q=swift&udm=7"))
+        XCTAssertNil(SearchMediaRules.matches(host: "www.google.com", pathAndQuery: "/search?q=swift+concurrency"))
+        XCTAssertNotNil(SearchMediaRules.matches(host: "www.bing.com", pathAndQuery: "/images/search?q=mac"))
+        XCTAssertNotNil(SearchMediaRules.matches(host: "duckduckgo.com", pathAndQuery: "/?q=test&iax=videos&ia=videos"))
+        XCTAssertNil(SearchMediaRules.matches(host: "duckduckgo.com", pathAndQuery: "/?q=test&ia=web"))
+
+        // 2. GameLibraryRules detects known launchers AND executables inside game library paths
+        XCTAssertNotNil(GameLibraryRules.matchesGameApp(bundleID: "com.valvesoftware.steam", appPath: "/Applications/Steam.app"))
+        XCTAssertNotNil(GameLibraryRules.matchesGameApp(bundleID: "com.unknown.indiegame", appPath: "/Users/luis/Library/Application Support/Steam/steamapps/common/Hades/Hades.app"))
+        XCTAssertNotNil(GameLibraryRules.matchesGameApp(bundleID: "com.unknown.epicgame", appPath: "/Users/Shared/Epic Games/Fortnite/Fortnite.app"))
+        XCTAssertNil(GameLibraryRules.matchesGameApp(bundleID: "com.apple.dt.Xcode", appPath: "/Applications/Xcode.app"))
+
+        // 3. ClipboardGuardRules detects tamper commands and blocked URLs in clipboard
+        XCTAssertNotNil(ClipboardGuardRules.violation(in: "sudo killall focusdesk", domains: "", webListMode: .blockListed, webBlockAction: .warn))
+        XCTAssertNotNil(ClipboardGuardRules.violation(in: "launchctl unload ~/Library/LaunchAgents/local.focusdesk.plist", domains: "", webListMode: .blockListed, webBlockAction: .warn))
+        XCTAssertNotNil(ClipboardGuardRules.violation(in: "https://www.youtube.com/shorts/abc123", domains: "youtube.com/shorts", webListMode: .blockListed, webBlockAction: .redirect))
+        XCTAssertNil(ClipboardGuardRules.violation(in: "struct ContentView: View {}", domains: "youtube.com", webListMode: .blockListed, webBlockAction: .redirect))
+    }
+
+    func testMultipleScheduleIntervalsDayRolloverAndLimitPeriodUnits() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        // 1. ScheduleInterval merge and multi-window schedule rule
+        let merged = ScheduleInterval.merge([
+            ScheduleInterval(startMinutes: 9 * 60, endMinutes: 12 * 60),
+            ScheduleInterval(startMinutes: 11 * 60 + 30, endMinutes: 14 * 60),
+            ScheduleInterval(startMinutes: 16 * 60, endMinutes: 19 * 60)
+        ])
+        XCTAssertEqual(merged, [
+            ScheduleInterval(startMinutes: 9 * 60, endMinutes: 14 * 60),
+            ScheduleInterval(startMinutes: 16 * 60, endMinutes: 19 * 60)
+        ])
+
+        let rule = GeneralBlockRule(
+            name: "Horario partido",
+            enabled: true,
+            kind: .schedule,
+            scheduleDays: [1, 2, 3, 4, 5, 6, 7],
+            startMinutes: 9 * 60,
+            endMinutes: 14 * 60,
+            extraScheduleIntervals: [ScheduleInterval(startMinutes: 16 * 60, endMinutes: 19 * 60)],
+            webListMode: .blockListed,
+            domains: "x.com"
+        )
+        let morning = cal.date(from: DateComponents(year: 2026, month: 4, day: 18, hour: 10, minute: 30))!
+        let lunch = cal.date(from: DateComponents(year: 2026, month: 4, day: 18, hour: 15, minute: 0))!
+        let afternoon = cal.date(from: DateComponents(year: 2026, month: 4, day: 18, hour: 17, minute: 15))!
+        XCTAssertTrue(rule.isEnforcing(at: morning, calendar: cal))
+        XCTAssertFalse(rule.isEnforcing(at: lunch, calendar: cal))
+        XCTAssertTrue(rule.isEnforcing(at: afternoon, calendar: cal))
+
+        // 2. Day rollover hour (4 AM): 02:30 AM on 2026-04-18 still belongs to 2026-04-17
+        let twoThirtyAM = cal.date(from: DateComponents(year: 2026, month: 4, day: 18, hour: 2, minute: 30))!
+        let fiveAM = cal.date(from: DateComponents(year: 2026, month: 4, day: 18, hour: 5, minute: 0))!
+        XCTAssertEqual(FocusRules.dayKey(for: twoThirtyAM, rolloverHour: 4, calendar: cal), "2026-04-17")
+        XCTAssertEqual(FocusRules.dayKey(for: fiveAM, rolloverHour: 4, calendar: cal), "2026-04-18")
+
+        // 3. Hourly and weekly quota buckets on Workspace
+        var ws = Workspace()
+        ws.settings.dayRolloverHour = 4
+        let hourlyRule = GeneralBlockRule(name: "10m por hora", enabled: true, kind: .dailyLimit, dailyLimitMinutes: 10, limitPeriodUnit: .hour, domains: "x.com")
+        ws.generalRules = [hourlyRule]
+        ws.addUsedSeconds(600, for: hourlyRule.id, at: morning, calendar: cal)
+        XCTAssertEqual(ws.usedSecondsToday(for: hourlyRule.id, at: morning, calendar: cal), 600)
+        // Next hour starts with a fresh 0s bucket
+        let nextHour = morning.addingTimeInterval(3600)
+        XCTAssertEqual(ws.usedSecondsToday(for: hourlyRule.id, at: nextHour, calendar: cal), 0)
+    }
 }

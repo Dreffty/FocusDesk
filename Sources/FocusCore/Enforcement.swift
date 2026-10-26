@@ -361,6 +361,8 @@ public enum Loosening: Equatable, Sendable {
     case appsUnblocked
     case domainsUnblocked
     case titleKeywordsRemoved
+    case searchMediaUnblocked
+    case gameLibrariesUnblocked
 
     /// What FocusDesk says when the session is running.
     public var whileRunning: String {
@@ -381,6 +383,8 @@ public enum Loosening: Equatable, Sendable {
         case .appsUnblocked: return "No se pueden desbloquear apps ni pasar de lista blanca a lista negra con la sesión en marcha."
         case .domainsUnblocked: return "No se pueden desbloquear webs ni abrir más dominios mientras la sesión bloquea webs."
         case .titleKeywordsRemoved: return "No se pueden quitar palabras bloqueadas del título de ventana con la sesión en marcha."
+        case .searchMediaUnblocked: return "No se puede quitar el bloqueo de imágenes y vídeos en buscadores con la sesión en marcha."
+        case .gameLibrariesUnblocked: return "No se puede quitar el bloqueo de lanzadores y bibliotecas de juegos con la sesión en marcha."
         }
     }
 
@@ -403,6 +407,8 @@ public enum Loosening: Equatable, Sendable {
         case .appsUnblocked: return "Desbloquearle apps"
         case .domainsUnblocked: return "Desbloquearle webs"
         case .titleKeywordsRemoved: return "Quitarle palabras bloqueadas del título"
+        case .searchMediaUnblocked: return "Quitarle el bloqueo de imágenes y vídeos en buscadores"
+        case .gameLibrariesUnblocked: return "Quitarle el bloqueo de bibliotecas de juegos"
         }
     }
 }
@@ -431,7 +437,7 @@ public enum Ratchet {
         if current.appListMode == .allowListed {
             // The app list is a list of what IS allowed: adding to it widens the hole, removing narrows it.
             if !proposedApps.subtracting(currentApps).isEmpty { return .moreAllowedApps }
-            if current.strict && proposedApps.isEmpty { return .noAllowedApps }
+            if current.strict && proposedApps.isEmpty && !current.blockGameLibraries { return .noAllowedApps }
         } else {
             // In blacklist mode, removing an app from the blocked list opens a hole.
             if current.strict && !currentApps.isSubset(of: proposedApps) { return .appsUnblocked }
@@ -450,10 +456,13 @@ public enum Ratchet {
             } else if current.webListMode == .blockListed && proposed.webListMode == .blockListed {
                 if !currentDomains.isSubset(of: proposedDomains) { return .domainsUnblocked }
             }
+            if current.blockSearchMedia && !proposed.blockSearchMedia { return .searchMediaUnblocked }
         }
         let currentKeywords = Set(FocusRules.parseTitleKeywords(current.blockedTitleKeywords).map { $0.lowercased() })
         let proposedKeywords = Set(FocusRules.parseTitleKeywords(proposed.blockedTitleKeywords).map { $0.lowercased() })
         if !currentKeywords.isSubset(of: proposedKeywords) { return .titleKeywordsRemoved }
+        if !currentKeywords.isEmpty && !current.wholeWordKeywords && proposed.wholeWordKeywords { return .titleKeywordsRemoved }
+        if current.blockGameLibraries && !proposed.blockGameLibraries { return .gameLibrariesUnblocked }
         if current.guardSystemPanes && !proposed.guardSystemPanes { return .systemPanesUnguarded }
         if current.punisherEnabled && !proposed.punisherEnabled { return .punisherRemoved }
         // Blocked folders are the opposite list: what is closed. Taking one out opens a hole.
@@ -1035,39 +1044,311 @@ public enum GuardedSettingsPane: String, CaseIterable, Sendable {
     }
 }
 
+// MARK: - Search engine media tabs, game libraries, clipboard & similarity protection
+
+/// Detects search-engine image and video tabs (`SearchMediaRules::matches` in FocusMe) so blocking YouTube/TikTok/Instagram
+/// cannot be bypassed by browsing Google Images, Google Videos, Bing Videos, or DuckDuckGo Videos while keeping normal text searches open.
+public enum SearchMediaRules {
+    public static func matches(host: String, pathAndQuery: String) -> String? {
+        let h = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let pq = pathAndQuery.lowercased()
+        let isGoogle = h == "google.com" || h.hasSuffix(".google.com") || h.contains("google.")
+        let isBing = h == "bing.com" || h.hasSuffix(".bing.com")
+        let isDuck = h == "duckduckgo.com" || h.hasSuffix(".duckduckgo.com")
+        let isBrave = h == "search.brave.com"
+        let isYahoo = h.hasSuffix(".yahoo.com") || h == "yahoo.com"
+        let isEcosia = h == "ecosia.org" || h.hasSuffix(".ecosia.org")
+        let isYandex = h.contains("yandex.")
+
+        if isGoogle {
+            if pq.contains("tbm=isch") || pq.contains("udm=2") || pq.hasPrefix("/imghp") || pq.hasPrefix("/images") {
+                return "Google Imágenes"
+            }
+            if pq.contains("tbm=vid") || pq.contains("udm=7") || pq.contains("udm=39") || pq.hasPrefix("/videohp") || pq.hasPrefix("/videos") {
+                return "Google Vídeos"
+            }
+        }
+        if isBing {
+            if pq.hasPrefix("/images") || pq.contains("ia=images") { return "Bing Imágenes" }
+            if pq.hasPrefix("/videos") || pq.contains("ia=videos") { return "Bing Vídeos" }
+        }
+        if isDuck {
+            if pq.contains("iax=images") || pq.contains("ia=images") { return "DuckDuckGo Imágenes" }
+            if pq.contains("iax=videos") || pq.contains("ia=videos") { return "DuckDuckGo Vídeos" }
+        }
+        if isBrave {
+            if pq.hasPrefix("/images") { return "Brave Imágenes" }
+            if pq.hasPrefix("/videos") { return "Brave Vídeos" }
+        }
+        if isYahoo {
+            if h.hasPrefix("images.search.") || pq.contains("/search/images") { return "Yahoo Imágenes" }
+            if h.hasPrefix("video.search.") || pq.contains("/search/video") { return "Yahoo Vídeos" }
+        }
+        if isEcosia || isYandex {
+            if pq.hasPrefix("/images") { return "Buscador de Imágenes" }
+            if pq.hasPrefix("/videos") || pq.hasPrefix("/video") { return "Buscador de Vídeos" }
+        }
+        return nil
+    }
+}
+
+/// Detects game launchers and any game executable running from macOS game library folders (`UtilsFunctions::gamingLibraryPaths` / `gamingProcessNames` in FocusMe).
+public enum GameLibraryRules {
+    public static let knownLauncherBundleIDs: [String: String] = [
+        "com.valvesoftware.steam": "Steam",
+        "com.valvesoftware.steam.helper": "Steam",
+        "com.epicgames.EpicGamesLauncher": "Epic Games",
+        "net.battle.app": "Battle.net",
+        "net.battle.bootstrapper": "Battle.net",
+        "com.roblox.RobloxPlayer": "Roblox",
+        "com.roblox.RobloxStudio": "Roblox",
+        "com.gog.galaxy": "GOG Galaxy",
+        "com.codeweavers.CrossOver": "CrossOver",
+        "com.isaacmarovitz.Whisky": "Whisky",
+        "com.riotgames.RiotGames.RiotClient": "Riot Client",
+        "com.ea.mac.eaapp": "EA App",
+        "io.itch.itch": "itch.io",
+        "com.heroicgameslauncher.hgl": "Heroic Games"
+    ]
+
+    public static let libraryPathFragments: [(fragment: String, label: String)] = [
+        ("/library/application support/steam/steamapps/", "Biblioteca de Steam"),
+        ("/users/shared/epic games/", "Biblioteca de Epic Games"),
+        ("/library/application support/epic/", "Epic Games"),
+        ("/applications/battle.net.app", "Battle.net"),
+        ("/library/application support/crossover/bottles/", "Botella de CrossOver"),
+        ("/library/containers/com.isaacmarovitz.whisky/", "Botella de Whisky"),
+        ("/applications/roblox.app", "Roblox"),
+        ("/users/shared/gog.com/", "Biblioteca de GOG"),
+        ("/library/application support/itch/apps/", "Biblioteca de itch.io"),
+        ("/library/application support/heroic/", "Heroic Games")
+    ]
+
+    public static let gamingDomains: [String] = [
+        "store.steampowered.com", "steamcommunity.com", "epicgames.com", "gog.com",
+        "roblox.com", "ea.com", "twitch.tv", "itch.io", "chess.com", "poki.com", "crazygames.com"
+    ]
+
+    /// Returns the name of the game platform/library if `bundleID` or `appPath` belongs to a known launcher or game library directory.
+    public static func matchesGameApp(bundleID: String, appPath: String?) -> String? {
+        if let label = knownLauncherBundleIDs[bundleID] { return label }
+        let lowerID = bundleID.lowercased()
+        if lowerID.hasPrefix("com.valvesoftware.") { return "Steam" }
+        if lowerID.hasPrefix("com.epicgames.") { return "Epic Games" }
+        if lowerID.hasPrefix("com.riotgames.") { return "Riot Games" }
+        if lowerID.hasPrefix("com.blizzard.") { return "Blizzard / Battle.net" }
+        if let path = appPath?.lowercased(), !path.isEmpty {
+            for item in libraryPathFragments where path.contains(item.fragment) {
+                return item.label
+            }
+        }
+        return nil
+    }
+}
+
+/// Inspects clipboard contents when `protectClipboard` is active (`TargetListHandler::isClipboardPassed` in FocusMe).
+public enum ClipboardGuardRules {
+    private static let dangerousCommandTokens: [String] = [
+        "killall focusdesk", "pkill -9 focusdesk", "pkill focusdesk",
+        "launchctl unload", "launchctl bootout", "launchctl remove local.focusdesk"
+    ]
+
+    /// Returns a human-readable reason when the clipboard text contains a blocked URL or a terminal command meant to kill FocusDesk.
+    public static func violation(
+        in clipboardText: String,
+        domains: String,
+        webListMode: WebListMode,
+        webBlockAction: WebBlockAction
+    ) -> String? {
+        let trimmed = clipboardText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 2048 else { return nil }
+        let lower = trimmed.lowercased()
+        for cmd in dangerousCommandTokens where lower.contains(cmd) {
+            return "comando de terminal protegido («\(cmd)»)"
+        }
+        guard webBlockAction != .warn else { return nil }
+        if (lower.hasPrefix("http://") || lower.hasPrefix("https://")),
+           !trimmed.contains(" "),
+           let url = URL(string: trimmed),
+           let host = url.host?.lowercased() {
+            let path = url.path
+            if !FocusRules.webAllowed(host: host, path: path, list: domains, mode: webListMode) {
+                return "enlace bloqueado (\(host))"
+            }
+        }
+        return nil
+    }
+}
+
+/// Level of whitelist/exception similarity restriction (`TargetListHandler::setSimilarityProtection` in FocusMe).
+public enum SimilarityProtectionLevel: Int, Codable, CaseIterable, Sendable {
+    case off = 0
+    case nearDuplicates = 1
+    case specificPagesOnly = 2
+
+    public var label: String {
+        switch self {
+        case .off: return "Desactivada"
+        case .nearDuplicates: return "Bloquear dominios casi idénticos a los bloqueados"
+        case .specificPagesOnly: return "Solo permitir subrutas largas y específicas"
+        }
+    }
+}
+
+/// Period unit for usage-budget rules (`LimitUnitsEnum` in FocusMe: per hour, per day, or per week).
+public enum LimitPeriodUnit: String, Codable, CaseIterable, Sendable {
+    case hour
+    case day
+    case week
+
+    public var label: String {
+        switch self {
+        case .hour: return "Por hora"
+        case .day: return "Por día"
+        case .week: return "Por semana"
+        }
+    }
+
+    public var shortSuffix: String {
+        switch self {
+        case .hour: return "esta hora"
+        case .day: return "hoy"
+        case .week: return "esta semana"
+        }
+    }
+}
+
+/// A single time window (`startMinutes...endMinutes`) inside a recurring schedule (`TimeLineInterval` in FocusMe).
+public struct ScheduleInterval: Codable, Equatable, Identifiable, Sendable {
+    public var id: UUID
+    public var startMinutes: Int
+    public var endMinutes: Int
+
+    public init(id: UUID = UUID(), startMinutes: Int = 15 * 60, endMinutes: Int = 19 * 60) {
+        self.id = id
+        self.startMinutes = max(0, min(1439, startMinutes))
+        self.endMinutes = max(0, min(1439, endMinutes))
+    }
+
+    public static func == (lhs: ScheduleInterval, rhs: ScheduleInterval) -> Bool {
+        lhs.startMinutes == rhs.startMinutes && lhs.endMinutes == rhs.endMinutes
+    }
+
+    public var label: String {
+        String(
+            format: "%02d:%02d–%02d:%02d",
+            startMinutes / 60, startMinutes % 60,
+            endMinutes / 60, endMinutes % 60
+        )
+    }
+
+    public func isActive(minuteOfDay: Int, todayWeekday: Int, scheduleDays: Set<Int>) -> Bool {
+        guard !scheduleDays.isEmpty, startMinutes != endMinutes else { return false }
+        if startMinutes < endMinutes {
+            return scheduleDays.contains(todayWeekday) && minuteOfDay >= startMinutes && minuteOfDay < endMinutes
+        } else {
+            if minuteOfDay >= startMinutes {
+                return scheduleDays.contains(todayWeekday)
+            } else if minuteOfDay < endMinutes {
+                let yesterday = todayWeekday == 1 ? 7 : (todayWeekday - 1)
+                return scheduleDays.contains(yesterday)
+            }
+            return false
+        }
+    }
+
+    /// Merges overlapping or adjacent daytime intervals (`TimeLine::mergeIntervals` in FocusMe).
+    public static func merge(_ intervals: [ScheduleInterval]) -> [ScheduleInterval] {
+        let valid = intervals.filter { $0.startMinutes != $0.endMinutes }
+        let daytime = valid.filter { $0.startMinutes < $0.endMinutes }.sorted { $0.startMinutes < $1.startMinutes }
+        let overnight = valid.filter { $0.startMinutes > $0.endMinutes }
+        var merged: [ScheduleInterval] = []
+        for interval in daytime {
+            if let last = merged.last, interval.startMinutes <= last.endMinutes {
+                merged[merged.count - 1].endMinutes = max(last.endMinutes, interval.endMinutes)
+            } else {
+                merged.append(interval)
+            }
+        }
+        return merged + overnight
+    }
+}
+
+/// Phase of a native Pomodoro rule (`pomodoroState` in FocusMe).
+public enum PomodoroPhase: String, Codable, Equatable, Sendable {
+    case idle
+    case work
+    case shortBreak
+    case longBreak
+    case waitingForUser
+
+    public var label: String {
+        switch self {
+        case .idle: return "En espera"
+        case .work: return "Enfoque Pomodoro"
+        case .shortBreak: return "Descanso corto"
+        case .longBreak: return "Descanso largo"
+        case .waitingForUser: return "Esperando tu regreso"
+        }
+    }
+
+    public var isBreak: Bool {
+        self == .shortBreak || self == .longBreak
+    }
+}
+
+/// Transparent audit log entry (`PlanChangeLog` in FocusMe).
+public struct RuleAuditEntry: Codable, Equatable, Identifiable, Sendable {
+    public var id: UUID
+    public var at: Date
+    public var category: String
+    public var summary: String
+
+    public init(id: UUID = UUID(), at: Date = Date(), category: String, summary: String) {
+        self.id = id
+        self.at = at
+        self.category = category
+        self.summary = summary
+    }
+}
+
 // MARK: - General blocking rules & daily usage timers
 
-/// How a general block rule is triggered: a daily usage timer/budget, a work-goal reward, launch limits with cooldown, a direct countdown, a recurring schedule, or 24/7.
+/// How a general block rule is triggered: a daily/hourly/weekly usage budget, a work-goal reward, launch limits with cooldown, Pomodoro cycles, a direct countdown, a recurring schedule, or 24/7.
 public enum GeneralRuleKind: String, Codable, CaseIterable, Sendable {
-    /// Allows up to `dailyLimitMinutes` per day on the rule's apps/sites/titles, counting down in real time; once exhausted, blocks for the rest of the day.
+    /// Allows up to `dailyLimitMinutes` per period (`.hour`, `.day`, or `.week`) on the rule's apps/sites/titles; once exhausted, blocks for the rest of the period.
     case dailyLimit
     /// Keeps targets blocked until you complete `goalMinutesRequired` of focused task sessions today (or unlocks `goalRewardMinutes` per `goalMinutesRequired` worked). FocusMe's `tickAsTimeGoal`.
     case workGoal
     /// Limits how many times per day (`maxDailyLaunches`) you may open the targets, how long each visit lasts (`maxLaunchDurationMinutes`), and enforces a cooldown (`launchCooldownMinutes`) between visits. FocusMe's `tickAsLaunchLimit`.
     case launchLimit
+    /// Alternates focused blocking cycles (`pomodoroWorkMinutes`) with short/long breaks (`pomodoroShortBreakMinutes` / `pomodoroLongBreakMinutes`), optional distraction penalty reset (`pomodoroPenaltyReset`), and protected breaks. FocusMe's `ScheduleModePomodoro`.
+    case pomodoro
     /// Blocks immediately for a chosen countdown (`countdownMinutes` or a quick preset).
     case countdown
-    /// Blocks automatically during a recurring weekday time window (`startMinutes`...`endMinutes`).
+    /// Blocks automatically during one or more recurring weekday time windows (`startMinutes`...`endMinutes` + `extraScheduleIntervals`).
     case schedule
     /// Blocks permanently while the rule is switched on.
     case alwaysOn
 
     public var label: String {
         switch self {
-        case .dailyLimit: return "Temporizador de uso diario (presupuesto)"
+        case .dailyLimit: return "Temporizador de uso (presupuesto por hora/día/semana)"
         case .workGoal: return "Primero el trabajo, luego el ocio (meta / recompensa)"
         case .launchLimit: return "Límite de aperturas diarias y enfriamiento"
+        case .pomodoro: return "Ciclos Pomodoro (enfoque + descansos + penalización)"
         case .countdown: return "Temporizador de bloqueo directo"
-        case .schedule: return "Horario automático"
+        case .schedule: return "Horario automático (uno o varios tramos)"
         case .alwaysOn: return "Siempre activo (24/7)"
         }
     }
 
     public var shortLabel: String {
         switch self {
-        case .dailyLimit: return "Límite diario"
+        case .dailyLimit: return "Presupuesto"
         case .workGoal: return "Meta de enfoque"
         case .launchLimit: return "Aperturas"
+        case .pomodoro: return "Pomodoro"
         case .countdown: return "Temporizador"
         case .schedule: return "Horario"
         case .alwaysOn: return "24/7"
@@ -1079,6 +1360,7 @@ public enum GeneralRuleKind: String, Codable, CaseIterable, Sendable {
         case .dailyLimit: return "hourglass"
         case .workGoal: return "trophy"
         case .launchLimit: return "door.left.hand.closed"
+        case .pomodoro: return "clock.arrow.2.circlepath"
         case .countdown: return "timer"
         case .schedule: return "calendar.badge.clock"
         case .alwaysOn: return "lock.shield"
@@ -1088,15 +1370,17 @@ public enum GeneralRuleKind: String, Codable, CaseIterable, Sendable {
     public var explanation: String {
         switch self {
         case .dailyLimit:
-            return "Cuenta el tiempo real que pasas hoy en esas apps o webs. Mientras queda presupuesto puedes usarlas; al llegar a 00:00 se bloquean hasta mañana."
+            return "Cuenta el tiempo real que pasas en esas apps o webs (por hora, por día o por semana). Mientras queda presupuesto puedes usarlas; al llegar a 00:00 se bloquean hasta el siguiente periodo."
         case .workGoal:
             return "Mantiene bloqueadas las distracciones hasta que trabajes en tus tareas de hoy el tiempo objetivo (o te concede minutos de recompensa por cada bloque trabajado)."
         case .launchLimit:
             return "Limita cuántas veces al día puedes abrir una app o web, cuánto dura cada visita y obliga a un tiempo de enfriamiento entre una visita y la siguiente."
+        case .pomodoro:
+            return "Alterna ciclos de bloqueo enfocado (p. ej. 25 min) con descansos cortos y largos. Incluye la opción «Penalización Pomodoro» (reinicia el ciclo si intentas abrir una distracción) y protección durante los descansos."
         case .countdown:
             return "Bloquea de inmediato durante el tiempo que elijas (15 min, 30 min, 1 h, 2 h o resto del día) sin tener que crear una tarea en la agenda."
         case .schedule:
-            return "Se activa y desactiva solo entre las horas y los días de la semana elegidos (admite tramos nocturnos como 23:00–07:00)."
+            return "Se activa y desactiva solo en los tramos horarios y días de la semana elegidos (admite varios tramos al día y tramos nocturnos como 23:00–07:00)."
         case .alwaysOn:
             return "Mantiene el bloqueo activo de forma permanente mientras la regla esté encendida."
         }
@@ -1109,8 +1393,10 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     public var name: String
     public var enabled: Bool
     public var kind: GeneralRuleKind
-    /// Daily usage budget in minutes when `kind == .dailyLimit` (1...720).
+    /// Usage budget in minutes when `kind == .dailyLimit` (1...720).
     public var dailyLimitMinutes: Int
+    /// Whether `dailyLimitMinutes` resets every hour, every day, or every week (`LimitUnitsEnum` in FocusMe).
+    public var limitPeriodUnit: LimitPeriodUnit
     /// Focused task minutes required today when `kind == .workGoal` (5...720).
     public var goalMinutesRequired: Int
     /// Reward minutes unlocked per `goalMinutesRequired` worked today (`0` = unlimited for the rest of today once goal is reached).
@@ -1125,28 +1411,60 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     public var activeLaunchDeadline: TrustedDeadline?
     /// Deadline of the mandatory cooldown after a launch visit (`kind == .launchLimit`).
     public var launchCooldownDeadline: TrustedDeadline?
+    /// Pomodoro work cycle duration in minutes (`5...180`, default 25).
+    public var pomodoroWorkMinutes: Int
+    /// Pomodoro short break duration in minutes (`1...60`, default 5).
+    public var pomodoroShortBreakMinutes: Int
+    /// Pomodoro long break duration in minutes (`5...90`, default 15).
+    public var pomodoroLongBreakMinutes: Int
+    /// Number of Pomodoros before a long break (`2...10`, default 4).
+    public var pomodoroLongBreakEvery: Int
+    /// Total Pomodoro cycles in a set (`1...20`, default 4).
+    public var pomodoroTotalCycles: Int
+    /// FocusMe's `pomodoroPenalty`: resets the current Pomodoro work timer if the user attempts to open a blocked app/site.
+    public var pomodoroPenaltyReset: Bool
+    /// FocusMe's `protectPomodoroBreaks`: requires the rule's protection challenge/wait even if the user tries to stop during a short/long break.
+    public var protectPomodoroBreaks: Bool
+    /// FocusMe's `pomodoroWaitForUser`: if the user is away from the Mac when a break ends, waits until mouse/keyboard activity before starting the next work cycle.
+    public var pomodoroWaitForUser: Bool
+    /// Current 1-based Pomodoro cycle index (`1...pomodoroTotalCycles`).
+    public var pomodoroCurrentCycle: Int
+    /// Current phase of the Pomodoro state machine.
+    public var pomodoroPhase: PomodoroPhase
+    /// Active deadline of the current Pomodoro work or break phase.
+    public var activePomodoroDeadline: TrustedDeadline?
     /// Default countdown duration in minutes when `kind == .countdown` (5...720).
     public var countdownMinutes: Int
     /// Active monotonic + wall-clock deadline when `kind == .countdown`.
     public var activeDeadline: TrustedDeadline?
     /// Calendar weekday numbers (`1` = Sunday ... `7` = Saturday) when `kind == .schedule`.
     public var scheduleDays: Set<Int>
-    /// Minutes from midnight (`0...1439`) when the schedule starts.
+    /// Minutes from midnight (`0...1439`) when the primary schedule starts.
     public var startMinutes: Int
-    /// Minutes from midnight (`0...1439`) when the schedule ends. If `<= startMinutes`, spans midnight.
+    /// Minutes from midnight (`0...1439`) when the primary schedule ends. If `<= startMinutes`, spans midnight.
     public var endMinutes: Int
+    /// Additional schedule time windows on the same days (`TimeLine` in FocusMe, e.g. morning + afternoon blocks).
+    public var extraScheduleIntervals: [ScheduleInterval]
     public var blockApps: Bool
     public var appListMode: AppListMode
     public var apps: [AllowedApp]
     public var blockAction: AppBlockAction
+    /// Automatically blocks games and launchers inside Steam, Epic Games, Battle.net, CrossOver, Whisky, and Roblox libraries (`gamingLibraryPaths` in FocusMe).
+    public var blockGameLibraries: Bool
     public var webListMode: WebListMode
     public var domains: String
     public var webBlockAction: WebBlockAction
+    /// Blocks Google/Bing/DuckDuckGo/Brave/Yahoo Image & Video search tabs (`SearchMediaRules` in FocusMe).
+    public var blockSearchMedia: Bool
     /// Optional productive URL (`https://...`) to redirect blocked tabs to instead of the local block page (`websiteRedirectUrl` in FocusMe).
     public var customRedirectURL: String
     /// Custom motivational message or quote shown on the block page.
     public var motivationalMessage: String
     public var blockedTitleKeywords: String
+    /// Matches window title keywords as whole words (`KeywordMatch` in FocusMe) so short words like "X" or "EA" never match inside normal words.
+    public var wholeWordKeywords: Bool
+    /// Whitelist / temporary-allow anti-bypass similarity check (`setSimilarityProtection` in FocusMe).
+    public var similarityProtection: SimilarityProtectionLevel
     public var blockedFolders: [String]
     public var protection: SessionProtection
     public var unlockChars: Int
@@ -1168,6 +1486,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         enabled: Bool = true,
         kind: GeneralRuleKind = .dailyLimit,
         dailyLimitMinutes: Int = 20,
+        limitPeriodUnit: LimitPeriodUnit = .day,
         goalMinutesRequired: Int = 60,
         goalRewardMinutes: Int = 0,
         maxDailyLaunches: Int = 5,
@@ -1175,21 +1494,37 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         launchCooldownMinutes: Int = 30,
         activeLaunchDeadline: TrustedDeadline? = nil,
         launchCooldownDeadline: TrustedDeadline? = nil,
+        pomodoroWorkMinutes: Int = 25,
+        pomodoroShortBreakMinutes: Int = 5,
+        pomodoroLongBreakMinutes: Int = 15,
+        pomodoroLongBreakEvery: Int = 4,
+        pomodoroTotalCycles: Int = 4,
+        pomodoroPenaltyReset: Bool = false,
+        protectPomodoroBreaks: Bool = true,
+        pomodoroWaitForUser: Bool = true,
+        pomodoroCurrentCycle: Int = 1,
+        pomodoroPhase: PomodoroPhase = .idle,
+        activePomodoroDeadline: TrustedDeadline? = nil,
         countdownMinutes: Int = 60,
         activeDeadline: TrustedDeadline? = nil,
         scheduleDays: Set<Int> = [1, 2, 3, 4, 5, 6, 7],
         startMinutes: Int = 9 * 60,
         endMinutes: Int = 19 * 60,
+        extraScheduleIntervals: [ScheduleInterval] = [],
         blockApps: Bool = false,
         appListMode: AppListMode = .blockListed,
         apps: [AllowedApp] = [],
         blockAction: AppBlockAction = .hide,
+        blockGameLibraries: Bool = false,
         webListMode: WebListMode = .blockListed,
         domains: String = "",
         webBlockAction: WebBlockAction = .redirect,
+        blockSearchMedia: Bool = false,
         customRedirectURL: String = "",
         motivationalMessage: String = "",
         blockedTitleKeywords: String = "",
+        wholeWordKeywords: Bool = true,
+        similarityProtection: SimilarityProtectionLevel = .nearDuplicates,
         blockedFolders: [String] = [],
         protection: SessionProtection = .challenge,
         unlockChars: Int = 24,
@@ -1207,6 +1542,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         self.enabled = enabled
         self.kind = kind
         self.dailyLimitMinutes = max(1, min(720, dailyLimitMinutes))
+        self.limitPeriodUnit = limitPeriodUnit
         self.goalMinutesRequired = max(5, min(720, goalMinutesRequired))
         self.goalRewardMinutes = max(0, min(360, goalRewardMinutes))
         self.maxDailyLaunches = max(1, min(50, maxDailyLaunches))
@@ -1214,21 +1550,37 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         self.launchCooldownMinutes = max(0, min(360, launchCooldownMinutes))
         self.activeLaunchDeadline = activeLaunchDeadline
         self.launchCooldownDeadline = launchCooldownDeadline
+        self.pomodoroWorkMinutes = max(5, min(180, pomodoroWorkMinutes))
+        self.pomodoroShortBreakMinutes = max(1, min(60, pomodoroShortBreakMinutes))
+        self.pomodoroLongBreakMinutes = max(5, min(90, pomodoroLongBreakMinutes))
+        self.pomodoroLongBreakEvery = max(2, min(10, pomodoroLongBreakEvery))
+        self.pomodoroTotalCycles = max(1, min(20, pomodoroTotalCycles))
+        self.pomodoroPenaltyReset = pomodoroPenaltyReset
+        self.protectPomodoroBreaks = protectPomodoroBreaks
+        self.pomodoroWaitForUser = pomodoroWaitForUser
+        self.pomodoroCurrentCycle = max(1, pomodoroCurrentCycle)
+        self.pomodoroPhase = pomodoroPhase
+        self.activePomodoroDeadline = activePomodoroDeadline
         self.countdownMinutes = max(5, min(720, countdownMinutes))
         self.activeDeadline = activeDeadline
         self.scheduleDays = scheduleDays.isEmpty ? [1, 2, 3, 4, 5, 6, 7] : scheduleDays
         self.startMinutes = max(0, min(1439, startMinutes))
         self.endMinutes = max(0, min(1439, endMinutes))
+        self.extraScheduleIntervals = ScheduleInterval.merge(extraScheduleIntervals)
         self.blockApps = blockApps
         self.appListMode = appListMode
         self.apps = apps
         self.blockAction = blockAction
+        self.blockGameLibraries = blockGameLibraries
         self.webListMode = webListMode
         self.domains = FocusRules.normalizeDomains(domains)
         self.webBlockAction = webBlockAction
+        self.blockSearchMedia = blockSearchMedia
         self.customRedirectURL = customRedirectURL.trimmingCharacters(in: .whitespacesAndNewlines)
         self.motivationalMessage = motivationalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         self.blockedTitleKeywords = FocusRules.normalizeTitleKeywords(blockedTitleKeywords)
+        self.wholeWordKeywords = wholeWordKeywords
+        self.similarityProtection = similarityProtection
         self.blockedFolders = FolderRules.normalizeList(blockedFolders)
         self.protection = protection
         self.unlockChars = UnlockChallenge.clampedLength(unlockChars)
@@ -1243,13 +1595,16 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, enabled, kind, dailyLimitMinutes, countdownMinutes, activeDeadline
+        case id, name, enabled, kind, dailyLimitMinutes, limitPeriodUnit, countdownMinutes, activeDeadline
         case goalMinutesRequired, goalRewardMinutes
         case maxDailyLaunches, maxLaunchDurationMinutes, launchCooldownMinutes, activeLaunchDeadline, launchCooldownDeadline
-        case scheduleDays, startMinutes, endMinutes
-        case blockApps, appListMode, apps, blockAction
-        case webListMode, domains, webBlockAction, customRedirectURL, motivationalMessage
-        case blockedTitleKeywords, blockedFolders
+        case pomodoroWorkMinutes, pomodoroShortBreakMinutes, pomodoroLongBreakMinutes, pomodoroLongBreakEvery
+        case pomodoroTotalCycles, pomodoroPenaltyReset, protectPomodoroBreaks, pomodoroWaitForUser
+        case pomodoroCurrentCycle, pomodoroPhase, activePomodoroDeadline
+        case scheduleDays, startMinutes, endMinutes, extraScheduleIntervals
+        case blockApps, appListMode, apps, blockAction, blockGameLibraries
+        case webListMode, domains, webBlockAction, blockSearchMedia, customRedirectURL, motivationalMessage
+        case blockedTitleKeywords, wholeWordKeywords, similarityProtection, blockedFolders
         case protection, unlockChars, stopDelayMinutes, guardSystemPanes, punisherEnabled
         case dailyMicroPausesAllowed, microPauseMinutes, activeMicroPauseDeadline
         case stopRequest, punisher
@@ -1262,6 +1617,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         kind = try c.decodeIfPresent(GeneralRuleKind.self, forKey: .kind) ?? .dailyLimit
         dailyLimitMinutes = max(1, min(720, try c.decodeIfPresent(Int.self, forKey: .dailyLimitMinutes) ?? 20))
+        limitPeriodUnit = try c.decodeIfPresent(LimitPeriodUnit.self, forKey: .limitPeriodUnit) ?? .day
         goalMinutesRequired = max(5, min(720, try c.decodeIfPresent(Int.self, forKey: .goalMinutesRequired) ?? 60))
         goalRewardMinutes = max(0, min(360, try c.decodeIfPresent(Int.self, forKey: .goalRewardMinutes) ?? 0))
         maxDailyLaunches = max(1, min(50, try c.decodeIfPresent(Int.self, forKey: .maxDailyLaunches) ?? 5))
@@ -1269,22 +1625,38 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         launchCooldownMinutes = max(0, min(360, try c.decodeIfPresent(Int.self, forKey: .launchCooldownMinutes) ?? 30))
         activeLaunchDeadline = try c.decodeIfPresent(TrustedDeadline.self, forKey: .activeLaunchDeadline)
         launchCooldownDeadline = try c.decodeIfPresent(TrustedDeadline.self, forKey: .launchCooldownDeadline)
+        pomodoroWorkMinutes = max(5, min(180, try c.decodeIfPresent(Int.self, forKey: .pomodoroWorkMinutes) ?? 25))
+        pomodoroShortBreakMinutes = max(1, min(60, try c.decodeIfPresent(Int.self, forKey: .pomodoroShortBreakMinutes) ?? 5))
+        pomodoroLongBreakMinutes = max(5, min(90, try c.decodeIfPresent(Int.self, forKey: .pomodoroLongBreakMinutes) ?? 15))
+        pomodoroLongBreakEvery = max(2, min(10, try c.decodeIfPresent(Int.self, forKey: .pomodoroLongBreakEvery) ?? 4))
+        pomodoroTotalCycles = max(1, min(20, try c.decodeIfPresent(Int.self, forKey: .pomodoroTotalCycles) ?? 4))
+        pomodoroPenaltyReset = try c.decodeIfPresent(Bool.self, forKey: .pomodoroPenaltyReset) ?? false
+        protectPomodoroBreaks = try c.decodeIfPresent(Bool.self, forKey: .protectPomodoroBreaks) ?? true
+        pomodoroWaitForUser = try c.decodeIfPresent(Bool.self, forKey: .pomodoroWaitForUser) ?? true
+        pomodoroCurrentCycle = max(1, try c.decodeIfPresent(Int.self, forKey: .pomodoroCurrentCycle) ?? 1)
+        pomodoroPhase = try c.decodeIfPresent(PomodoroPhase.self, forKey: .pomodoroPhase) ?? .idle
+        activePomodoroDeadline = try c.decodeIfPresent(TrustedDeadline.self, forKey: .activePomodoroDeadline)
         countdownMinutes = max(5, min(720, try c.decodeIfPresent(Int.self, forKey: .countdownMinutes) ?? 60))
         activeDeadline = try c.decodeIfPresent(TrustedDeadline.self, forKey: .activeDeadline)
         let decodedDays = try c.decodeIfPresent(Set<Int>.self, forKey: .scheduleDays) ?? [1, 2, 3, 4, 5, 6, 7]
         scheduleDays = decodedDays.isEmpty ? [1, 2, 3, 4, 5, 6, 7] : decodedDays
         startMinutes = max(0, min(1439, try c.decodeIfPresent(Int.self, forKey: .startMinutes) ?? (9 * 60)))
         endMinutes = max(0, min(1439, try c.decodeIfPresent(Int.self, forKey: .endMinutes) ?? (19 * 60)))
+        extraScheduleIntervals = ScheduleInterval.merge(try c.decodeIfPresent([ScheduleInterval].self, forKey: .extraScheduleIntervals) ?? [])
         blockApps = try c.decodeIfPresent(Bool.self, forKey: .blockApps) ?? false
         appListMode = try c.decodeIfPresent(AppListMode.self, forKey: .appListMode) ?? .blockListed
         apps = try c.decodeIfPresent([AllowedApp].self, forKey: .apps) ?? []
         blockAction = try c.decodeIfPresent(AppBlockAction.self, forKey: .blockAction) ?? .hide
+        blockGameLibraries = try c.decodeIfPresent(Bool.self, forKey: .blockGameLibraries) ?? false
         webListMode = try c.decodeIfPresent(WebListMode.self, forKey: .webListMode) ?? .blockListed
         domains = try c.decodeIfPresent(String.self, forKey: .domains) ?? ""
         webBlockAction = try c.decodeIfPresent(WebBlockAction.self, forKey: .webBlockAction) ?? .redirect
+        blockSearchMedia = try c.decodeIfPresent(Bool.self, forKey: .blockSearchMedia) ?? false
         customRedirectURL = (try c.decodeIfPresent(String.self, forKey: .customRedirectURL) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         motivationalMessage = (try c.decodeIfPresent(String.self, forKey: .motivationalMessage) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         blockedTitleKeywords = try c.decodeIfPresent(String.self, forKey: .blockedTitleKeywords) ?? ""
+        wholeWordKeywords = try c.decodeIfPresent(Bool.self, forKey: .wholeWordKeywords) ?? true
+        similarityProtection = try c.decodeIfPresent(SimilarityProtectionLevel.self, forKey: .similarityProtection) ?? .nearDuplicates
         blockedFolders = FolderRules.normalizeList(try c.decodeIfPresent([String].self, forKey: .blockedFolders) ?? [])
         protection = try c.decodeIfPresent(SessionProtection.self, forKey: .protection) ?? .challenge
         unlockChars = UnlockChallenge.clampedLength(try c.decodeIfPresent(Int.self, forKey: .unlockChars) ?? 24)
@@ -1300,6 +1672,8 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
 
     public var hasTargets: Bool {
         (blockApps && !apps.isEmpty)
+            || blockGameLibraries
+            || blockSearchMedia
             || (webBlockAction != .warn && (webListMode == .blockAll || !FocusRules.parseDomains(domains).valid.isEmpty))
             || !FocusRules.parseTitleKeywords(blockedTitleKeywords).isEmpty
             || !blockedFolders.isEmpty
@@ -1307,29 +1681,116 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
 
     public var valid: Bool {
         let hasName = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let validApps = !blockApps || !apps.isEmpty
+        let validApps = !blockApps || !apps.isEmpty || blockGameLibraries
         let validSchedule = kind != .schedule || (!scheduleDays.isEmpty && startMinutes != endMinutes)
         return hasName && validApps && validSchedule && hasTargets
     }
 
-    /// True when `now` falls inside the rule's recurring weekday schedule (including overnight windows).
+    /// True when `customRedirectURL` points to a site that this rule itself blocks (`ControllerPlanWizard::redirectDestinationBlocked` in FocusMe).
+    public var isRedirectDestinationBlocked: Bool {
+        guard webBlockAction == .redirect,
+              let url = WebRules.normalizedRedirectURL(customRedirectURL),
+              let host = url.host else { return false }
+        return !FocusRules.webAllowed(host: host, path: url.path, list: domains, mode: webListMode)
+    }
+
+    /// All configured schedule windows (`startMinutes...endMinutes` plus `extraScheduleIntervals`).
+    public var allScheduleIntervals: [ScheduleInterval] {
+        let primary = ScheduleInterval(startMinutes: startMinutes, endMinutes: endMinutes)
+        return ScheduleInterval.merge([primary] + extraScheduleIntervals)
+    }
+
+    /// True when `now` falls inside any of the rule's recurring weekday schedule windows (including overnight windows).
     public func isScheduleActive(at now: Date, calendar: Calendar = .current) -> Bool {
-        guard !scheduleDays.isEmpty, startMinutes != endMinutes else { return false }
+        guard !scheduleDays.isEmpty else { return false }
         let comps = calendar.dateComponents([.weekday, .hour, .minute], from: now)
         let todayWeekday = comps.weekday ?? 2
         let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
-        if startMinutes < endMinutes {
-            return scheduleDays.contains(todayWeekday) && minuteOfDay >= startMinutes && minuteOfDay < endMinutes
-        } else {
-            // Overnight window (e.g. 23:00 to 07:00): evening half belongs to today's weekday, morning half to yesterday's.
-            if minuteOfDay >= startMinutes {
-                return scheduleDays.contains(todayWeekday)
-            } else if minuteOfDay < endMinutes {
-                let yesterdayWeekday = todayWeekday == 1 ? 7 : (todayWeekday - 1)
-                return scheduleDays.contains(yesterdayWeekday)
+        return allScheduleIntervals.contains { $0.isActive(minuteOfDay: minuteOfDay, todayWeekday: todayWeekday, scheduleDays: scheduleDays) }
+    }
+
+    // MARK: - Pomodoro state machine
+
+    public func pomodoroPhaseRemainingSeconds(at now: Date = Date(), continuous: Double = TrustedClock.continuousSeconds()) -> TimeInterval {
+        activePomodoroDeadline?.remainingAfterPossibleReboot(wall: now, continuous: continuous) ?? 0
+    }
+
+    public mutating func startPomodoro(
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) {
+        kind = .pomodoro
+        enabled = true
+        stopRequest = nil
+        activeMicroPauseDeadline = nil
+        pomodoroCurrentCycle = 1
+        pomodoroPhase = .work
+        activePomodoroDeadline = TrustedDeadline(seconds: Double(max(5, pomodoroWorkMinutes)) * 60, wall: wall, continuous: continuous)
+    }
+
+    public mutating func skipPomodoroToBreak(
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) {
+        guard kind == .pomodoro, pomodoroPhase == .work else { return }
+        let isLong = pomodoroCurrentCycle % max(2, pomodoroLongBreakEvery) == 0
+        pomodoroPhase = isLong ? .longBreak : .shortBreak
+        let breakMin = isLong ? pomodoroLongBreakMinutes : pomodoroShortBreakMinutes
+        activePomodoroDeadline = TrustedDeadline(seconds: Double(max(1, breakMin)) * 60, wall: wall, continuous: continuous)
+    }
+
+    /// Advances the Pomodoro state machine when the current phase's deadline reaches 0. Returns a human-readable transition message.
+    @discardableResult
+    public mutating func advancePomodoroPhase(
+        userIsIdle: Bool = false,
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) -> String {
+        switch pomodoroPhase {
+        case .idle:
+            startPomodoro(wall: wall, continuous: continuous)
+            return "Pomodoro 1/\(pomodoroTotalCycles) en marcha (\(pomodoroWorkMinutes) min de enfoque)."
+        case .work:
+            if pomodoroCurrentCycle >= pomodoroTotalCycles {
+                pomodoroPhase = .idle
+                activePomodoroDeadline = nil
+                enabled = false
+                return "¡Tanda de \(pomodoroTotalCycles) Pomodoros completada en «\(name)»!"
             }
-            return false
+            let isLong = pomodoroCurrentCycle % max(2, pomodoroLongBreakEvery) == 0
+            pomodoroPhase = isLong ? .longBreak : .shortBreak
+            let breakMin = isLong ? pomodoroLongBreakMinutes : pomodoroShortBreakMinutes
+            activePomodoroDeadline = TrustedDeadline(seconds: Double(max(1, breakMin)) * 60, wall: wall, continuous: continuous)
+            return isLong
+                ? "Pomodoro \(pomodoroCurrentCycle)/\(pomodoroTotalCycles) completado. Descanso largo de \(breakMin) min."
+                : "Pomodoro \(pomodoroCurrentCycle)/\(pomodoroTotalCycles) completado. Descanso corto de \(breakMin) min."
+        case .shortBreak, .longBreak:
+            if pomodoroWaitForUser && userIsIdle {
+                pomodoroPhase = .waitingForUser
+                activePomodoroDeadline = nil
+                return "El descanso ha terminado en «\(name)». Mueve el ratón o pulsa una tecla para iniciar el Pomodoro \(pomodoroCurrentCycle + 1)/\(pomodoroTotalCycles)."
+            }
+            pomodoroCurrentCycle = min(pomodoroTotalCycles, pomodoroCurrentCycle + 1)
+            pomodoroPhase = .work
+            activePomodoroDeadline = TrustedDeadline(seconds: Double(max(5, pomodoroWorkMinutes)) * 60, wall: wall, continuous: continuous)
+            return "Descanso terminado: empieza el Pomodoro \(pomodoroCurrentCycle)/\(pomodoroTotalCycles) (\(pomodoroWorkMinutes) min)."
+        case .waitingForUser:
+            pomodoroCurrentCycle = min(pomodoroTotalCycles, pomodoroCurrentCycle + 1)
+            pomodoroPhase = .work
+            activePomodoroDeadline = TrustedDeadline(seconds: Double(max(5, pomodoroWorkMinutes)) * 60, wall: wall, continuous: continuous)
+            return "¡De vuelta! Empieza el Pomodoro \(pomodoroCurrentCycle)/\(pomodoroTotalCycles) (\(pomodoroWorkMinutes) min)."
         }
+    }
+
+    /// FocusMe's `pomodoroPenalty`: resets the current Pomodoro work timer back to full `pomodoroWorkMinutes` when a distraction is attempted.
+    @discardableResult
+    public mutating func applyPomodoroPenaltyIfNeeded(
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) -> Bool {
+        guard kind == .pomodoro, pomodoroPhase == .work, pomodoroPenaltyReset else { return false }
+        activePomodoroDeadline = TrustedDeadline(seconds: Double(max(5, pomodoroWorkMinutes)) * 60, wall: wall, continuous: continuous)
+        return true
     }
 
     /// True while a temporary micro-pause is running on this rule.
@@ -1456,7 +1917,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             return budget > 0 && usedTodaySeconds < budget
         case .launchLimit:
             return isInLaunchVisit(at: now, continuous: continuous) || (!isInLaunchCooldown(at: now, continuous: continuous) && launchesToday < maxDailyLaunches)
-        case .countdown, .schedule, .alwaysOn:
+        case .countdown, .schedule, .pomodoro, .alwaysOn:
             return false
         }
     }
@@ -1480,6 +1941,10 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             return activeDeadline.remainingAfterPossibleReboot(wall: now, continuous: continuous) > 0
         case .schedule:
             return isScheduleActive(at: now, calendar: calendar)
+        case .pomodoro:
+            guard pomodoroPhase == .work else { return false }
+            guard let activePomodoroDeadline else { return true }
+            return activePomodoroDeadline.remainingAfterPossibleReboot(wall: now, continuous: continuous) > 0
         case .dailyLimit:
             return usedTodaySeconds >= dailyBudgetSeconds
         case .workGoal:
@@ -1492,7 +1957,34 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
-    /// Seconds left until the current enforcement window ends (countdown end, cooldown end, schedule end, or midnight).
+    /// True when the rule requires its protection challenge/wait before disabling, editing, or deleting it.
+    /// Includes Pomodoro breaks when `protectPomodoroBreaks` is enabled (`PlanScheduleHandler` break lock).
+    public func isProtectedNow(
+        at now: Date = Date(),
+        usedTodaySeconds: TimeInterval = 0,
+        workedTodaySeconds: TimeInterval = 0,
+        launchesToday: Int = 0,
+        continuous: Double = TrustedClock.continuousSeconds(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard protection != .none else { return false }
+        if isEnforcing(
+            at: now,
+            usedTodaySeconds: usedTodaySeconds,
+            workedTodaySeconds: workedTodaySeconds,
+            launchesToday: launchesToday,
+            continuous: continuous,
+            calendar: calendar
+        ) {
+            return true
+        }
+        if kind == .pomodoro && enabled && protectPomodoroBreaks && pomodoroPhase != .idle {
+            return true
+        }
+        return false
+    }
+
+    /// Seconds left until the current enforcement window ends (countdown end, Pomodoro work cycle end, cooldown end, schedule end, or period rollover).
     public func remainingLockSeconds(
         at now: Date = Date(),
         usedTodaySeconds: TimeInterval = 0,
@@ -1501,19 +1993,27 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         continuous: Double = TrustedClock.continuousSeconds(),
         calendar: Calendar = .current
     ) -> TimeInterval {
-        guard isEnforcing(
+        let enforcing = isEnforcing(
             at: now,
             usedTodaySeconds: usedTodaySeconds,
             workedTodaySeconds: workedTodaySeconds,
             launchesToday: launchesToday,
             continuous: continuous,
             calendar: calendar
-        ) else {
+        )
+        let protectedPomodoroBreak = (kind == .pomodoro && enabled && protectPomodoroBreaks && pomodoroPhase != .idle)
+        guard enforcing || protectedPomodoroBreak else {
             return 0
         }
         switch kind {
         case .countdown:
             return activeDeadline?.remainingAfterPossibleReboot(wall: now, continuous: continuous) ?? 0
+        case .pomodoro:
+            if let deadline = activePomodoroDeadline {
+                let left = deadline.remainingAfterPossibleReboot(wall: now, continuous: continuous)
+                if left > 0 { return left }
+            }
+            return Double(max(1, pomodoroWorkMinutes)) * 60
         case .launchLimit:
             let cooldownLeft = launchCooldownRemainingSeconds(at: now, continuous: continuous)
             if cooldownLeft > 0 && launchesToday < maxDailyLaunches {
@@ -1524,8 +2024,18 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             }
             return 3600
         case .schedule:
-            let comps = calendar.dateComponents([.hour, .minute, .second], from: now)
-            let nowSeconds = (comps.hour ?? 0) * 3600 + (comps.minute ?? 0) * 60 + (comps.second ?? 0)
+            let comps = calendar.dateComponents([.weekday, .hour, .minute, .second], from: now)
+            let todayWeekday = comps.weekday ?? 2
+            let nowMinutes = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+            let nowSeconds = nowMinutes * 60 + (comps.second ?? 0)
+            for interval in allScheduleIntervals where interval.isActive(minuteOfDay: nowMinutes, todayWeekday: todayWeekday, scheduleDays: scheduleDays) {
+                let endSeconds = interval.endMinutes * 60
+                if endSeconds > nowSeconds {
+                    return TimeInterval(endSeconds - nowSeconds)
+                } else {
+                    return TimeInterval(86400 - nowSeconds + endSeconds)
+                }
+            }
             let endSeconds = endMinutes * 60
             if endSeconds > nowSeconds {
                 return TimeInterval(endSeconds - nowSeconds)
@@ -1533,6 +2043,11 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
                 return TimeInterval(86400 - nowSeconds + endSeconds)
             }
         case .dailyLimit, .workGoal, .alwaysOn:
+            if kind == .dailyLimit && limitPeriodUnit == .hour {
+                let comps = calendar.dateComponents([.minute, .second], from: now)
+                let elapsedInHour = (comps.minute ?? 0) * 60 + (comps.second ?? 0)
+                return TimeInterval(max(60, 3600 - elapsedInHour))
+            }
             if let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) {
                 return max(60, tomorrow.timeIntervalSince(now))
             }
@@ -1564,13 +2079,9 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         punisherEnabled && punisher.isActive(at: continuous) ? blockAction.escalated : blockAction
     }
 
-    /// Formatted schedule string (`09:00–19:00`).
+    /// Formatted schedule string (`09:00–14:00, 15:30–20:00`).
     public var scheduleLabel: String {
-        String(
-            format: "%02d:%02d–%02d:%02d",
-            startMinutes / 60, startMinutes % 60,
-            endMinutes / 60, endMinutes % 60
-        )
+        allScheduleIntervals.map(\.label).joined(separator: ", ")
     }
 
     /// Judges whether `proposed` (or `nil` for deletion) weakens an actively enforcing general rule.
@@ -1594,8 +2105,13 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         if proposed.kind != current.kind {
             return "cambiar el modo de activación de «\(current.name)»"
         }
-        if current.kind == .dailyLimit && proposed.dailyLimitMinutes > current.dailyLimitMinutes {
-            return "ampliar el límite diario de «\(current.name)» una vez agotado"
+        if current.kind == .dailyLimit {
+            if proposed.dailyLimitMinutes > current.dailyLimitMinutes {
+                return "ampliar el presupuesto de «\(current.name)» una vez agotado"
+            }
+            if proposed.limitPeriodUnit != current.limitPeriodUnit {
+                return "cambiar el periodo del presupuesto de «\(current.name)»"
+            }
         }
         if current.kind == .workGoal {
             if proposed.goalMinutesRequired < current.goalMinutesRequired {
@@ -1616,6 +2132,20 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
                 return "acortar el enfriamiento entre visitas de «\(current.name)»"
             }
         }
+        if current.kind == .pomodoro {
+            if proposed.pomodoroWorkMinutes < current.pomodoroWorkMinutes {
+                return "acortar el ciclo de enfoque Pomodoro de «\(current.name)»"
+            }
+            if proposed.pomodoroShortBreakMinutes > current.pomodoroShortBreakMinutes || proposed.pomodoroLongBreakMinutes > current.pomodoroLongBreakMinutes {
+                return "alargar los descansos Pomodoro de «\(current.name)»"
+            }
+            if current.pomodoroPenaltyReset && !proposed.pomodoroPenaltyReset {
+                return "quitar la penalización Pomodoro de «\(current.name)»"
+            }
+            if current.protectPomodoroBreaks && !proposed.protectPomodoroBreaks {
+                return "quitar la protección en descansos Pomodoro de «\(current.name)»"
+            }
+        }
         if proposed.dailyMicroPausesAllowed > current.dailyMicroPausesAllowed || proposed.microPauseMinutes > current.microPauseMinutes {
             return "aumentar las micro-pausas de «\(current.name)» mientras está bloqueando"
         }
@@ -1625,7 +2155,12 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
            nextEnd + 5 < curEnd {
             return "acortar el temporizador de «\(current.name)»"
         }
-        if current.kind == .schedule && (proposed.scheduleDays != current.scheduleDays || proposed.startMinutes != current.startMinutes || proposed.endMinutes != current.endMinutes) {
+        if current.kind == .schedule && (
+            proposed.scheduleDays != current.scheduleDays ||
+            proposed.startMinutes != current.startMinutes ||
+            proposed.endMinutes != current.endMinutes ||
+            proposed.extraScheduleIntervals != current.extraScheduleIntervals
+        ) {
             return "cambiar el horario de «\(current.name)» mientras está activo"
         }
         if current.blockApps && !proposed.blockApps {
@@ -1640,6 +2175,9 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             if current.appListMode == .blockListed && !curApps.isSubset(of: nextApps) {
                 return "desbloquear apps en «\(current.name)»"
             }
+        }
+        if current.blockGameLibraries && !proposed.blockGameLibraries {
+            return "quitar el bloqueo de bibliotecas de juegos en «\(current.name)»"
         }
         if proposed.blockAction.strength < current.blockAction.strength {
             return "suavizar el cierre de apps en «\(current.name)»"
@@ -1659,11 +2197,17 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             if current.webListMode == .blockListed && !curDomains.isSubset(of: nextDomains) {
                 return "desbloquear webs en «\(current.name)»"
             }
+            if current.blockSearchMedia && !proposed.blockSearchMedia {
+                return "quitar el bloqueo de imágenes/vídeos en buscadores de «\(current.name)»"
+            }
         }
         let curKeywords = Set(FocusRules.parseTitleKeywords(current.blockedTitleKeywords).map { $0.lowercased() })
         let nextKeywords = Set(FocusRules.parseTitleKeywords(proposed.blockedTitleKeywords).map { $0.lowercased() })
         if !curKeywords.isSubset(of: nextKeywords) {
             return "quitar palabras bloqueadas en «\(current.name)»"
+        }
+        if !curKeywords.isEmpty && !current.wholeWordKeywords && proposed.wholeWordKeywords {
+            return "suavizar la coincidencia de palabras bloqueadas en «\(current.name)»"
         }
         let curFolders = Set(FolderRules.normalizeList(current.blockedFolders).map { $0.lowercased() })
         let nextFolders = Set(FolderRules.normalizeList(proposed.blockedFolders).map { $0.lowercased() })
@@ -1734,6 +2278,27 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             domains: "x.com, twitter.com, reddit.com",
             webBlockAction: .redirect,
             motivationalMessage: "Evita abrir pestañas por impulso cada pocos minutos.",
+            protection: .challenge
+        ),
+        GeneralBlockRule(
+            id: UUID(uuidString: "22222222-2222-2222-2222-222222222205")!,
+            name: "Pomodoro estricto 25/5 · sin juegos ni vídeos",
+            enabled: false,
+            kind: .pomodoro,
+            pomodoroWorkMinutes: 25,
+            pomodoroShortBreakMinutes: 5,
+            pomodoroLongBreakMinutes: 15,
+            pomodoroLongBreakEvery: 4,
+            pomodoroTotalCycles: 4,
+            pomodoroPenaltyReset: true,
+            protectPomodoroBreaks: true,
+            pomodoroWaitForUser: true,
+            blockGameLibraries: true,
+            webListMode: .blockListed,
+            domains: "youtube.com, twitch.tv, x.com, reddit.com, tiktok.com",
+            webBlockAction: .redirect,
+            blockSearchMedia: true,
+            motivationalMessage: "Ciclo Pomodoro activo: si abres una distracción, el ciclo se reinicia.",
             protection: .challenge
         )
     ]

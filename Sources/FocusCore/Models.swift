@@ -46,8 +46,12 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
     public var appListMode: AppListMode
     public var webListMode: WebListMode
     public var blockedTitleKeywords: String
+    public var wholeWordKeywords: Bool
     public var customRedirectURL: String
     public var motivationalMessage: String
+    public var blockSearchMedia: Bool
+    public var blockGameLibraries: Bool
+    public var similarityProtection: SimilarityProtectionLevel
 
     public init(
         id: UUID = UUID(),
@@ -72,8 +76,12 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         appListMode: AppListMode = .allowListed,
         webListMode: WebListMode = .allowListed,
         blockedTitleKeywords: String = "",
+        wholeWordKeywords: Bool = false,
         customRedirectURL: String = "",
-        motivationalMessage: String = ""
+        motivationalMessage: String = "",
+        blockSearchMedia: Bool = false,
+        blockGameLibraries: Bool = false,
+        similarityProtection: SimilarityProtectionLevel = .off
     ) {
         self.id = id
         self.name = name
@@ -97,14 +105,19 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         self.appListMode = appListMode
         self.webListMode = webListMode
         self.blockedTitleKeywords = FocusRules.normalizeTitleKeywords(blockedTitleKeywords)
+        self.wholeWordKeywords = wholeWordKeywords
         self.customRedirectURL = customRedirectURL.trimmingCharacters(in: .whitespacesAndNewlines)
         self.motivationalMessage = motivationalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.blockSearchMedia = blockSearchMedia
+        self.blockGameLibraries = blockGameLibraries
+        self.similarityProtection = similarityProtection
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, category, minutes, leadMinutes, strict, apps, domains, folder, checklist, autoStart
         case protection, unlockChars, stopDelayMinutes, blockAction, webBlockAction, guardSystemPanes, punisherEnabled
-        case blockedFolders, appListMode, webListMode, blockedTitleKeywords, customRedirectURL, motivationalMessage
+        case blockedFolders, appListMode, webListMode, blockedTitleKeywords, wholeWordKeywords, customRedirectURL, motivationalMessage
+        case blockSearchMedia, blockGameLibraries, similarityProtection
     }
 
     public init(from decoder: Decoder) throws {
@@ -131,8 +144,12 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         appListMode = try c.decodeIfPresent(AppListMode.self, forKey: .appListMode) ?? .allowListed
         webListMode = try c.decodeIfPresent(WebListMode.self, forKey: .webListMode) ?? .allowListed
         blockedTitleKeywords = try c.decodeIfPresent(String.self, forKey: .blockedTitleKeywords) ?? ""
+        wholeWordKeywords = try c.decodeIfPresent(Bool.self, forKey: .wholeWordKeywords) ?? false
         customRedirectURL = (try c.decodeIfPresent(String.self, forKey: .customRedirectURL) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         motivationalMessage = (try c.decodeIfPresent(String.self, forKey: .motivationalMessage) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        blockSearchMedia = try c.decodeIfPresent(Bool.self, forKey: .blockSearchMedia) ?? false
+        blockGameLibraries = try c.decodeIfPresent(Bool.self, forKey: .blockGameLibraries) ?? false
+        similarityProtection = try c.decodeIfPresent(SimilarityProtectionLevel.self, forKey: .similarityProtection) ?? .off
     }
 
     public static let defaults: [FocusProfile] = [
@@ -274,10 +291,18 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
     public var webListMode: WebListMode
     /// Comma-separated keywords that trigger a block when found in the frontmost window title.
     public var blockedTitleKeywords: String
+    /// When true, `blockedTitleKeywords` only match whole words (`WholeWord` in FocusMe).
+    public var wholeWordKeywords: Bool
     /// Optional productive URL (`https://...`) to redirect blocked tabs to instead of the local block page (`websiteRedirectUrl` in FocusMe).
     public var customRedirectURL: String
     /// Custom motivational message or quote shown on the block page.
     public var motivationalMessage: String
+    /// Blocks image/video tabs on search engines while allowing text search (`SearchMediaRules`).
+    public var blockSearchMedia: Bool
+    /// Blocks Steam, Epic, Battle.net, Roblox, GOG, CrossOver, Whisky and any executable inside game library folders (`GameLibraryRules`).
+    public var blockGameLibraries: Bool
+    /// Similarity protection level (`TargetListHandler::setSimilarityProtection` in FocusMe).
+    public var similarityProtection: SimilarityProtectionLevel
 
     public init(
         id: UUID = UUID(),
@@ -314,8 +339,12 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         appListMode: AppListMode = .allowListed,
         webListMode: WebListMode = .allowListed,
         blockedTitleKeywords: String = "",
+        wholeWordKeywords: Bool = false,
         customRedirectURL: String = "",
-        motivationalMessage: String = ""
+        motivationalMessage: String = "",
+        blockSearchMedia: Bool = false,
+        blockGameLibraries: Bool = false,
+        similarityProtection: SimilarityProtectionLevel = .off
     ) {
         self.id = id
         self.title = title
@@ -351,8 +380,12 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         self.appListMode = appListMode
         self.webListMode = webListMode
         self.blockedTitleKeywords = FocusRules.normalizeTitleKeywords(blockedTitleKeywords)
+        self.wholeWordKeywords = wholeWordKeywords
         self.customRedirectURL = customRedirectURL.trimmingCharacters(in: .whitespacesAndNewlines)
         self.motivationalMessage = motivationalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.blockSearchMedia = blockSearchMedia
+        self.blockGameLibraries = blockGameLibraries
+        self.similarityProtection = similarityProtection
     }
 
     enum CodingKeys: String, CodingKey {
@@ -360,7 +393,8 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         case apps, domains, folder, checklist, repeatRule, repeatDays, skippedDates, seriesID
         case profileID, isFixedAppointment, completed, calendarEventID, calendarSnapshot, autoStart
         case protection, unlockChars, stopDelayMinutes, blockAction, webBlockAction, guardSystemPanes, punisherEnabled
-        case blockedFolders, appListMode, webListMode, blockedTitleKeywords, customRedirectURL, motivationalMessage
+        case blockedFolders, appListMode, webListMode, blockedTitleKeywords, wholeWordKeywords, customRedirectURL, motivationalMessage
+        case blockSearchMedia, blockGameLibraries, similarityProtection
     }
 
     public init(from decoder: Decoder) throws {
@@ -399,8 +433,12 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         appListMode = try c.decodeIfPresent(AppListMode.self, forKey: .appListMode) ?? .allowListed
         webListMode = try c.decodeIfPresent(WebListMode.self, forKey: .webListMode) ?? .allowListed
         blockedTitleKeywords = try c.decodeIfPresent(String.self, forKey: .blockedTitleKeywords) ?? ""
+        wholeWordKeywords = try c.decodeIfPresent(Bool.self, forKey: .wholeWordKeywords) ?? false
         customRedirectURL = (try c.decodeIfPresent(String.self, forKey: .customRedirectURL) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         motivationalMessage = (try c.decodeIfPresent(String.self, forKey: .motivationalMessage) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        blockSearchMedia = try c.decodeIfPresent(Bool.self, forKey: .blockSearchMedia) ?? false
+        blockGameLibraries = try c.decodeIfPresent(Bool.self, forKey: .blockGameLibraries) ?? false
+        similarityProtection = try c.decodeIfPresent(SimilarityProtectionLevel.self, forKey: .similarityProtection) ?? .off
     }
 
     public var end: Date { scheduledAt.addingTimeInterval(Double(minutes) * 60) }
@@ -408,16 +446,16 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
     public var valid: Bool {
         let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let validDuration = (1...720).contains(minutes) && (0...60).contains(leadMinutes)
-        let validStrict = !strict || !apps.isEmpty
+        let validStrict = !strict || !apps.isEmpty || blockGameLibraries
         let validRepeat = repeatRule != .customDays || !repeatDays.isEmpty
-        // Blocking websites needs a list of domains unless blocking all websites (`webListMode == .blockAll`).
-        let validWeb = webBlockAction == .warn || webListMode == .blockAll || !FocusRules.parseDomains(domains).valid.isEmpty
+        // Blocking websites needs a list of domains unless blocking all websites (`webListMode == .blockAll`) or search media.
+        let validWeb = webBlockAction == .warn || webListMode == .blockAll || blockSearchMedia || !FocusRules.parseDomains(domains).valid.isEmpty
         return hasTitle && validDuration && validStrict && validRepeat && validWeb
     }
 
     /// Whether this task defends itself at all: it blocks something, or it resists being stopped.
     public var enforces: Bool {
-        strict || webBlockAction != .warn || protection != .none || !blockedFolders.isEmpty
+        strict || blockGameLibraries || webBlockAction != .warn || blockSearchMedia || protection != .none || !blockedFolders.isEmpty
             || !FocusRules.parseTitleKeywords(blockedTitleKeywords).isEmpty
     }
 
@@ -457,8 +495,12 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         appListMode = profile.appListMode
         webListMode = profile.webListMode
         blockedTitleKeywords = profile.blockedTitleKeywords
+        wholeWordKeywords = profile.wholeWordKeywords
         customRedirectURL = profile.customRedirectURL
         motivationalMessage = profile.motivationalMessage
+        blockSearchMedia = profile.blockSearchMedia
+        blockGameLibraries = profile.blockGameLibraries
+        similarityProtection = profile.similarityProtection
         profileID = profile.id
     }
 
@@ -1138,6 +1180,12 @@ public struct Settings: Codable, Equatable, Sendable {
     public var continuousBreakMaxSkipsPerDay: Int
     /// Motivational messages rotated during breaks (`breakMessages` / `pickBreakMessage` in FocusMe).
     public var breakMessages: [String]
+    /// Hour of the day (`0...8`) at which daily quotas and counters roll over (`nextDayOffsetHours` in FocusMe).
+    public var dayRolloverHour: Int
+    /// Scrubs blocked URLs and terminal kill/unload commands from the clipboard while a block is active (`isClipboardPassed` in FocusMe).
+    public var protectClipboard: Bool
+    /// Prevents clearing session history or disabling title/browser observation while a protected block is active (`protectActivity` in FocusMe).
+    public var protectActivityHistory: Bool
 
     public static let defaultBreakMessages: [String] = [
         "Descansa la vista 20 segundos mirando a lo lejos.",
@@ -1178,6 +1226,9 @@ public struct Settings: Codable, Equatable, Sendable {
         self.continuousBreakDurationMinutes = 5
         self.continuousBreakMaxSkipsPerDay = 2
         self.breakMessages = Self.defaultBreakMessages
+        self.dayRolloverHour = 0
+        self.protectClipboard = false
+        self.protectActivityHistory = false
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1187,6 +1238,7 @@ public struct Settings: Codable, Equatable, Sendable {
         case watchBackgroundWindows, inspectEmbeddedPages, relaunchGuard, emergencyUses, runUpMinutes
         case enforceBreaks, showFloatingTimerPill, preBlockRemindersEnabled
         case continuousBreakEnabled, continuousWorkMinutes, continuousBreakDurationMinutes, continuousBreakMaxSkipsPerDay, breakMessages
+        case dayRolloverHour, protectClipboard, protectActivityHistory
     }
 
     public init(from decoder: Decoder) throws {
@@ -1223,6 +1275,9 @@ public struct Settings: Codable, Equatable, Sendable {
         continuousBreakMaxSkipsPerDay = max(0, min(10, try c.decodeIfPresent(Int.self, forKey: .continuousBreakMaxSkipsPerDay) ?? 2))
         let decodedMessages = try c.decodeIfPresent([String].self, forKey: .breakMessages) ?? Self.defaultBreakMessages
         breakMessages = decodedMessages.isEmpty ? Self.defaultBreakMessages : decodedMessages
+        dayRolloverHour = max(0, min(8, try c.decodeIfPresent(Int.self, forKey: .dayRolloverHour) ?? 0))
+        protectClipboard = try c.decodeIfPresent(Bool.self, forKey: .protectClipboard) ?? false
+        protectActivityHistory = try c.decodeIfPresent(Bool.self, forKey: .protectActivityHistory) ?? false
     }
 }
 
@@ -1300,7 +1355,7 @@ public struct Workspace: Codable, Equatable, Sendable {
     public var pendingCalendarOps: [PendingCalendarOp]
     /// General blocking rules & daily limit timers that work independently of agenda tasks.
     public var generalRules: [GeneralBlockRule]
-    /// Daily usage seconds per rule: `[dayKey: [ruleID.uuidString: seconds]]`.
+    /// Usage seconds per rule and period (`[periodKey: [ruleID.uuidString: seconds]]`).
     public var dailyRuleUsage: [String: [String: TimeInterval]]
     /// Daily launch counts per rule: `[dayKey: [ruleID.uuidString: launches]]`.
     public var dailyRuleLaunches: [String: [String: Int]]
@@ -1310,6 +1365,8 @@ public struct Workspace: Codable, Equatable, Sendable {
     public var dailyContinuousBreakSkips: [String: Int]
     /// Auto-expiring temporary allow entries (`setAllowExpiryMinutes` in FocusMe).
     public var temporaryAllows: [TemporaryAllowEntry]
+    /// Audit log of rule/session changes, micro-pauses, and overrides (`PlanChangeLog` in FocusMe).
+    public var auditLog: [RuleAuditEntry]
     /// Elements that could not be read when this workspace was loaded (not saved). Above zero, the app keeps a copy
     /// of the original file before writing anything.
     public var decodingSkipped = 0
@@ -1328,12 +1385,13 @@ public struct Workspace: Codable, Equatable, Sendable {
         self.dailyMicroPausesUsed = [:]
         self.dailyContinuousBreakSkips = [:]
         self.temporaryAllows = []
+        self.auditLog = []
     }
 
     enum CodingKeys: String, CodingKey {
         case schema, tasks, profiles, session, history, settings, pendingCalendarOps
         case generalRules, dailyRuleUsage, dailyRuleLaunches, dailyMicroPausesUsed
-        case dailyContinuousBreakSkips, temporaryAllows
+        case dailyContinuousBreakSkips, temporaryAllows, auditLog
     }
 
     public init(from decoder: Decoder) throws {
@@ -1358,19 +1416,33 @@ public struct Workspace: Codable, Equatable, Sendable {
         dailyMicroPausesUsed = (try? c.decodeIfPresent([String: [String: Int]].self, forKey: .dailyMicroPausesUsed)) ?? [:]
         dailyContinuousBreakSkips = (try? c.decodeIfPresent([String: Int].self, forKey: .dailyContinuousBreakSkips)) ?? [:]
         temporaryAllows = (try? c.decodeIfPresent([TemporaryAllowEntry].self, forKey: .temporaryAllows)) ?? []
+        auditLog = (try? c.decodeIfPresent([RuleAuditEntry].self, forKey: .auditLog)) ?? []
         let brokenSession = c.contains(.session) && readableSession == nil && (try? c.decodeNil(forKey: .session)) != true ? 1 : 0
         decodingSkipped = (lossyTasks?.skipped ?? 0) + (lossyProfiles?.skipped ?? 0) + (lossyHistory?.skipped ?? 0)
             + (lossyOps?.skipped ?? 0) + (lossyRules?.skipped ?? 0) + brokenSession
     }
 
-    public func usedSecondsToday(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
-        let key = FocusRules.dayKey(for: now, calendar: calendar)
+    public mutating func recordAudit(category: String, summary: String, at now: Date = Date()) {
+        auditLog.insert(RuleAuditEntry(at: now, category: category, summary: summary), at: 0)
+        if auditLog.count > 300 {
+            auditLog.removeLast(auditLog.count - 300)
+        }
+    }
+
+    private func rulePeriodUnit(for ruleID: UUID) -> LimitPeriodUnit {
+        generalRules.first(where: { $0.id == ruleID })?.limitPeriodUnit ?? .day
+    }
+
+    public func usedSecondsToday(for ruleID: UUID, periodUnit: LimitPeriodUnit? = nil, at now: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
+        let unit = periodUnit ?? rulePeriodUnit(for: ruleID)
+        let key = FocusRules.periodKey(for: now, unit: unit, rolloverHour: settings.dayRolloverHour, calendar: calendar)
         return dailyRuleUsage[key]?[ruleID.uuidString] ?? 0
     }
 
     @discardableResult
-    public mutating func addUsedSeconds(_ delta: TimeInterval, for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
-        let key = FocusRules.dayKey(for: now, calendar: calendar)
+    public mutating func addUsedSeconds(_ delta: TimeInterval, for ruleID: UUID, periodUnit: LimitPeriodUnit? = nil, at now: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
+        let unit = periodUnit ?? rulePeriodUnit(for: ruleID)
+        let key = FocusRules.periodKey(for: now, unit: unit, rolloverHour: settings.dayRolloverHour, calendar: calendar)
         var dayMap = dailyRuleUsage[key] ?? [:]
         let updated = max(0, (dayMap[ruleID.uuidString] ?? 0) + max(0, delta))
         dayMap[ruleID.uuidString] = updated
@@ -1379,13 +1451,13 @@ public struct Workspace: Codable, Equatable, Sendable {
     }
 
     public func launchesToday(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
-        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
         return dailyRuleLaunches[key]?[ruleID.uuidString] ?? 0
     }
 
     @discardableResult
     public mutating func incrementLaunches(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
-        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
         var dayMap = dailyRuleLaunches[key] ?? [:]
         let updated = (dayMap[ruleID.uuidString] ?? 0) + 1
         dayMap[ruleID.uuidString] = updated
@@ -1394,13 +1466,13 @@ public struct Workspace: Codable, Equatable, Sendable {
     }
 
     public func microPausesUsedToday(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
-        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
         return dailyMicroPausesUsed[key]?[ruleID.uuidString] ?? 0
     }
 
     @discardableResult
     public mutating func incrementMicroPauses(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
-        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
         var dayMap = dailyMicroPausesUsed[key] ?? [:]
         let updated = (dayMap[ruleID.uuidString] ?? 0) + 1
         dayMap[ruleID.uuidString] = updated
@@ -1409,13 +1481,13 @@ public struct Workspace: Codable, Equatable, Sendable {
     }
 
     public func continuousBreakSkipsToday(at now: Date = Date(), calendar: Calendar = .current) -> Int {
-        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
         return dailyContinuousBreakSkips[key] ?? 0
     }
 
     @discardableResult
     public mutating func incrementContinuousBreakSkips(at now: Date = Date(), calendar: Calendar = .current) -> Int {
-        let key = FocusRules.dayKey(for: now, calendar: calendar)
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
         let updated = (dailyContinuousBreakSkips[key] ?? 0) + 1
         dailyContinuousBreakSkips[key] = updated
         return updated
@@ -1547,9 +1619,10 @@ public enum FocusRules {
             : String(format: "%@%02d:%02d", prefix, value / 60, value % 60)
     }
 
-    /// Normalizes a domain or domain+subpath token:
+    /// Normalizes a domain, domain+subpath, or wildcard (`*`, `?`) token:
     /// - Full URLs with scheme (`"https://www.claude.ai/chat?x=1"`) normalize to their domain (`"claude.ai"`).
     /// - Bare domain+subpath entries (`"youtube.com/shorts"`, `"www.instagram.com/reels/"`) preserve the subpath (`"youtube.com/shorts"`).
+    /// - Wildcard entries (`"*poker*.com"`, `"reddit.com/r/*"`) preserve `*` and `?` (`TargetListHandler::wildcardToRegEx`).
     public static func normalizeDomainEntry(_ raw: String) -> String? {
         var token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: ",;"))
@@ -1559,6 +1632,7 @@ public enum FocusRules {
         }
         let hostCandidate: String
         var pathCandidate = ""
+        let hasQueryParam = token.contains("?") && token.contains("=")
         if token.contains("://"), let url = URL(string: token), let host = url.host {
             hostCandidate = host
         } else if token.contains("/"), !token.contains("://") {
@@ -1566,7 +1640,7 @@ public enum FocusRules {
             hostCandidate = String(parts[0])
             if parts.count > 1 {
                 var sub = String(parts[1])
-                if let q = sub.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+                if let q = sub.firstIndex(where: { $0 == "#" || (hasQueryParam && $0 == "?") }) {
                     sub = String(sub[..<q])
                 }
                 sub = sub.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
@@ -1574,7 +1648,7 @@ public enum FocusRules {
                     pathCandidate = "/" + sub
                 }
             }
-        } else if (token.contains(":") || token.contains("?")),
+        } else if (token.contains(":") || hasQueryParam),
                   let url = URL(string: "https://" + token), let host = url.host {
             hostCandidate = host
         } else {
@@ -1586,14 +1660,14 @@ public enum FocusRules {
         }
         guard cleaned.contains("."),
               !cleaned.contains(" "),
-              cleaned.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }),
+              cleaned.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "*" || $0 == "?" }),
               !cleaned.hasPrefix("-"),
               !cleaned.hasSuffix("-") else {
             return nil
         }
         if !pathCandidate.isEmpty {
             let validPath = pathCandidate.allSatisfy {
-                $0.isLetter || $0.isNumber || $0 == "/" || $0 == "-" || $0 == "_" || $0 == "." || $0 == "~"
+                $0.isLetter || $0.isNumber || $0 == "/" || $0 == "-" || $0 == "_" || $0 == "." || $0 == "~" || $0 == "*" || $0 == "?"
             }
             guard validPath else { return nil }
             return cleaned + pathCandidate
@@ -1619,13 +1693,45 @@ public enum FocusRules {
         parseDomains(list).valid.joined(separator: ", ")
     }
 
-    /// True when `(host, path)` matches a normalized domain or domain+subpath entry (`"youtube.com"` or `"youtube.com/shorts"`).
+    /// Converts a FocusMe wildcard pattern (`*`, `?`) into a regular expression (`TargetListHandler::wildcardToRegEx`).
+    public static func wildcardRegexPattern(from pattern: String, anchored: Bool = true) -> String {
+        var result = anchored ? "^" : ""
+        for ch in pattern {
+            switch ch {
+            case "*":
+                result += ".*"
+            case "?":
+                result += "."
+            case ".", "+", "^", "$", "(", ")", "[", "]", "{", "}", "|", "\\":
+                result += "\\" + String(ch)
+            default:
+                result.append(ch)
+            }
+        }
+        if anchored { result += "$" }
+        return result
+    }
+
+    private static func matchesWildcard(_ text: String, pattern: String) -> Bool {
+        let rxPattern = wildcardRegexPattern(from: pattern, anchored: true)
+        guard let regex = try? NSRegularExpression(pattern: rxPattern, options: [.caseInsensitive]) else { return false }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.firstMatch(in: text, options: [], range: range) != nil
+    }
+
+    /// True when `(host, path)` matches a normalized domain, domain+subpath, or wildcard (`*`, `?`) entry (`"youtube.com"`, `"youtube.com/shorts"`, `"*poker*.com"`).
     public static func entryMatches(host: String, path: String = "", entry: String) -> Bool {
         let normalizedHost = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         guard !normalizedHost.isEmpty else { return false }
         let parts = entry.lowercased().split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
         let entryHost = String(parts[0])
-        let hostMatch = normalizedHost == entryHost || normalizedHost.hasSuffix("." + entryHost)
+        let hostMatch: Bool
+        if entryHost.contains("*") || entryHost.contains("?") {
+            hostMatch = matchesWildcard(normalizedHost, pattern: entryHost)
+                || matchesWildcard(normalizedHost, pattern: "*." + entryHost)
+        } else {
+            hostMatch = normalizedHost == entryHost || normalizedHost.hasSuffix("." + entryHost)
+        }
         guard hostMatch else { return false }
         if parts.count > 1, !parts[1].isEmpty {
             let entryPath = "/" + String(parts[1]).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -1635,6 +1741,10 @@ public enum FocusRules {
             }
             if !normPath.hasPrefix("/") { normPath = "/" + normPath }
             while normPath.count > 1 && normPath.hasSuffix("/") { normPath.removeLast() }
+            if entryPath.contains("*") || entryPath.contains("?") {
+                return matchesWildcard(normPath, pattern: entryPath)
+                    || matchesWildcard(normPath, pattern: entryPath + "/*")
+            }
             return normPath == entryPath || normPath.hasPrefix(entryPath + "/")
         }
         return true
@@ -1692,15 +1802,150 @@ public enum FocusRules {
     }
 
     /// Returns the first keyword from `keywords` that appears in `title` (case- and accent-insensitive), or `nil`.
-    public static func matchesTitleKeyword(_ title: String?, keywords: String) -> String? {
+    /// Supports:
+    /// - Regex syntax (`/pattern/`)
+    /// - Wildcard syntax (`*`, `?`, `TargetListHandler::wildcardToRegEx`)
+    /// - Whole-word matching (`wholeWord: true`, FocusMe's `WholeWord` keyword mode)
+    public static func matchesTitleKeyword(_ title: String?, keywords: String, wholeWord: Bool = false) -> String? {
         guard let title, !title.isEmpty else { return nil }
         let list = parseTitleKeywords(keywords)
         guard !list.isEmpty else { return nil }
         let foldedTitle = title.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "es_ES"))
         return list.first { kw in
+            if kw.count > 2, kw.hasPrefix("/"), kw.hasSuffix("/") {
+                let rawPattern = String(kw.dropFirst().dropLast())
+                guard let regex = try? NSRegularExpression(pattern: rawPattern, options: [.caseInsensitive]) else { return false }
+                let range = NSRange(title.startIndex..<title.endIndex, in: title)
+                return regex.firstMatch(in: title, options: [], range: range) != nil
+            }
             let foldedKw = kw.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "es_ES"))
-            return !foldedKw.isEmpty && foldedTitle.contains(foldedKw)
+            guard !foldedKw.isEmpty else { return false }
+            if foldedKw.contains("*") || foldedKw.contains("?") {
+                let rxPattern = wildcardRegexPattern(from: foldedKw, anchored: false)
+                guard let regex = try? NSRegularExpression(pattern: rxPattern, options: [.caseInsensitive]) else { return false }
+                let range = NSRange(foldedTitle.startIndex..<foldedTitle.endIndex, in: foldedTitle)
+                return regex.firstMatch(in: foldedTitle, options: [], range: range) != nil
+            }
+            if wholeWord {
+                let escaped = NSRegularExpression.escapedPattern(for: foldedKw)
+                let boundaryPattern = "(?:^|[^\\p{L}\\p{N}_])" + escaped + "(?:$|[^\\p{L}\\p{N}_])"
+                guard let regex = try? NSRegularExpression(pattern: boundaryPattern, options: [.caseInsensitive]) else { return false }
+                let range = NSRange(foldedTitle.startIndex..<foldedTitle.endIndex, in: foldedTitle)
+                return regex.firstMatch(in: foldedTitle, options: [], range: range) != nil
+            }
+            return foldedTitle.contains(foldedKw)
         }
+    }
+
+    // MARK: - FocusMe's TargetListHandler::isTargetTooBroad & setSimilarityProtection & redirectDestinationBlocked
+
+    private static let broadTLDs: Set<String> = [
+        "com", "org", "net", "es", "io", "ai", "co", "tv", "gg", "app", "dev", "me", "edu", "gov", "uk", "de", "fr"
+    ]
+
+    /// Rejects overly broad allowlist or temporary-allow entries (`*`, `*.com`, `.com`, single-letter patterns) that would open the entire web (`TargetListHandler::isTargetTooBroad`).
+    public static func isAllowEntryTooBroad(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return "Escribe un dominio concreto." }
+        if trimmed == "*" || trimmed == "*.*" || trimmed == "http://*" || trimmed == "https://*" || trimmed == "/.*/" {
+            return "«\(raw)» es demasiado amplio y abriría cualquier web."
+        }
+        guard let normalized = normalizeDomainEntry(trimmed) else {
+            return "«\(raw)» no es un dominio válido."
+        }
+        let hostPart = String(normalized.split(separator: "/", maxSplits: 1)[0])
+        let withoutWildcards = hostPart.replacingOccurrences(of: "*", with: "").replacingOccurrences(of: "?", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        if withoutWildcards.isEmpty || broadTLDs.contains(withoutWildcards) || withoutWildcards.count < 3 {
+            return "«\(raw)» es demasiado genérico para una excepción o lista blanca."
+        }
+        let labels = hostPart.split(separator: ".").map(String.init)
+        if labels.count == 2, (labels[0] == "*" || labels[0] == "?" || labels[0].count <= 1) {
+            return "«\(raw)» abriría todos los dominios de «.\(labels[1])»."
+        }
+        return nil
+    }
+
+    /// Computes Levenshtein edit distance between two strings for `SimilarityProtectionLevel`.
+    private static func editDistance(_ a: String, _ b: String) -> Int {
+        let aChars = Array(a)
+        let bChars = Array(b)
+        if aChars.isEmpty { return bChars.count }
+        if bChars.isEmpty { return aChars.count }
+        var prev = Array(0...bChars.count)
+        for (i, ca) in aChars.enumerated() {
+            var cur = [i + 1]
+            cur.reserveCapacity(bChars.count + 1)
+            for (j, cb) in bChars.enumerated() {
+                let cost = (ca == cb) ? 0 : 1
+                cur.append(min(cur[j] + 1, prev[j + 1] + 1, prev[j] + cost))
+            }
+            prev = cur
+        }
+        return prev[bChars.count]
+    }
+
+    /// Checks whether `allowCandidate` violates `SimilarityProtectionLevel` against `blockedDomains` (`TargetListHandler::setSimilarityProtection`).
+    public static func checkSimilarityRestriction(
+        allowCandidate: String,
+        blockedDomains: String,
+        level: SimilarityProtectionLevel
+    ) -> String? {
+        if let broadReason = isAllowEntryTooBroad(allowCandidate) {
+            return broadReason
+        }
+        guard level != .off else { return nil }
+        guard let normCandidate = normalizeDomainEntry(allowCandidate) else { return nil }
+        let candidateParts = normCandidate.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        let candidateHost = String(candidateParts[0])
+        let candidateHasSubpath = candidateParts.count > 1 && !candidateParts[1].isEmpty
+        let blockedList = parseDomains(blockedDomains).valid
+
+        for blocked in blockedList {
+            let blockedParts = blocked.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            let blockedHost = String(blockedParts[0])
+            let sameOrSubdomain = candidateHost == blockedHost || candidateHost.hasSuffix("." + blockedHost)
+            if sameOrSubdomain {
+                if level == .specificPagesOnly && !candidateHasSubpath {
+                    return "La protección de similitud («\(level.label)») impide autorizar el dominio entero «\(candidateHost)». Indica una subruta concreta (p. ej. «\(candidateHost)/curso»)."
+                }
+                if level == .nearDuplicates && !candidateHasSubpath && normCandidate == blocked {
+                    return "«\(normCandidate)» coincide exactamente con el dominio bloqueado «\(blocked)»."
+                }
+            }
+            let candSLD = candidateHost.split(separator: ".").first.map(String.init) ?? candidateHost
+            let blockSLD = blockedHost.split(separator: ".").first.map(String.init) ?? blockedHost
+            if candSLD != blockSLD && blockSLD.count >= 4 && editDistance(candSLD, blockSLD) == 1 {
+                return "«\(candidateHost)» es casi idéntico a «\(blockedHost)» (protección contra homógrafos/similares activa)."
+            }
+        }
+        return nil
+    }
+
+    /// Checks whether `redirectURL` would itself be blocked by `(list, mode, blockSearchMedia)` (`ControllerPlanWizard::redirectDestinationBlocked`).
+    public static func isRedirectDestinationBlocked(
+        redirectURL: String,
+        list: String,
+        mode: WebListMode,
+        blockSearchMedia: Bool = false
+    ) -> String? {
+        let trimmed = redirectURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let normalizedURLString = trimmed.contains("://") ? trimmed : "https://" + trimmed
+        guard let url = URL(string: normalizedURLString), let host = url.host, !host.isEmpty else {
+            return "La URL de redirección «\(trimmed)» no es válida."
+        }
+        var pathAndQuery = url.path
+        if let query = url.query, !query.isEmpty {
+            pathAndQuery += "?" + query
+        }
+        if blockSearchMedia, SearchMediaRules.matches(host: host, pathAndQuery: pathAndQuery) != nil {
+            return "La URL de redirección («\(host)») apunta a una búsqueda de imágenes/vídeos que esta misma regla bloquea."
+        }
+        if !webAllowed(host: host, path: url.path, list: list, mode: mode) {
+            return "La URL de redirección («\(host)») está bloqueada por esta misma regla y causaría un bucle de redirección."
+        }
+        return nil
     }
 
     public static func changed(before: [String: FileStamp], after: [String: FileStamp]) -> [String] {
@@ -1727,9 +1972,36 @@ public enum FocusRules {
         max(minutesRange.lowerBound, min(minutesRange.upperBound, minutes))
     }
 
-    public static func dayKey(for date: Date, calendar: Calendar = .current) -> String {
-        let comps = calendar.dateComponents([.year, .month, .day], from: date)
+    /// Returns the `YYYY-MM-DD` key for `date`, shifted by `rolloverHour` (`0...8`, FocusMe's `nextDayOffsetHours`).
+    public static func dayKey(for date: Date, rolloverHour: Int = 0, calendar: Calendar = .current) -> String {
+        let clampedRollover = max(0, min(8, rolloverHour))
+        let adjusted = clampedRollover > 0 ? date.addingTimeInterval(-Double(clampedRollover) * 3600) : date
+        let comps = calendar.dateComponents([.year, .month, .day], from: adjusted)
         return String(format: "%04d-%02d-%02d", comps.year ?? 0, comps.month ?? 0, comps.day ?? 0)
+    }
+
+    /// Returns the quota bucket key for `LimitPeriodUnit` (`.hour`, `.day`, `.week`, FocusMe's `LimitUnitsEnum`).
+    public static func periodKey(
+        for date: Date,
+        unit: LimitPeriodUnit,
+        rolloverHour: Int = 0,
+        calendar: Calendar = .current
+    ) -> String {
+        switch unit {
+        case .day:
+            return dayKey(for: date, rolloverHour: rolloverHour, calendar: calendar)
+        case .hour:
+            let comps = calendar.dateComponents([.year, .month, .day, .hour], from: date)
+            return String(
+                format: "%04d-%02d-%02d-H%02d",
+                comps.year ?? 0, comps.month ?? 0, comps.day ?? 0, comps.hour ?? 0
+            )
+        case .week:
+            let clampedRollover = max(0, min(8, rolloverHour))
+            let adjusted = clampedRollover > 0 ? date.addingTimeInterval(-Double(clampedRollover) * 3600) : date
+            let comps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: adjusted)
+            return String(format: "%04d-W%02d", comps.yearForWeekOfYear ?? 0, comps.weekOfYear ?? 0)
+        }
     }
 
     /// Selects the most relevant next task without letting old overdue tasks hide an upcoming task today.
