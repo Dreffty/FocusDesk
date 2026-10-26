@@ -31,6 +31,14 @@ final class AppModel: ObservableObject {
         }
     }
     var showSettings: ((SettingsSectionTab?) -> Void)?
+    /// The keyboard shortcuts sheet, owned by the app delegate.
+    var showShortcutsHelp: (() -> Void)?
+    /// «Buscar función» (⌘K): one place to find any feature or setting by name.
+    @Published var showFeatureFinder = false
+    /// What is new since the last version the user saw; also reachable from Ayuda.
+    @Published var showWhatsNew = false
+    /// Historial shows the blocking audit log instead of the sessions.
+    @Published var historyShowsAudit = false
     @Published var selectedDate = Date()
     @Published var editingTask: FocusTask?
     @Published var editingGeneralRule: GeneralBlockRule?

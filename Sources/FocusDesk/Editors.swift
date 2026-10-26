@@ -1173,7 +1173,7 @@ struct SettingsView: View {
                                 Text(target.label).tag(target)
                             }
                         }.pickerStyle(.segmented)
-                        Text("Atajos en la app: ⌘1–⌘3 Hoy, Semana, Historial · ⌘, Ajustes · ⌘[ / ⌘] Anterior y siguiente · ⌘T Hoy · ⌘N Nueva tarea · ⌘Z / ⇧⌘Z Deshacer y rehacer · ⌃⌥⌘P Pausar · ⌃⌥⌘T He terminado · ⌃⌥⌘A Ampliar 10 min")
+                        Text("Atajos en la app: ⌘K Buscar función · ⌘1–⌘3 Hoy, Semana, Historial · ⌘4–⌘6 Bloquear ahora, Reglas y límites, Descansos · ⌃⌥⌘B Bloquear 30 min · ⌘, Ajustes · ⌘[ / ⌘] Anterior y siguiente · ⌘T Hoy · ⌘N Nueva tarea · ⌘Z / ⇧⌘Z Deshacer y rehacer · ⌃⌥⌘P Pausar · ⌃⌥⌘T He terminado · ⌃⌥⌘A Ampliar 10 min")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
                         Toggle("Abrir FocusDesk al iniciar sesión", isOn: $launchAtLogin).onChange(of: launchAtLogin) { _, value in

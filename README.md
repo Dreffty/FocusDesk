@@ -22,6 +22,18 @@ Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma 
 
 Cerrar la pantalla o el bloqueo del Mac pausan la observación; el reposo de la pantalla por sí solo, no.
 
+## Dónde está cada cosa
+
+La barra lateral tiene dos mitades. **Agenda**: Hoy (`⌘1`), Semana (`⌘2`) e Historial (`⌘3`). **Antidistracción**, para lo que funciona aunque no tengas ninguna tarea en marcha:
+
+- **Bloquear ahora** (`⌘4`): bloqueo rápido de 15 min al resto del día (también **⌃⌥⌘B**, 30 min), lo que está bloqueando en este momento con su acción (saltar fase, micro-pausa), permitir una web unos minutos y los interruptores de «Mientras bloquea» (píldora flotante, avisos a 5 y 1 min, portapapeles, historial).
+- **Reglas y límites** (`⌘5`): una galería con los siete tipos de regla (presupuesto de uso, Pomodoro, primero el trabajo, visitas contadas, cuenta atrás, horario y siempre activa), tus reglas agrupadas por lo que están haciendo, e importar o exportar en JSON.
+- **Descansos** (`⌘6`): el descanso tras mucho rato seguido, las micro-pausas de tus reglas, los descansos del Pomodoro y los descansos habituales de la agenda.
+
+Cada fila de Antidistracción enseña su estado en vivo (la cuenta atrás, cuántas reglas bloquean, cuánto falta para el descanso) y Hoy lo resume en una franja arriba. El **registro de bloqueo** (desbloqueos y cambios en tus reglas) está en Historial › Registro de bloqueo.
+
+**Buscar función** (`⌘K`, arriba en la barra lateral) encuentra cualquier función o ajuste por su nombre o por lo que hace —«pomodoro», «portapapeles», «regex»— y te lleva a ella. Todo lo de Antidistracción tiene además su comando en el menú **Bloqueo**, así que el buscador de **Ayuda** de macOS también lo encuentra. Tras una actualización con funciones nuevas, FocusDesk las presenta una vez en **Novedades**, con un «Probar» para cada una; se puede volver a ver desde **Ayuda → Novedades de FocusDesk**.
+
 ## Cuando de verdad no quieres poder escaparte
 
 Cada tarea decide, en **«Si quieres dejarlo a medias»**, cuánto cuesta abandonarla. Lo eliges al planificarla, con la cabeza fría, para el momento en que no la tengas:
@@ -73,7 +85,7 @@ Bloquear las apps que distraen oculta la app que no toca, devuelve el foco a una
 ## Teclado, deshacer y apariencia
 
 - **Deshacer y rehacer** (`⌘Z`, `⇧⌘Z`) cualquier cambio de la agenda: mover, alargar, posponer, borrar o editar una tarea. El menú Edición dice qué se va a deshacer.
-- **La agenda se maneja sin ratón**: con Hoy delante, las flechas ↑↓ eligen tarea, `↩` la abre, `Espacio` la empieza, `⌥↑`/`⌥↓` la mueven 5 minutos, `⇧⌥↑`/`⇧⌥↓` cambian su duración, `⌫` la borra (pidiendo confirmación) y `Esc` quita la selección. Lo que se puede hacer con la tarea elegida está también en el menú **Tarea** (`⌘E` para editarla), y **Ayuda → Atajos de FocusDesk** los resume todos. `⌘1`, `⌘2` y `⌘3` van a Hoy, Semana e Historial; `⌘[` y `⌘]` pasan al día o a la semana anterior o siguiente, y `⌘T` vuelve a hoy. Con FocusDesk delante, **⌃⌥⌘A** amplía la sesión 10 minutos.
+- **La agenda se maneja sin ratón**: con Hoy delante, las flechas ↑↓ eligen tarea, `↩` la abre, `Espacio` la empieza, `⌥↑`/`⌥↓` la mueven 5 minutos, `⇧⌥↑`/`⇧⌥↓` cambian su duración, `⌫` la borra (pidiendo confirmación) y `Esc` quita la selección. Lo que se puede hacer con la tarea elegida está también en el menú **Tarea** (`⌘E` para editarla), y **Ayuda → Atajos de FocusDesk** los resume todos. `⌘1`, `⌘2` y `⌘3` van a Hoy, Semana e Historial, `⌘4`, `⌘5` y `⌘6` a Bloquear ahora, Reglas y límites y Descansos, y `⌘K` busca cualquier función; `⌘[` y `⌘]` pasan al día o a la semana anterior o siguiente, y `⌘T` vuelve a hoy. Con FocusDesk delante, **⌃⌥⌘A** amplía la sesión 10 minutos.
 - **Apuntar rápido**: el campo del panel de la barra de menús manda una tarea a la bandeja sin hora con solo escribir y pulsar `↩`, sin abrir la ventana. Doble clic en un hueco vacío de la vista por horas crea una tarea a esa hora.
 - **Claro u oscuro**: FocusDesk sigue la apariencia de macOS, y respeta «Aumentar contraste» y «Reducir movimiento».
 - **Tamaño del texto**: Ajustes → General → Normal, Grande o Muy grande. Ahí también decides si el contador aparece en la barra de menús.

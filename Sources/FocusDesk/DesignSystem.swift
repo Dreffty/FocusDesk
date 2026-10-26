@@ -109,17 +109,37 @@ enum AppPage: String, CaseIterable, Identifiable {
     case today = "Hoy"
     case week = "Semana"
     case history = "Historial"
-    case blocking = "Bloqueo"
+    case blocking = "Bloquear ahora"
+    case rules = "Reglas y límites"
+    case breaks = "Descansos"
     case settings = "Ajustes"
 
+    /// The two halves of the sidebar: planning the day, and keeping distractions out of it. Grouped and titled so
+    /// the blocking tools are as visible as the agenda (`sidebars.md › Best practices`).
+    enum Group: String, CaseIterable, Identifiable {
+        case agenda = "Agenda"
+        case protection = "Antidistracción"
+        var id: String { rawValue }
+        var pages: [AppPage] { AppPage.allCases.filter { $0 != .settings && $0.group == self } }
+    }
+
     var id: String { rawValue }
+
+    var group: Group {
+        switch self {
+        case .blocking, .rules, .breaks: return .protection
+        default: return .agenda
+        }
+    }
 
     var icon: String {
         switch self {
         case .today: return "sun.max"
         case .week: return "calendar"
         case .history: return "chart.bar.xaxis"
-        case .blocking: return "shield.lefthalf.filled"
+        case .blocking: return "bolt"
+        case .rules: return "shield.lefthalf.filled"
+        case .breaks: return "cup.and.saucer"
         case .settings: return "slider.horizontal.3"
         }
     }
@@ -130,6 +150,8 @@ enum AppPage: String, CaseIterable, Identifiable {
         case .week: return "⌘2"
         case .history: return "⌘3"
         case .blocking: return "⌘4"
+        case .rules: return "⌘5"
+        case .breaks: return "⌘6"
         case .settings: return "⌘,"
         }
     }
@@ -139,7 +161,9 @@ enum AppPage: String, CaseIterable, Identifiable {
         case .today: return "Haz espacio para lo importante."
         case .week: return "Una semana con intención."
         case .history: return "Lo que has hecho cuenta."
-        case .blocking: return "Tus límites diarios y reglas generales."
+        case .blocking: return "Corta las distracciones ahora mismo."
+        case .rules: return "Tus límites, también fuera de las tareas."
+        case .breaks: return "Descansa antes de necesitarlo."
         case .settings: return "A tu manera."
         }
     }
