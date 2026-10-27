@@ -150,6 +150,8 @@ final class AppModel: ObservableObject {
     var generalRuleWaitsNotified: Set<UUID> = []
     /// Last timestamp when `.dailyLimit` usage seconds were credited.
     var lastGeneralQuotaAt: Date?
+    /// Last Pomodoro phase announced for the running task (session, block, focus or break).
+    var lastTaskPomodoroKey: String?
     /// Last observed `(host, path)` per browser bundle ID for general rules and daily limit timers.
     var lastObservedBrowserPage: [String: (host: String, path: String, at: Date)] = [:]
     /// Daily-limit rules that already notified exhaustion today (`dayKey-ruleID`).
@@ -470,6 +472,12 @@ final class AppModel: ObservableObject {
 
     func currentRemaining(for s: WorkSession) -> TimeInterval {
         s.remaining(at: now, uptime: uptime)
+    }
+
+    /// The Pomodoro phase of the running session, when its task is done in Pomodoro.
+    func pomodoroPhase(for s: WorkSession, at instant: Date? = nil) -> TaskPomodoroPhase? {
+        guard s.endedAt == nil else { return nil }
+        return s.task.pomodoroPhase(elapsed: s.elapsed(at: instant ?? now, uptime: uptime))
     }
 
     /// Whether the running session still has time on the clock (the views ask before offering a way out).
@@ -1918,6 +1926,7 @@ final class AppModel: ObservableObject {
         checkGeneralRuleWaitsReady()
         tickContinuousBreak(at: instant)
         tickPomodoroRules(at: instant)
+        tickTaskPomodoro(at: instant)
         updateFloatingPill(at: instant)
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility
@@ -2012,6 +2021,8 @@ final class AppModel: ObservableObject {
         }
         let activeSession: WorkSession? = {
             guard let s = session, !s.paused, s.endedAt == nil else { return nil }
+            // A Pomodoro break is a real break: nothing of the task is blocked until the next focus block.
+            if pomodoroPhase(for: s, at: Date())?.isBreak == true { return nil }
             return s
         }()
         let hasEnabledRules = workspace.generalRules.contains(where: \.enabled)

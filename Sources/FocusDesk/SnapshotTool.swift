@@ -196,7 +196,7 @@ enum SnapshotTool {
         model.confirm(completed: true, note: "Bandeja a cero")
 
         // And one running now, so the live block, the session hero and the panel show a real session.
-        let running = FocusTask(title: "Escribir el guion", category: "Contenido", scheduledAt: Date().addingTimeInterval(-600), minutes: 50, checklist: "Estructura\nGanchos\nCierre")
+        let running = FocusTask(title: "Escribir el guion", category: "Contenido", scheduledAt: Date().addingTimeInterval(-600), minutes: 50, checklist: "Estructura\nGanchos\nCierre", pomodoroWorkMinutes: 25)
         model.saveTask(running)
         model.start(running)
         try await idle(model)

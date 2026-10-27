@@ -212,6 +212,7 @@ struct TaskEditor: View {
                                     .help("Si el Mac está desbloqueado y no hay otra sesión en marcha, la sesión empieza sola a la hora prevista.")
                             }
 
+                            pomodoroSection
                             if draft.isScheduled {
                                 HStack {
                                     Stepper("Avisar \(draft.leadMinutes) minutos antes", value: $draft.leadMinutes, in: 0...60, step: 5)
@@ -306,6 +307,44 @@ struct TaskEditor: View {
         }
         .background(Palette.background)
         .tint(Palette.mint)
+    }
+
+    /// Focus and breaks inside the task itself, so a long block does not have to be one sitting.
+    @ViewBuilder private var pomodoroSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Trabajar en Pomodoro: foco y descansos dentro de la tarea", isOn: Binding(
+                get: { draft.pomodoroWorkMinutes > 0 },
+                set: { draft.pomodoroWorkMinutes = $0 ? 25 : 0 }
+            ))
+            .toggleStyle(.switch)
+            if draft.usesPomodoro {
+                HStack(spacing: 18) {
+                    Stepper("Foco \(draft.pomodoroWorkMinutes) min", value: $draft.pomodoroWorkMinutes, in: 10...90, step: 5)
+                    Stepper("Descanso \(draft.pomodoroBreakMinutes) min", value: $draft.pomodoroBreakMinutes, in: 1...30)
+                    Stepper("Largo \(draft.pomodoroLongBreakMinutes) min", value: $draft.pomodoroLongBreakMinutes, in: 5...45, step: 5)
+                }
+                .font(.app(12))
+                Text(pomodoroPlanSummary)
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// «En 120 min: 4 bloques de foco de 25 min con descansos de 5 (largo de 15 tras el 4.º).»
+    private var pomodoroPlanSummary: String {
+        let total = Double(draft.minutes) * 60
+        var blocks = 0
+        var t: TimeInterval = 0
+        while t < total, blocks < 200, let phase = draft.pomodoroPhase(elapsed: t) {
+            if !phase.isBreak { blocks += 1 }
+            t += max(1, phase.remainingInPhase)
+        }
+        let long = blocks >= draft.pomodoroLongBreakEvery
+            ? ", y uno largo de \(draft.pomodoroLongBreakMinutes) tras cada \(draft.pomodoroLongBreakEvery) bloques"
+            : ""
+        return "En \(draft.minutes) min: \(blocks) bloque(s) de foco de \(draft.pomodoroWorkMinutes) min con descansos de \(draft.pomodoroBreakMinutes)\(long). En los descansos se suelta el bloqueo y te aviso al volver al foco."
     }
 
     @ViewBuilder private var workspaceCard: some View {

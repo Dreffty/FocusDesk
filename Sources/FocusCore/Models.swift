@@ -301,6 +301,14 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
     public var blockSearchMedia: Bool
     /// Blocks Steam, Epic, Battle.net, Roblox, GOG, CrossOver, Whisky and any executable inside game library folders (`GameLibraryRules`).
     public var blockGameLibraries: Bool
+    /// Pomodoro inside the task: minutes of focus per cycle (0 = one continuous block). The session alternates
+    /// focus and breaks on its own clock; blocking lets go during the breaks.
+    public var pomodoroWorkMinutes: Int
+    public var pomodoroBreakMinutes: Int
+    public var pomodoroLongBreakMinutes: Int
+    /// A long break after every this many focus blocks.
+    public var pomodoroLongBreakEvery: Int
+    public var usesPomodoro: Bool { pomodoroWorkMinutes > 0 }
     /// Similarity protection level (`TargetListHandler::setSimilarityProtection` in FocusMe).
     public var similarityProtection: SimilarityProtectionLevel
 
@@ -344,8 +352,16 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         motivationalMessage: String = "",
         blockSearchMedia: Bool = false,
         blockGameLibraries: Bool = false,
-        similarityProtection: SimilarityProtectionLevel = .off
+        similarityProtection: SimilarityProtectionLevel = .off,
+        pomodoroWorkMinutes: Int = 0,
+        pomodoroBreakMinutes: Int = 5,
+        pomodoroLongBreakMinutes: Int = 15,
+        pomodoroLongBreakEvery: Int = 4
     ) {
+        self.pomodoroWorkMinutes = max(0, min(120, pomodoroWorkMinutes))
+        self.pomodoroBreakMinutes = max(1, min(60, pomodoroBreakMinutes))
+        self.pomodoroLongBreakMinutes = max(1, min(90, pomodoroLongBreakMinutes))
+        self.pomodoroLongBreakEvery = max(2, min(10, pomodoroLongBreakEvery))
         self.id = id
         self.title = title
         self.category = category
@@ -395,10 +411,15 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         case protection, unlockChars, stopDelayMinutes, blockAction, webBlockAction, guardSystemPanes, punisherEnabled
         case blockedFolders, appListMode, webListMode, blockedTitleKeywords, wholeWordKeywords, customRedirectURL, motivationalMessage
         case blockSearchMedia, blockGameLibraries, similarityProtection
+        case pomodoroWorkMinutes, pomodoroBreakMinutes, pomodoroLongBreakMinutes, pomodoroLongBreakEvery
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        pomodoroWorkMinutes = max(0, min(120, try c.decodeIfPresent(Int.self, forKey: .pomodoroWorkMinutes) ?? 0))
+        pomodoroBreakMinutes = max(1, min(60, try c.decodeIfPresent(Int.self, forKey: .pomodoroBreakMinutes) ?? 5))
+        pomodoroLongBreakMinutes = max(1, min(90, try c.decodeIfPresent(Int.self, forKey: .pomodoroLongBreakMinutes) ?? 15))
+        pomodoroLongBreakEvery = max(2, min(10, try c.decodeIfPresent(Int.self, forKey: .pomodoroLongBreakEvery) ?? 4))
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         title = try c.decode(String.self, forKey: .title)
         category = try c.decodeIfPresent(String.self, forKey: .category) ?? "Personal"
@@ -442,6 +463,25 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
     }
 
     public var end: Date { scheduledAt.addingTimeInterval(Double(minutes) * 60) }
+
+    /// Where a Pomodoro task stands after `elapsed` seconds of its session; nil when the task is one continuous block.
+    public func pomodoroPhase(elapsed: TimeInterval) -> TaskPomodoroPhase? {
+        guard usesPomodoro else { return nil }
+        let work = Double(pomodoroWorkMinutes) * 60
+        var left = max(0, elapsed)
+        var cycle = 1
+        // Bounded: a session never runs anywhere near this many cycles.
+        while cycle <= 500 {
+            if left < work { return TaskPomodoroPhase(isBreak: false, isLongBreak: false, cycle: cycle, remainingInPhase: work - left) }
+            left -= work
+            let long = cycle % pomodoroLongBreakEvery == 0
+            let pause = Double(long ? pomodoroLongBreakMinutes : pomodoroBreakMinutes) * 60
+            if left < pause { return TaskPomodoroPhase(isBreak: true, isLongBreak: long, cycle: cycle, remainingInPhase: pause - left) }
+            left -= pause
+            cycle += 1
+        }
+        return TaskPomodoroPhase(isBreak: false, isLongBreak: false, cycle: cycle, remainingInPhase: work)
+    }
 
     public var valid: Bool {
         let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -672,6 +712,16 @@ public struct Activity: Codable, Equatable, Identifiable, Sendable {
         titleStatus = try c.decodeIfPresent(String.self, forKey: .titleStatus)
         domainStatus = try c.decodeIfPresent(String.self, forKey: .domainStatus)
     }
+}
+
+/// The phase of a task done in Pomodoro: focus block `cycle`, or the break that follows it.
+public struct TaskPomodoroPhase: Equatable, Sendable {
+    public let isBreak: Bool
+    public let isLongBreak: Bool
+    public let cycle: Int
+    public let remainingInPhase: TimeInterval
+
+    public var label: String { isBreak ? (isLongBreak ? "Descanso largo" : "Descanso") : "Foco" }
 }
 
 public struct WorkSession: Codable, Equatable, Identifiable, Sendable {

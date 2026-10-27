@@ -682,7 +682,7 @@ final class FloatingTimerPillController {
     func update(title: String, remaining: TimeInterval, urgency: Urgency) {
         let panel = ensurePanel()
         let clock = FocusRules.clock(max(0, remaining))
-        let cleanTitle = title.count > 26 ? String(title.prefix(25)) + "…" : title
+        let cleanTitle = title.count > 34 ? String(title.prefix(33)) + "…" : title
         labelField?.stringValue = "\(clock)  ·  \(cleanTitle)"
         let dotColor: NSColor
         switch urgency {

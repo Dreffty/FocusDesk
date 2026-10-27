@@ -1274,6 +1274,27 @@ extension AppModel {
 
     // MARK: - Floating Timer Pill HUD (showTimer)
 
+    /// Announces each change between focus and break in a task done in Pomodoro, once per change.
+    func tickTaskPomodoro(at instant: Date) {
+        guard let s = session, !s.paused, let phase = pomodoroPhase(for: s, at: instant) else {
+            lastTaskPomodoroKey = nil
+            return
+        }
+        let key = "\(s.id)-\(phase.cycle)-\(phase.isBreak)"
+        guard key != lastTaskPomodoroKey else { return }
+        let first = lastTaskPomodoroKey == nil
+        lastTaskPomodoroKey = key
+        guard !first else { return }
+        now = instant
+        let minutes = Int((phase.remainingInPhase / 60).rounded())
+        let title = phase.isBreak ? "\(phase.label) de \(minutes) min" : "Vuelta al foco · bloque \(phase.cycle)"
+        let body = phase.isBreak
+            ? "Levántate y aparta la vista. El bloqueo de «\(s.task.title)» se suelta hasta el siguiente bloque."
+            : "\(minutes) min de foco en «\(s.task.title)». El bloqueo vuelve a estar activo."
+        notice = "\(title). \(body)"
+        if !preview { reminders.notify(title, body: body, identifier: "task-pomodoro-" + key) }
+    }
+
     func updateFloatingPill(at instant: Date) {
         guard !preview, workspace.settings.showFloatingTimerPill, !screenIsLocked else {
             floatingPill.hide()
@@ -1285,6 +1306,19 @@ extension AppModel {
         }
         if let sBreak = activeBreak(at: instant) {
             floatingPill.update(title: sBreak.period.title, remaining: sBreak.remaining, urgency: .pauseOrBreak)
+            return
+        }
+        // The task in progress comes first: it is what the user is doing.
+        if let s = session, s.endedAt == nil, !s.paused {
+            if let phase = pomodoroPhase(for: s, at: instant) {
+                let urgency: FloatingTimerPillController.Urgency = phase.isBreak
+                    ? .pauseOrBreak
+                    : (phase.remainingInPhase <= 60 ? .critical : .normal)
+                floatingPill.update(title: "\(phase.label) \(phase.cycle) · \(s.task.title)", remaining: phase.remainingInPhase, urgency: urgency)
+            } else {
+                let left = s.remaining(at: instant, uptime: uptime)
+                floatingPill.update(title: s.task.title, remaining: left, urgency: left <= 60 ? .critical : (left <= 300 ? .warning : .normal))
+            }
             return
         }
         for rule in workspace.generalRules where rule.enabled {

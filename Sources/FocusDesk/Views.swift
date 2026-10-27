@@ -393,6 +393,11 @@ private struct SidebarSessionCard: View {
                 Chip(session.task.protection.label, icon: "lock.shield", color: Palette.mint)
                     .help(session.task.protection.explanation)
             }
+            if let phase = model.pomodoroPhase(for: session), !ended, !session.paused {
+                Chip("\(phase.label) \(phase.cycle) · \(FocusRules.clock(phase.remainingInPhase))",
+                     icon: phase.isBreak ? "cup.and.saucer.fill" : "flame.fill",
+                     color: phase.isBreak ? Palette.warning : Palette.mint)
+            }
             if !ended {
                 Text(FocusRules.clock(remaining))
                     .font(.app(26, weight: .regular, design: .monospaced))
@@ -2164,13 +2169,20 @@ struct SessionHero: View {
                              color: session.paused && !ended ? Palette.warning : Palette.mint)
                         Chip(session.task.category, color: model.color(for: session.task))
                         if session.task.strict { Chip("Estricto", icon: "scope") }
+                        if let phase = model.pomodoroPhase(for: session), !session.paused {
+                            Chip("\(phase.label) · bloque \(phase.cycle) · quedan \(FocusRules.clock(phase.remainingInPhase))",
+                                 icon: phase.isBreak ? "cup.and.saucer.fill" : "flame.fill",
+                                 color: phase.isBreak ? Palette.warning : Palette.mint)
+                        }
                         if let issue = model.calendar.issues[session.task.id] {
                             Chip("Vorssaint sin sincronizar", icon: "exclamationmark.arrow.triangle.2.circlepath", color: Palette.warning)
                                 .help("\(issue) Resuélvelo en Ajustes.")
                         }
                     }
                     Text(session.task.title).font(.app(26, weight: .semibold, design: .rounded)).lineLimit(2)
-                    Text(session.task.strict ? "Te devolvemos a tus apps de trabajo si te distraes." : "Avisos suaves. Tú decides el ritmo.")
+                    Text(model.pomodoroPhase(for: session)?.isBreak == true
+                         ? "Descanso: levántate y aparta la vista. El bloqueo vuelve con el siguiente bloque."
+                         : (session.task.strict ? "Te devolvemos a tus apps de trabajo si te distraes." : "Avisos suaves. Tú decides el ritmo."))
                         .foregroundStyle(Palette.muted)
                     SessionButtons(model: model)
                     if !session.task.apps.isEmpty {

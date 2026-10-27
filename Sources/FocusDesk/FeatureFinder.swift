@@ -94,6 +94,8 @@ enum FeatureCatalog {
             "juegos steam epic", page(.rules))
         add("Antidistracción", "lock.shield", "Proteger una tarea", "Código, espera o hasta el final, al editar la tarea", "Editor de tarea",
             "proteccion codigo espera desbloqueo") { $0.go(to: .today) }
+        add("Agenda", "clock.arrow.2.circlepath", "Pomodoro dentro de una tarea", "Foco y descansos en la misma tarea, al editarla",
+            "Editor de tarea", "pomodoro descanso foco ciclos") { $0.editingTask = $0.newTaskDraft() }
         add("Antidistracción", "folder.badge.minus", "Carpetas que distraen", "Series o descargas que se cierran durante una tarea", "Editor de tarea",
             "carpeta finder") { $0.go(to: .today) }
 
