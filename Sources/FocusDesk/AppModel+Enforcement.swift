@@ -1308,19 +1308,6 @@ extension AppModel {
             floatingPill.update(title: sBreak.period.title, remaining: sBreak.remaining, urgency: .pauseOrBreak)
             return
         }
-        // The task in progress comes first: it is what the user is doing.
-        if let s = session, s.endedAt == nil, !s.paused {
-            if let phase = pomodoroPhase(for: s, at: instant) {
-                let urgency: FloatingTimerPillController.Urgency = phase.isBreak
-                    ? .pauseOrBreak
-                    : (phase.remainingInPhase <= 60 ? .critical : .normal)
-                floatingPill.update(title: "\(phase.label) \(phase.cycle) · \(s.task.title)", remaining: phase.remainingInPhase, urgency: urgency)
-            } else {
-                let left = s.remaining(at: instant, uptime: uptime)
-                floatingPill.update(title: s.task.title, remaining: left, urgency: left <= 60 ? .critical : (left <= 300 ? .warning : .normal))
-            }
-            return
-        }
         for rule in workspace.generalRules where rule.enabled {
             if let mpDeadline = rule.activeMicroPauseDeadline {
                 let rem = mpDeadline.remainingAfterPossibleReboot(wall: instant)
