@@ -53,3 +53,36 @@ final class TaskPomodoroTests: XCTestCase {
         XCTAssertEqual(decoded.pomodoroBreakMinutes, 10)
     }
 }
+
+final class TaskPomodoroCalendarTests: XCTestCase {
+    private func projected(at minutes: Double) -> CalendarSnapshot? {
+        let start = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        let task = FocusTask(title: "Estudio", scheduledAt: start, minutes: 120, pomodoroWorkMinutes: 25, pomodoroBreakMinutes: 5)
+        let session = WorkSession(task: task, now: start)
+        guard case .event(let snapshot) = CalendarProjection.make(task: task, session: session, now: start.addingTimeInterval(minutes * 60)) else { return nil }
+        return snapshot
+    }
+
+    func testFocusBlockEndsWhereTheBlockEnds() {
+        let start = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        let snapshot = projected(at: 10)
+        XCTAssertEqual(snapshot?.title, "Foco 1 · Estudio")
+        XCTAssertEqual(snapshot?.end, start.addingTimeInterval(25 * 60))
+    }
+
+    func testBreakShowsAsItsOwnCountdown() {
+        let start = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        let snapshot = projected(at: 26)
+        XCTAssertEqual(snapshot?.title, "Descanso · Estudio")
+        XCTAssertEqual(snapshot?.end, start.addingTimeInterval(30 * 60))
+    }
+
+    func testPlainTaskKeepsItsWholeDuration() {
+        let start = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        let task = FocusTask(title: "Bloque", scheduledAt: start, minutes: 60)
+        let session = WorkSession(task: task, now: start)
+        guard case .event(let snapshot) = CalendarProjection.make(task: task, session: session, now: start.addingTimeInterval(600)) else { return XCTFail() }
+        XCTAssertEqual(snapshot.title, "Bloque")
+        XCTAssertEqual(snapshot.end, start.addingTimeInterval(3600))
+    }
+}

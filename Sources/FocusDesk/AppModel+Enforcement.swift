@@ -1284,6 +1284,9 @@ extension AppModel {
         guard key != lastTaskPomodoroKey else { return }
         let first = lastTaskPomodoroKey == nil
         lastTaskPomodoroKey = key
+        // Vorssaint reads the phase from Calendar: rewrite the event now, also after a relaunch in mid-session.
+        enqueueProjectionForTask(s.task, session: s, now: instant)
+        syncCalendar()
         guard !first else { return }
         now = instant
         let minutes = Int((phase.remainingInPhase / 60).rounded())
