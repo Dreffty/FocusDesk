@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.toggleCompactPanel = { [weak self] in self?.togglePanel() }
         model.onHotKeySettingsChanged = { [weak self] in self?.applyHotKeySettings() }
         model.showSettings = { [weak self] section in self?.showSettings(section) }
+        model.showShortcutsHelp = { [weak self] in self?.showShortcutsHelp() }
         model.isInterfaceVisible = { [weak self] in
             guard let self else { return true }
             let windowOnScreen = [self.window, self.settingsWindow].contains { window in
@@ -404,6 +405,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return model.selectedTaskIsActionable
         case #selector(menuDeleteSelected):
             return model.selectedTask != nil && model.selectedTask?.id != model.session?.task.id && !model.readOnly
+        case #selector(menuQuickBlock(_:)), #selector(menuNewRule(_:)), #selector(menuImportRules):
+            return !model.readOnly
+        case #selector(menuExportRules):
+            return !model.workspace.generalRules.isEmpty
         default:
             return true
         }
@@ -419,8 +424,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ⌃⌥⌘T  He terminado
 
         Con FocusDesk delante
+        ⌘K  Buscar cualquier función o ajuste
         ⌘N  Nueva tarea · ⌘,  Ajustes
-        ⌘1 ⌘2 ⌘3 ⌘4  Hoy, Semana, Historial, Bloqueo
+        ⌘1 ⌘2 ⌘3  Hoy, Semana, Historial
+        ⌘4 ⌘5 ⌘6  Bloquear ahora, Reglas y límites, Descansos
+        ⌃⌥⌘B  Bloquear 30 minutos
         ⌘[ ⌘]  Día o semana anterior y siguiente · ⌘T  Hoy
         ⌃⌥⌘S  Empezar la siguiente tarea · ⌃⌥⌘A  Ampliar 10 minutos
         ⌘Z ⇧⌘Z  Deshacer y rehacer cambios en la agenda
@@ -436,7 +444,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func goTodayPage() { model.page = "Hoy"; show() }
     @objc private func goWeekPage() { model.page = "Semana"; show() }
     @objc private func goHistoryPage() { model.page = "Historial"; show() }
-    @objc private func goBlockingPage() { model.page = "Bloqueo"; show() }
+    @objc private func goBlockingPage() { model.page = AppPage.blocking.rawValue; show() }
+    @objc private func goRulesPage() { model.page = AppPage.rules.rawValue; show() }
+    @objc private func goBreaksPage() { model.page = AppPage.breaks.rawValue; show() }
+    @objc private func openFeatureFinder() { show(); model.showFeatureFinder = true }
+    @objc private func openWhatsNew() { show(); model.showWhatsNew = true }
+    /// The tag carries the minutes; 0 means until the end of the day.
+    @objc private func menuQuickBlock(_ sender: NSMenuItem) {
+        model.startQuickBlockWithSavedChoice(minutes: sender.tag > 0 ? sender.tag : model.minutesUntilEndOfDay())
+    }
+    @objc private func menuNewRule(_ sender: NSMenuItem) {
+        guard GeneralRuleKind.galleryOrder.indices.contains(sender.tag) else { return }
+        show()
+        model.openRuleTemplate(GeneralRuleKind.galleryOrder[sender.tag])
+    }
+    @objc private func menuImportRules() { model.importGeneralRules() }
+    @objc private func menuExportRules() { model.exportGeneralRules() }
+    @objc private func menuBreakNow() { model.startContinuousBreakNow() }
+    @objc private func menuAuditLog() { show(); model.showAuditLog() }
     @objc private func prevDay() {
         model.shiftSelectedDay(by: model.currentPage == .week ? -7 : -1)
     }
@@ -547,10 +572,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         add(edit, "Seleccionar todo", #selector(NSText.selectAll(_:)), "a")
 
         let nav = submenu("Navegación")
+        add(nav, "Buscar función…", #selector(openFeatureFinder), "k", target: self)
+        nav.addItem(.separator())
         add(nav, "Hoy", #selector(goTodayPage), "1", target: self)
         add(nav, "Semana", #selector(goWeekPage), "2", target: self)
         add(nav, "Historial", #selector(goHistoryPage), "3", target: self)
-        add(nav, "Bloqueo", #selector(goBlockingPage), "4", target: self)
+        nav.addItem(.separator())
+        add(nav, "Bloquear ahora", #selector(goBlockingPage), "4", target: self)
+        add(nav, "Reglas y límites", #selector(goRulesPage), "5", target: self)
+        add(nav, "Descansos", #selector(goBreaksPage), "6", target: self)
         nav.addItem(.separator())
         add(nav, "Anterior", #selector(prevDay), "[", target: self)
         add(nav, "Siguiente", #selector(nextDay), "]", target: self)
@@ -575,6 +605,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // A letter: "+" needs Shift on many keyboards and sits elsewhere on others (`keyboards.md`).
         add(session, "Ampliar 10 minutos", #selector(menuAddTenMinutes), "a", [.control, .option, .command], target: self)
 
+        // Everything in Antidistracción has a command here, so macOS's own Ayuda search finds it too
+        // (`the-menu-bar.md › App-specific menus`).
+        let blocking = submenu("Bloqueo")
+        add(blocking, "Bloquear 30 minutos", #selector(menuQuickBlock(_:)), "b", [.control, .option, .command], target: self).tag = 30
+        let durationItem = blocking.addItem(withTitle: "Bloquear durante", action: nil, keyEquivalent: "")
+        let durations = NSMenu(title: "Bloquear durante")
+        for (minutes, title) in [(15, "15 minutos"), (45, "45 minutos"), (60, "1 hora"), (120, "2 horas"), (0, "El resto del día")] {
+            add(durations, title, #selector(menuQuickBlock(_:)), "", [], target: self).tag = minutes
+        }
+        durationItem.submenu = durations
+        add(blocking, "Permitir una web unos minutos…", #selector(goBlockingPage), target: self)
+        blocking.addItem(.separator())
+        let newRuleItem = blocking.addItem(withTitle: "Nueva regla", action: nil, keyEquivalent: "")
+        let kinds = NSMenu(title: "Nueva regla")
+        for (index, kind) in GeneralRuleKind.galleryOrder.enumerated() {
+            add(kinds, kind.galleryTitle + "…", #selector(menuNewRule(_:)), "", [], target: self).tag = index
+        }
+        newRuleItem.submenu = kinds
+        add(blocking, "Importar reglas…", #selector(menuImportRules), target: self)
+        add(blocking, "Exportar reglas…", #selector(menuExportRules), target: self)
+        blocking.addItem(.separator())
+        add(blocking, "Descansar ahora", #selector(menuBreakNow), target: self)
+        add(blocking, "Ver registro de bloqueo", #selector(menuAuditLog), target: self)
+
         let windowMenu = submenu("Ventana")
         add(windowMenu, "Minimizar", #selector(NSWindow.performMiniaturize(_:)), "m")
         add(windowMenu, "Zoom", #selector(NSWindow.performZoom(_:)))
@@ -583,6 +637,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.windowsMenu = windowMenu
 
         let help = submenu("Ayuda")
+        add(help, "Buscar función…", #selector(openFeatureFinder), target: self)
+        add(help, "Novedades de FocusDesk…", #selector(openWhatsNew), target: self)
         add(help, "Atajos de FocusDesk", #selector(showShortcutsHelp), target: self)
         NSApp.helpMenu = help
 

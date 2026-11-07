@@ -31,6 +31,16 @@ enum SnapshotTool {
                         try capture(page, name: "\(name)-\(suffix)-completa", in: folder)
                     }
                 }
+                // ⌘K and Novedades, the two ways in to every feature.
+                for (name, flag) in [("buscar", \AppModel.showFeatureFinder), ("novedades", \AppModel.showWhatsNew)] {
+                    model.page = AppPage.today.rawValue
+                    model[keyPath: flag] = true
+                    try await settle(0.9)
+                    try capture(window.attachedSheet?.contentView, name: "\(name)-\(suffix)", in: folder)
+                    written.append("\(name)-\(suffix)")
+                    model[keyPath: flag] = false
+                    try await settle(0.7)
+                }
             }
             // The settings window, pane by pane, in both appearances.
             model.showSettings?(nil)
@@ -186,11 +196,34 @@ enum SnapshotTool {
         model.confirm(completed: true, note: "Bandeja a cero")
 
         // And one running now, so the live block, the session hero and the panel show a real session.
-        let running = FocusTask(title: "Escribir el guion", category: "Contenido", scheduledAt: Date().addingTimeInterval(-600), minutes: 50, checklist: "Estructura\nGanchos\nCierre")
+        let running = FocusTask(title: "Escribir el guion", category: "Contenido", scheduledAt: Date().addingTimeInterval(-600), minutes: 50, checklist: "Estructura\nGanchos\nCierre", pomodoroWorkMinutes: 25)
         model.saveTask(running)
         model.start(running)
         try await idle(model)
         model.setCheck("0", value: true)
+
+        // Rules for the Antidistracción pages: one of each state. Fictitious .test domains only, so the demo run
+        // never blocks anything real on this Mac.
+        func rule(_ kind: GeneralRuleKind, _ name: String, _ domain: String, enabled: Bool = true) -> GeneralBlockRule {
+            var rule = GeneralBlockRule.template(kind)
+            rule.name = name
+            rule.domains = domain
+            rule.blockedTitleKeywords = ""
+            rule.enabled = enabled
+            return rule
+        }
+        let pomodoro = rule(.pomodoro, "Pomodoro de enfoque", "redes-sociales.test")
+        model.saveGeneralRule(pomodoro)
+        if let saved = model.workspace.generalRules.first(where: { $0.id == pomodoro.id }) { model.startPomodoroRule(saved) }
+        model.saveGeneralRule(rule(.dailyLimit, "Shorts y redes", "videos-cortos.test"))
+        model.saveGeneralRule(rule(.schedule, "Noche sin pantallas", "series.test"))
+        model.saveGeneralRule(rule(.launchLimit, "Correo contado", "correo.test", enabled: false))
+        var quick = rule(.countdown, "Bloqueo rápido · Redes y vídeos cortos", "redes-sociales.test")
+        quick.protection = .none
+        quick.startCountdown(minutes: 30)
+        model.saveGeneralRule(quick)
+        model.updateSettings { $0.continuousBreakEnabled = true }
+
         model.selectedDate = Date()
         model.notice = nil
     }
@@ -200,7 +233,11 @@ enum SnapshotTool {
             ("hoy-horas", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(true, forKey: "FocusDesk.dayLayoutHourly") }),
             ("hoy-lista", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(false, forKey: "FocusDesk.dayLayoutHourly") }),
             ("semana", { model.page = AppPage.week.rawValue }),
-            ("historial", { model.page = AppPage.history.rawValue }),
+            ("historial", { model.historyShowsAudit = false; model.page = AppPage.history.rawValue }),
+            ("historial-registro", { model.historyShowsAudit = true; model.page = AppPage.history.rawValue }),
+            ("bloquear", { model.historyShowsAudit = false; model.page = AppPage.blocking.rawValue }),
+            ("reglas", { model.page = AppPage.rules.rawValue }),
+            ("descansos", { model.page = AppPage.breaks.rawValue }),
         ]
     }
 

@@ -33,6 +33,13 @@ public enum CalendarProjection: Equatable, Sendable {
             }
             if session.paused { return .remove }
             let deadline = deadline(for: session, now: now, uptime: uptime)
+            // A task done in Pomodoro shows its current phase: Vorssaint counts down to the end of the event, so
+            // the event is the focus block or the break in progress, and is rewritten at every change of phase.
+            if let phase = task.pomodoroPhase(elapsed: session.elapsed(at: now, uptime: uptime)) {
+                let phaseEnd = min(deadline, now.addingTimeInterval(phase.remainingInPhase))
+                let title = phase.isBreak ? "\(phase.label) · \(task.title)" : "\(phase.label) \(phase.cycle) · \(task.title)"
+                return .event(CalendarSnapshot(title: title, start: session.startedAt, end: max(phaseEnd, session.startedAt.addingTimeInterval(1))))
+            }
             return .event(CalendarSnapshot(title: task.title, start: session.startedAt, end: max(deadline, session.startedAt.addingTimeInterval(1))))
         }
         if !task.isScheduled {

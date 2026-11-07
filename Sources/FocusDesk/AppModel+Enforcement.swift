@@ -1539,6 +1539,30 @@ extension AppModel {
 
     // MARK: - Floating Timer Pill HUD (showTimer)
 
+    /// Announces each change between focus and break in a task done in Pomodoro, once per change.
+    func tickTaskPomodoro(at instant: Date) {
+        guard let s = session, !s.paused, let phase = pomodoroPhase(for: s, at: instant) else {
+            lastTaskPomodoroKey = nil
+            return
+        }
+        let key = "\(s.id)-\(phase.cycle)-\(phase.isBreak)"
+        guard key != lastTaskPomodoroKey else { return }
+        let first = lastTaskPomodoroKey == nil
+        lastTaskPomodoroKey = key
+        // Vorssaint reads the phase from Calendar: rewrite the event now, also after a relaunch in mid-session.
+        enqueueProjectionForTask(s.task, session: s, now: instant)
+        syncCalendar()
+        guard !first else { return }
+        now = instant
+        let minutes = Int((phase.remainingInPhase / 60).rounded())
+        let title = phase.isBreak ? "\(phase.label) de \(minutes) min" : "Vuelta al foco · bloque \(phase.cycle)"
+        let body = phase.isBreak
+            ? "Levántate y aparta la vista. El bloqueo de «\(s.task.title)» se suelta hasta el siguiente bloque."
+            : "\(minutes) min de foco en «\(s.task.title)». El bloqueo vuelve a estar activo."
+        notice = "\(title). \(body)"
+        if !preview { reminders.notify(title, body: body, identifier: "task-pomodoro-" + key) }
+    }
+
     func updateFloatingPill(at instant: Date) {
         guard !preview, workspace.settings.showFloatingTimerPill, !screenIsLocked else {
             floatingPill.hide()
