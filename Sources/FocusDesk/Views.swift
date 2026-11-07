@@ -74,7 +74,7 @@ struct MainView: View {
                 TopBar(model: model)
                 Rectangle().fill(Palette.stroke).frame(height: 1)
                 if model.error != nil || model.notice != nil || model.resumePrompt != nil
-                    || model.accessibilityBroken || model.session?.stopRequest != nil
+                    || model.accessibilityBroken || model.accessibilityWarning != nil || model.session?.stopRequest != nil
                     || model.activeBreak() != nil
                     || model.workspace.generalRules.contains(where: { $0.stopRequest != nil }) {
                     BannerStack(model: model)
@@ -628,6 +628,22 @@ private struct BannerStack: View {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill").padding(.top, 1)
                     Text(AccessibilityProbe.brokenPermissionAdvice)
+                        .font(.app(12))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button("Abrir Accesibilidad") { MacActivity.openAccessibilitySettings() }
+                        .buttonStyle(.focus(.secondary, compact: true))
+                }
+                .padding(12)
+                .foregroundStyle(Palette.warning)
+                .background(Palette.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.warning.opacity(0.28), lineWidth: 1))
+            }
+            // The same when the permission is simply off: it stays here until it is on, because the block is not whole.
+            if let warning = model.accessibilityWarning {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill").padding(.top, 1)
+                    Text(warning)
                         .font(.app(12))
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)

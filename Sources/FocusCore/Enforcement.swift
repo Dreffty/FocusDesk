@@ -815,6 +815,62 @@ public enum RelaunchGuardPlan {
     }
 }
 
+// MARK: - What stops working without Accessibility
+
+/// A block that cannot act must say so where it is seen. These are the parts that depend on the permission.
+public enum AccessibilityNeed {
+    public static let titleBlock = "el bloqueo por título de ventana"
+    public static let settingsGuard = "la protección de Ajustes del Sistema"
+    public static let otherBrowsers = "leer las webs en Firefox y Zen"
+    public static let embeddedPages = "ver las webs dentro de otras apps"
+
+    public static func features(of task: FocusTask, inspectEmbeddedPages: Bool) -> [String] {
+        features(
+            titleKeywords: task.blockedTitleKeywords,
+            guardsPanes: task.guardSystemPanes && task.protection != .none,
+            blocksWebs: task.webBlockAction != .warn || task.blockSearchMedia,
+            inspectEmbeddedPages: inspectEmbeddedPages
+        )
+    }
+
+    public static func features(of rule: GeneralBlockRule, inspectEmbeddedPages: Bool) -> [String] {
+        // A rule with nothing on its list blocks no website, whatever its action says.
+        let hasWebTargets = rule.webListMode == .blockAll || !FocusRules.parseDomains(rule.domains).valid.isEmpty
+        return features(
+            titleKeywords: rule.blockedTitleKeywords,
+            guardsPanes: rule.guardSystemPanes && rule.protection != .none,
+            blocksWebs: (rule.webBlockAction != .warn && hasWebTargets) || rule.blockSearchMedia,
+            inspectEmbeddedPages: inspectEmbeddedPages
+        )
+    }
+
+    /// Everything the running session and the rules that are on rely on, without repeats, in the order found.
+    public static func features(session: FocusTask?, rules: [GeneralBlockRule], inspectEmbeddedPages: Bool) -> [String] {
+        var result: [String] = []
+        let found = (session.map { features(of: $0, inspectEmbeddedPages: inspectEmbeddedPages) } ?? [])
+            + rules.filter(\.enabled).flatMap { features(of: $0, inspectEmbeddedPages: inspectEmbeddedPages) }
+        for feature in found where !result.contains(feature) { result.append(feature) }
+        return result
+    }
+
+    public static func warning(for features: [String]) -> String? {
+        guard let last = features.last else { return nil }
+        let list = features.count == 1 ? last : features.dropLast().joined(separator: ", ") + " y " + last
+        return "Falta el permiso de Accesibilidad. Sin él no \(features.count == 1 ? "funciona" : "funcionan") \(list). Actívalo en Ajustes del Sistema › Privacidad y seguridad › Accesibilidad."
+    }
+
+    private static func features(titleKeywords: String, guardsPanes: Bool, blocksWebs: Bool, inspectEmbeddedPages: Bool) -> [String] {
+        var result: [String] = []
+        if !FocusRules.parseTitleKeywords(titleKeywords).isEmpty { result.append(titleBlock) }
+        if guardsPanes { result.append(settingsGuard) }
+        if blocksWebs {
+            result.append(otherBrowsers)
+            if inspectEmbeddedPages { result.append(embeddedPages) }
+        }
+        return result
+    }
+}
+
 // MARK: - The punisher
 
 /// Trying the same blocked app or site over and over is the impulse winning. After a few tries in a short window,

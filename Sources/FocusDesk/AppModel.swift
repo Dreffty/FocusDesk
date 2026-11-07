@@ -1252,6 +1252,7 @@ final class AppModel: ObservableObject {
             schedule()
             syncCalendar()
             guard saved else { return }
+            warnIfAccessibilityMissing(startingWith: task)
             if let allowed = task.apps.first, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: allowed.id) {
                 let config = NSWorkspace.OpenConfiguration()
                 config.activates = true

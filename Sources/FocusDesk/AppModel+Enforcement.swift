@@ -100,6 +100,27 @@ enum RunUpChange: Equatable {
 
 extension AppModel {
 
+    // MARK: - The Accessibility permission
+
+    /// What the running session and the rules that are on cannot do, in words, while the permission is missing.
+    var accessibilityWarning: String? {
+        guard !preview, !accessible else { return nil }
+        let running = session.flatMap { $0.endedAt == nil && !$0.paused ? $0.task : nil }
+        return AccessibilityNeed.warning(for: AccessibilityNeed.features(
+            session: running,
+            rules: workspace.generalRules,
+            inspectEmbeddedPages: workspace.settings.inspectEmbeddedPages
+        ))
+    }
+
+    /// Checked as a protected session starts: finding out in the middle of it is too late.
+    func warnIfAccessibilityMissing(startingWith task: FocusTask) {
+        accessible = MacActivity.accessibility
+        guard !preview, !accessible, task.protection != .none else { return }
+        let features = AccessibilityNeed.features(of: task, inspectEmbeddedPages: workspace.settings.inspectEmbeddedPages)
+        if let warning = AccessibilityNeed.warning(for: features) { notice = warning }
+    }
+
     // MARK: - Protected before it starts
 
     /// Starts of sessions of `taskID` in the history: one inside the run-up window means it was already worked on.
