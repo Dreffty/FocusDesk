@@ -150,6 +150,7 @@ public struct WorkspaceStore: @unchecked Sendable {
 
     /// The rolling copies mirror what is being written, so they recover a damaged file but not a bad save.
     /// A dated snapshot per day is the copy you can actually go back to. Returns the snapshot when one was taken.
+    /// Nothing that does not read back whole becomes a snapshot, and when one fails the older ones stay where they are.
     @discardableResult
     public func createDailySnapshotIfNeeded(at now: Date = Date(), calendar: Calendar = .current, keeping limit: Int = 14) throws -> URL? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -158,20 +159,35 @@ public struct WorkspaceStore: @unchecked Sendable {
         let destination = backupsDirectoryURL.appendingPathComponent("daily-\(stamp).json")
         guard !FileManager.default.fileExists(atPath: destination.path) else { return nil }
         let whole = try load()
+        guard whole.decodingSkipped == 0 else { throw StoreError.partlyReadable }
         try FileManager.default.createDirectory(at: backupsDirectoryURL, withIntermediateDirectories: true)
         try writeProtected(try Self.encodeReadable(whole), to: destination)
+        do {
+            _ = try validateBackup(at: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
         pruneDailySnapshots(keeping: limit)
         return destination
     }
 
-    /// Keeps the newest `limit` dated snapshots. Only touches the files this store creates daily.
+    /// Keeps the newest `limit` dated snapshots that can still be read. Only touches the files this store creates daily.
+    /// Copies that stopped being readable do not count: two weeks of them must not push out the last good one, which
+    /// is how a macOS change once left nothing to go back to.
     public func pruneDailySnapshots(keeping limit: Int) {
         guard limit > 0,
               let names = try? FileManager.default.contentsOfDirectory(atPath: backupsDirectoryURL.path) else { return }
         let daily = names.filter { $0.hasPrefix("daily-") && $0.hasSuffix(".json") }.sorted()
         guard daily.count > limit else { return }
-        for name in daily.prefix(daily.count - limit) {
-            try? FileManager.default.removeItem(at: backupsDirectoryURL.appendingPathComponent(name))
+        var readable = 0
+        for name in daily.reversed() {
+            let file = backupsDirectoryURL.appendingPathComponent(name)
+            if readable >= limit {
+                try? FileManager.default.removeItem(at: file)
+            } else if (try? validateBackup(at: file)) != nil {
+                readable += 1
+            }
         }
     }
 
@@ -201,6 +217,7 @@ public struct WorkspaceStore: @unchecked Sendable {
     public enum StoreError: LocalizedError, Equatable {
         case unsupported
         case noBackupAvailable
+        case partlyReadable
 
         public var errorDescription: String? {
             switch self {
@@ -208,6 +225,8 @@ public struct WorkspaceStore: @unchecked Sendable {
                 return "Versión de archivo no compatible con esta versión de FocusDesk."
             case .noBackupAvailable:
                 return "No hay una copia automática previa disponible."
+            case .partlyReadable:
+                return "Parte de los datos no se puede leer: no se hace copia con fecha hasta resolverlo."
             }
         }
     }

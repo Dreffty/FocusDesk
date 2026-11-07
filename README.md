@@ -114,7 +114,7 @@ En Vorssaint, activa su integración Calendar de Dynamic Island, las cuentas atr
 
 ## Datos
 
-Se guardan en `~/Library/Application Support/FocusDesk/workspace.json`, con escritura atómica y copia automática `workspace.backup.json`.
+Se guardan en `~/Library/Application Support/FocusDesk/`: `workspace.json` con lo del día a día y `workspace.history.json` con el historial, cada uno con su copia automática (`*.backup.json`) y escritura atómica. Si nada cambió, no se escribe nada.
 
 En `backups/` hay además **una copia con fecha por cada día de uso** (`daily-AAAA-MM-DD.json`, se conservan las 14 últimas), más los respaldos previos a cada restauración. La copia automática refleja lo que se está guardando, así que te protege de un archivo dañado; las copias diarias son a las que puedes volver si un día guardas algo que no querías. Se restauran desde **Ajustes → Restaurar copia**.
 
