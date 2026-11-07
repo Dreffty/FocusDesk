@@ -903,10 +903,11 @@ private struct GeneralRuleCard: View {
                         .frame(width: 34, height: 34)
                         .background(enforcing ? Palette.mint : Palette.mint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 6) {
-                            Text(rule.name).font(.app(16, weight: .semibold))
-                            Chip(rule.kind.label, icon: rule.kind.icon)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(rule.name).font(.app(16, weight: .semibold))
+                        // Under the name and with the short names: side by side, the long ones came out cut.
+                        FlowLayout(spacing: 6) {
+                            Chip(rule.kind.galleryTitle, icon: rule.kind.icon)
                             if microPaused {
                                 let mpLeft = rule.activeMicroPauseDeadline?.remainingAfterPossibleReboot(wall: model.now) ?? 0
                                 Chip("Micro-pausa \(FocusRules.clock(mpLeft))", icon: "cup.and.saucer.fill", color: Palette.warning)
@@ -1009,15 +1010,33 @@ private struct GeneralRuleCard: View {
                     Button("Editar") { model.editingGeneralRule = rule }
                         .buttonStyle(.focus(.secondary, compact: true))
                         .disabled(model.readOnly)
-                    Button(role: .destructive, action: onDelete) {
-                        Image(systemName: "trash")
+                    // In a menu rather than a red bin on every card; the rule's protection still decides what it costs.
+                    Menu {
+                        Button(role: .destructive, action: onDelete) {
+                            Label(deleteTitle, systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
                     }
-                    .buttonStyle(FocusIconButtonStyle(size: 26, tint: Palette.danger))
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 28, height: 28)
                     .disabled(model.readOnly)
-                    .help("Eliminar «\(rule.name)»")
-                    .accessibilityLabel("Eliminar \(rule.name)")
+                    .help("Más acciones de «\(rule.name)»")
+                    .accessibilityLabel("Más acciones de \(rule.name)")
                 }
             }
+        }
+    }
+
+    /// Says beforehand what it will take, instead of finding out from the refusal.
+    private var deleteTitle: String {
+        guard model.isRuleProtected(rule, at: model.now) else { return "Eliminar regla…" }
+        switch rule.protection {
+        case .none: return "Eliminar regla…"
+        case .challenge: return "Eliminar regla… (pide su código)"
+        case .delay: return "Eliminar regla… (pide esperar)"
+        case .forced: return "Eliminar regla… (salida de emergencia)"
         }
     }
 
@@ -1036,11 +1055,13 @@ private struct GeneralRuleCard: View {
                             : "Presupuesto (\(rule.limitPeriodUnit.label.lowercased())) agotado · bloqueado",
                         systemImage: left > 0 ? "hourglass" : "lock.fill"
                     )
-                    .font(.app(13, weight: .semibold, design: .monospaced))
+                    .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                     .foregroundStyle(left > 0 ? Palette.mint : Palette.warning)
                     Spacer()
                     Text("Usado: \(FocusRules.clock(used)) de \(rule.dailyLimitMinutes) min")
-                        .font(.app(11, design: .monospaced))
+                        .font(.app(11))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.muted)
                 }
                 ProgressView(value: fraction)
@@ -1065,7 +1086,8 @@ private struct GeneralRuleCard: View {
                             "\(rule.pomodoroPhase.label) (ciclo \(rule.pomodoroCurrentCycle)/\(rule.pomodoroTotalCycles)): quedan \(FocusRules.clock(rem))",
                             systemImage: rule.pomodoroPhase == .work ? "flame.fill" : "cup.and.saucer.fill"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(rule.pomodoroPhase == .work ? Palette.mint : Palette.warning)
                     } else {
                         Label(
@@ -1105,7 +1127,8 @@ private struct GeneralRuleCard: View {
                             "Partida terminada · cerrando League of Legends en \(Int(ceil(postGraceLeft))) s",
                             systemImage: "timer"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.warning)
                     } else if matchInProgress {
                         let currentMatchNum = min(max(1, maxMatches), matches + 1)
@@ -1115,7 +1138,8 @@ private struct GeneralRuleCard: View {
                                 : "Partida en curso · protegida sin cortes hasta que acabe",
                             systemImage: "gamecontroller.fill"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.mint)
                     } else if !goalMet {
                         let workNeeded = max(0, required - worked)
@@ -1125,14 +1149,16 @@ private struct GeneralRuleCard: View {
                                 : "Meta pendiente: faltan \(FocusRules.clock(workNeeded)) de trabajo enfocado hoy",
                             systemImage: "flag.checkered"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.warning)
                     } else if matchesExhausted {
                         Label(
                             "Límite de \(matches)/\(maxMatches) partidas completado hoy · bloqueado hasta mañana",
                             systemImage: "lock.fill"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.warning)
                     } else if rule.goalRewardMinutes <= 0 {
                         Label(
@@ -1141,7 +1167,8 @@ private struct GeneralRuleCard: View {
                                 : "Meta cumplida (\(FocusRules.clock(worked))) · desbloqueado hoy",
                             systemImage: "checkmark.seal.fill"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.mint)
                     } else if rewardLeft > 0 {
                         Label(
@@ -1150,25 +1177,29 @@ private struct GeneralRuleCard: View {
                                 : "Tiempo de recompensa disponible: \(FocusRules.clock(rewardLeft))",
                             systemImage: "gift.fill"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.mint)
                     } else {
                         Label(
                             "Tiempo de juego agotado hoy · bloqueado hasta mañana",
                             systemImage: "lock.fill"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.warning)
                     }
                     Spacer()
                     HStack(spacing: 10) {
                         if maxMatches > 0 {
                             Text("Partidas: \(matches)/\(maxMatches)")
-                                .font(.app(11, weight: .semibold, design: .monospaced))
+                                .font(.app(11, weight: .semibold))
+                                .monospacedDigit()
                                 .foregroundStyle(matchesExhausted ? Palette.warning : Palette.mint)
                         }
                         Text("\(rule.verifyActiveStudy ? "Estudio hoy" : "Trabajado hoy"): \(FocusRules.clock(worked)) / \(rule.goalMinutesRequired) min")
-                            .font(.app(11, design: .monospaced))
+                            .font(.app(11))
+                        .monospacedDigit()
                             .foregroundStyle(Palette.muted)
                     }
                 }
@@ -1191,7 +1222,8 @@ private struct GeneralRuleCard: View {
                             "Visita activa: quedan \(FocusRules.clock(visitRem))",
                             systemImage: "timer"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.mint)
                         Button("Terminar visita") {
                             model.endLaunchVisitEarly(for: rule)
@@ -1203,14 +1235,16 @@ private struct GeneralRuleCard: View {
                             "En enfriamiento: faltan \(FocusRules.clock(cooldownRem)) para poder abrir de nuevo",
                             systemImage: "snowflake"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.warning)
                     } else if launches >= maxLaunches {
                         Label(
                             "Límite de \(maxLaunches) aperturas agotado hoy · bloqueado hasta medianoche",
                             systemImage: "lock.fill"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.warning)
                     } else {
                         let left = maxLaunches - launches
@@ -1218,12 +1252,14 @@ private struct GeneralRuleCard: View {
                             "Quedan \(left) apertura(s) hoy · \(rule.maxLaunchDurationMinutes) min por visita",
                             systemImage: "door.left.hand.open"
                         )
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.mint)
                     }
                     Spacer()
                     Text("Aperturas: \(launches)/\(maxLaunches) · pausa \(rule.launchCooldownMinutes)m")
-                        .font(.app(11, design: .monospaced))
+                        .font(.app(11))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.muted)
                 }
                 ProgressView(value: fraction)
@@ -1236,7 +1272,8 @@ private struct GeneralRuleCard: View {
             if enforcing && lockLeft > 0 {
                 HStack {
                     Label("Cuenta atrás en marcha: quedan \(FocusRules.clock(lockLeft))", systemImage: "timer")
-                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .font(.app(13, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.mint)
                     Spacer()
                     let ends = model.now.addingTimeInterval(lockLeft)
@@ -1260,7 +1297,8 @@ private struct GeneralRuleCard: View {
                 Spacer()
                 if enforcing && lockLeft > 0 {
                     Text("Quedan \(FocusRules.clock(lockLeft)) de tramo")
-                        .font(.app(11, design: .monospaced))
+                        .font(.app(11))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.mint)
                 }
             }
