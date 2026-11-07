@@ -161,6 +161,14 @@ enum SnapshotTool {
             try capture(window.attachedSheet?.contentView, name: "confirmacion", in: folder)
             written.append("confirmacion")
 
+            // Hoy with nothing running: the card of the next task instead of the session.
+            model.confirm(completed: true, note: "")
+            try await idle(model)
+            model.page = AppPage.today.rawValue
+            try await settle(0.8)
+            try capture(window.contentView, name: "hoy-sin-sesion", in: folder)
+            written.append("hoy-sin-sesion")
+
             return "SNAPSHOTS: " + written.map { $0 + ".png" }.joined(separator: ", ") + " → " + folder.path
         } catch {
             return "SNAPSHOTS FAIL: \(error.localizedDescription)"
