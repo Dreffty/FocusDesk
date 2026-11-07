@@ -25,6 +25,17 @@ public enum TrustedClock {
 
     /// Below this a drift is just NTP keeping the clock tidy; above it, somebody moved the clock.
     public static let suspiciousDrift: TimeInterval = 60
+
+    /// Names this start of the Mac: waking from sleep keeps it, restarting changes it. The continuous clock alone
+    /// cannot tell, because after a restart it soon overtakes the value it had before.
+    public static let bootID: String? = {
+        var size = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var bytes = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.bootsessionuuid", &bytes, &size, nil, 0) == 0 else { return nil }
+        let id = String(cString: bytes)
+        return id.isEmpty ? nil : id
+    }()
 }
 
 /// A deadline anchored to the continuous clock, with the wall-clock time kept only to show it.
@@ -33,12 +44,20 @@ public struct TrustedDeadline: Codable, Equatable, Sendable {
     public var wallEnd: Date
     public var anchorWall: Date
     public var anchorContinuous: Double
+    /// The start of the Mac this deadline was set in. Missing in data saved before it existed.
+    public var anchorBootID: String?
 
-    public init(seconds: TimeInterval, wall: Date = Date(), continuous: Double = TrustedClock.continuousSeconds()) {
+    public init(
+        seconds: TimeInterval,
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds(),
+        bootID: String? = TrustedClock.bootID
+    ) {
         self.continuousEnd = continuous + max(0, seconds)
         self.wallEnd = wall.addingTimeInterval(max(0, seconds))
         self.anchorWall = wall
         self.anchorContinuous = continuous
+        self.anchorBootID = bootID
     }
 
     public func remaining(continuous: Double = TrustedClock.continuousSeconds()) -> TimeInterval {
@@ -51,17 +70,27 @@ public struct TrustedDeadline: Codable, Equatable, Sendable {
 
     /// The Mac was restarted, so the continuous clock started again from zero and the anchor is meaningless.
     /// The wall clock is all that is left; it is used, and the caller is told the guarantee was weaker this once.
-    public func rebooted(continuous: Double = TrustedClock.continuousSeconds()) -> Bool {
-        continuous < anchorContinuous
+    /// Without a saved `anchorBootID` (older data) a restart only shows while the clock is still below the anchor.
+    public func rebooted(continuous: Double = TrustedClock.continuousSeconds(), bootID: String? = TrustedClock.bootID) -> Bool {
+        if let anchorBootID, let bootID, anchorBootID != bootID { return true }
+        return continuous < anchorContinuous
     }
 
-    public func remainingAfterPossibleReboot(wall: Date = Date(), continuous: Double = TrustedClock.continuousSeconds()) -> TimeInterval {
-        rebooted(continuous: continuous) ? max(0, wallEnd.timeIntervalSince(wall)) : remaining(continuous: continuous)
+    public func remainingAfterPossibleReboot(
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds(),
+        bootID: String? = TrustedClock.bootID
+    ) -> TimeInterval {
+        rebooted(continuous: continuous, bootID: bootID) ? max(0, wallEnd.timeIntervalSince(wall)) : remaining(continuous: continuous)
     }
 
     /// Seconds elapsed since this deadline passed (`0` while it has not passed yet).
-    public func elapsedSincePassed(wall: Date = Date(), continuous: Double = TrustedClock.continuousSeconds()) -> TimeInterval {
-        if rebooted(continuous: continuous) {
+    public func elapsedSincePassed(
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds(),
+        bootID: String? = TrustedClock.bootID
+    ) -> TimeInterval {
+        if rebooted(continuous: continuous, bootID: bootID) {
             return max(0, wall.timeIntervalSince(wallEnd))
         }
         return max(0, continuous - continuousEnd)
