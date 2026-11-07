@@ -920,46 +920,63 @@ extension AppModel {
 
     // MARK: - The witness
 
-    /// Writes the fingerprint of the running protected session (or active protected general rule) into the Keychain, outside `workspace.json`.
+    /// Writes the fingerprint of the running protected session (or active protected general rule) into the Keychain,
+    /// outside `workspace.json`, but only when it would say something new: this runs every ten seconds and on every save.
     func refreshWitness() {
         guard !preview else { return }
-        let protectedRules = workspace.generalRules.filter { $0.enabled && $0.protection != .none }
-        if !protectedRules.isEmpty {
-            KeychainWitness.saveRulesWitness(ProtectedRulesWitness(rules: protectedRules, savedAt: now))
-        } else {
-            KeychainWitness.clearRulesWitness()
+        if !witnessLoaded {
+            witnessLoaded = true
+            storedRulesWitness = KeychainWitness.loadRulesWitness()?.rules
+            storedSessionWitness = KeychainWitness.load()
         }
 
+        let protectedRules = workspace.generalRules.filter { $0.enabled && $0.protection != .none }
+        if protectedRules.isEmpty {
+            if storedRulesWitness != nil { KeychainWitness.clearRulesWitness() }
+            storedRulesWitness = nil
+        } else if WitnessPlan.rulesNeedSaving(protectedRules, lastSaved: storedRulesWitness) {
+            KeychainWitness.saveRulesWitness(ProtectedRulesWitness(rules: protectedRules, savedAt: now))
+            storedRulesWitness = protectedRules
+        }
+
+        var desired: SessionWitness?
+        var tolerance = WitnessPlan.sameEndTolerance
         if let s = session, s.enforcing(at: now, uptime: uptime), s.task.protection != .none {
-            KeychainWitness.save(
-                SessionWitness(
-                    sessionID: s.id,
-                    taskTitle: s.task.title,
-                    protection: s.task.protection,
-                    deadline: s.witnessDeadline(at: now, uptime: uptime)
-                )
+            desired = SessionWitness(
+                sessionID: s.id,
+                taskTitle: s.task.title,
+                protection: s.task.protection,
+                deadline: s.witnessDeadline(at: now, uptime: uptime)
             )
-            return
-        }
-        if let rule = activeProtectedGeneralRule {
+        } else if let rule = activeProtectedGeneralRule {
             let left = remainingRuleLockSeconds(rule, at: now)
-            KeychainWitness.save(
-                SessionWitness(
-                    sessionID: rule.id,
-                    taskTitle: rule.name,
-                    protection: rule.protection,
-                    deadline: TrustedDeadline(seconds: max(60, left), wall: now)
-                )
+            if left <= 0 { tolerance = WitnessPlan.openEndedHorizon / 2 }
+            desired = SessionWitness(
+                sessionID: rule.id,
+                taskTitle: rule.name,
+                protection: rule.protection,
+                deadline: TrustedDeadline(seconds: left > 0 ? max(60, left) : WitnessPlan.openEndedHorizon, wall: now)
             )
-            return
         }
-        KeychainWitness.clear()
+        switch WitnessPlan.action(stored: storedSessionWitness, desired: desired, tolerance: tolerance) {
+        case .keep:
+            return
+        case .save:
+            guard let desired else { return }
+            KeychainWitness.save(desired)
+            storedSessionWitness = desired
+        case .clear:
+            KeychainWitness.clear()
+            storedSessionWitness = nil
+        }
     }
 
     /// At launch: a witness for a protected session or protected general rules that the data file no longer knows
     /// about means the file was edited, replaced or deleted while FocusDesk was closed.
     func checkWitnessAtLaunch() {
         guard !preview else { return }
+        // This looks at the Keychain and clears it directly: what `refreshWitness` remembers is read again afterwards.
+        defer { witnessLoaded = false }
         if let rulesWitness = KeychainWitness.loadRulesWitness(), rulesWitness.intact {
             var restoredNames: [String] = []
             let launchNow = Date()

@@ -100,6 +100,7 @@ final class AppModel: ObservableObject {
     /// The login item that brings FocusDesk back if it is killed mid-session.
     let relaunchGuard = RelaunchGuard()
     let store: WorkspaceStore
+    let saver: WorkspaceSaver
     let preview: Bool
 
     private var timer: Timer?
@@ -126,6 +127,10 @@ final class AppModel: ObservableObject {
     private var napActivity: NSObjectProtocol?
     /// macOS asked FocusDesk to quit for a restart, a shutdown or a log-out: it goes, and the session comes back.
     var quittingForSystem = false
+    // What the Keychain holds, so it is only written when that changes.
+    var witnessLoaded = false
+    var storedRulesWitness: [GeneralBlockRule]?
+    var storedSessionWitness: SessionWitness?
     /// The pause came from the screen locking, the Mac sleeping or another account taking over — the only pauses
     /// a protected session takes back by itself.
     private var pausedByLockOrSleep = false
@@ -212,6 +217,7 @@ final class AppModel: ObservableObject {
         self.preview = preview
         let directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("FocusDesk")
         store = WorkspaceStore(url: directory.appendingPathComponent("workspace.json"))
+        saver = WorkspaceSaver(store: store)
         var resumeProtected = false
         do {
             workspace = try store.load()
@@ -548,38 +554,57 @@ final class AppModel: ObservableObject {
     func persist() -> Bool {
         guard writable || hasUnsavedChanges else { return false }
         do {
-            try store.save(workspace)
-            writable = true
-            if hasUnsavedChanges {
-                hasUnsavedChanges = false
-                error = nil
-            }
-            corruptFileDetected = false
-            // The Keychain copy follows every save, so deleting the file does not quietly end a protected session.
-            refreshWitness()
+            try saver.saveNow(workspace)
+            saveSucceeded()
             return true
         } catch {
-            if workspace.session != nil, workspace.session?.endedAt == nil, workspace.session?.paused == false {
-                let pauseInstant = Date()
-                workspace.session?.pause(at: pauseInstant, uptime: uptime)
-                if let s = workspace.session {
-                    enqueueProjectionForTask(s.task, session: s, now: pauseInstant)
-                }
-            }
-            hasUnsavedChanges = true
-            notice = nil
-            let sessionNote = workspace.session != nil
-                ? "La sesión se ha pausado y tus cambios permanecen en memoria"
-                : "Tus cambios permanecen en memoria"
-            self.error = "No se pudo guardar en disco. \(sessionNote); libera espacio o permisos y pulsa «Reintentar guardado» o «Exportar copia». (\(error.localizedDescription))"
+            saveFailed(because: error.localizedDescription)
             return false
         }
+    }
+
+    /// The checkpoint that runs every minute: nobody is waiting for its result, so it does not hold up the window.
+    func persistInBackground() {
+        guard writable || hasUnsavedChanges else { return }
+        saver.saveInBackground(workspace) { [weak self] failure in
+            let reason = failure?.localizedDescription
+            Task { @MainActor [weak self] in
+                if let reason { self?.saveFailed(because: reason) } else { self?.saveSucceeded() }
+            }
+        }
+    }
+
+    private func saveSucceeded() {
+        writable = true
+        if hasUnsavedChanges {
+            hasUnsavedChanges = false
+            error = nil
+        }
+        corruptFileDetected = false
+        // The Keychain copy follows every save, so deleting the file does not quietly end a protected session.
+        refreshWitness()
+    }
+
+    private func saveFailed(because reason: String) {
+        if workspace.session != nil, workspace.session?.endedAt == nil, workspace.session?.paused == false {
+            let pauseInstant = Date()
+            workspace.session?.pause(at: pauseInstant, uptime: uptime)
+            if let s = workspace.session {
+                enqueueProjectionForTask(s.task, session: s, now: pauseInstant)
+            }
+        }
+        hasUnsavedChanges = true
+        notice = nil
+        let sessionNote = workspace.session != nil
+            ? "La sesión se ha pausado y tus cambios permanecen en memoria"
+            : "Tus cambios permanecen en memoria"
+        self.error = "No se pudo guardar en disco. \(sessionNote); libera espacio o permisos y pulsa «Reintentar guardado» o «Exportar copia». (\(reason))"
     }
 
     @discardableResult
     func retrySave() -> Bool {
         do {
-            try store.save(workspace)
+            try saver.saveNow(workspace)
             writable = true
             hasUnsavedChanges = false
             corruptFileDetected = false
@@ -1949,7 +1974,10 @@ final class AppModel: ObservableObject {
             if Calendar.current.isDate(selectedDate, inSameDayAs: lastPrunedDay) { selectedDate = now }
             lastPrunedDay = today
             // A dated copy per day, so a bad save or a mistake is recoverable from Ajustes → Restaurar copia.
-            if !preview { try? store.createDailySnapshotIfNeeded(at: now) }
+            if !preview {
+                saver.waitForPendingWrites()
+                try? store.createDailySnapshotIfNeeded(at: now)
+            }
             workspace.prune(at: now)
             let rolled = rollMissedSeries(now: now)
             _ = persist()
@@ -2009,9 +2037,9 @@ final class AppModel: ObservableObject {
             if var s = session, !s.paused {
                 s.checkpoint(at: now, uptime: uptime)
                 workspace.session = s
-                _ = persist()
+                persistInBackground()
             } else if workspace.generalRules.contains(where: { $0.enabled && ($0.kind == .dailyLimit || $0.kind == .workGoal || $0.kind == .launchLimit) }) {
-                _ = persist()
+                persistInBackground()
             }
         }
         if ticks.isMultiple(of: 15) {
@@ -2279,6 +2307,7 @@ final class AppModel: ObservableObject {
         // A copy brings its session back paused: during a protected session that was a one-click way out.
         guard !refuseWhileProtected("recuperar una copia") else { return }
         do {
+            saver.waitForPendingWrites()
             let recovered = try store.recoverFromRollingBackup(at: Date())
             workspace = recovered
             writable = true
@@ -2296,9 +2325,10 @@ final class AppModel: ObservableObject {
 
     func resetCorruptWorkspacePreservingFile() {
         do {
+            saver.waitForPendingWrites()
             let savedCorrupt = try store.createTimestampedBackup(prefix: "corrupt-saved", at: Date())
             workspace = Workspace()
-            try store.save(workspace)
+            try saver.saveNow(workspace)
             writable = true
             hasUnsavedChanges = false
             corruptFileDetected = false
@@ -2312,6 +2342,7 @@ final class AppModel: ObservableObject {
 
     func restoreBackup(from fileURL: URL) throws {
         guard !refuseWhileProtected("restaurar una copia") else { return }
+        saver.waitForPendingWrites()
         let imported = try store.validateBackup(at: fileURL)
         let (restored, prevURL) = try store.restore(imported, at: Date())
         workspace = restored

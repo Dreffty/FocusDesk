@@ -1109,6 +1109,32 @@ public struct ProtectedRulesWitness: Codable, Equatable, Sendable {
     }
 }
 
+/// Whether the Keychain has to be written at all. It was written every ten seconds whether anything had changed or
+/// not, because the fingerprint carried the time it was made.
+public enum WitnessPlan {
+    /// A running block ends at the same moment however often it is measured, give or take rounding.
+    public static let sameEndTolerance: TimeInterval = 30
+    /// A rule protected 24/7 has no end to write down: the fingerprint runs this far ahead and is renewed halfway.
+    public static let openEndedHorizon: TimeInterval = 3600
+
+    public enum Action: Equatable { case keep, save, clear }
+
+    public static func action(stored: SessionWitness?, desired: SessionWitness?, tolerance: TimeInterval = sameEndTolerance) -> Action {
+        guard let desired else { return stored == nil ? .keep : .clear }
+        guard let stored,
+              stored.sessionID == desired.sessionID,
+              stored.taskTitle == desired.taskTitle,
+              stored.protection == desired.protection,
+              stored.deadline.anchorBootID == desired.deadline.anchorBootID,
+              abs(stored.deadline.continuousEnd - desired.deadline.continuousEnd) <= tolerance else { return .save }
+        return .keep
+    }
+
+    public static func rulesNeedSaving(_ rules: [GeneralBlockRule], lastSaved: [GeneralBlockRule]?) -> Bool {
+        rules != lastSaved
+    }
+}
+
 /// Panes of System Settings that end a block if you reach them: Accessibility lives under one, the clock under
 /// another. The rest of System Settings (Wi-Fi, sound, displays) must keep working during a session.
 public enum GuardedSettingsPane: String, CaseIterable, Sendable {

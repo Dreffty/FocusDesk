@@ -355,7 +355,7 @@ enum RelaunchWatcher {
             relaunches.removeAll { now.timeIntervalSince($0) > RelaunchDecision.window }
             let appRunning = interfaceRunning()
             // The data file is only read while FocusDesk is gone, never under its feet.
-            let loadedWorkspace = appRunning ? nil : (try? store.load())
+            let loadedWorkspace = appRunning ? nil : (try? store.loadWithoutHistory())
             let session = loadedWorkspace?.session
             let hasActiveProtectedRule = loadedWorkspace.map { ws in
                 ws.generalRules.contains { rule in
