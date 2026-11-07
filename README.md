@@ -94,7 +94,7 @@ Una tarea bloquea mientras dura su sesión. Una **regla** bloquea sin ninguna ta
 - **Horario** — por días y tramos de hora.
 - **Siempre activa** — hasta que la apagues.
 
-**Se protegen igual que una tarea.** Mientras una regla con protección está actuando, apagarla, borrarla o aflojarla cuesta su código, su espera o la salida de emergencia; endurecerla es libre. Cambiar una lista nunca puede desbloquear lo bloqueado: de lista negra a blanca solo se acepta si la blanca no queda vacía y no incluye nada de lo que estaba cerrado. Una regla **obligatoria 24/7** se protege siempre, no solo mientras bloquea, y activa el vigilante.
+**Se protegen igual que una tarea.** Mientras una regla con protección está actuando, apagarla, borrarla o aflojarla cuesta su código, su espera o la salida de emergencia; endurecerla es libre. Cambiar una lista nunca puede desbloquear lo bloqueado: de «Todas menos estas» a «Solo estas» solo se acepta si la lista nueva no queda vacía y no incluye nada de lo que estaba cerrado. Una regla **obligatoria 24/7** se protege siempre, no solo mientras bloquea, y activa el vigilante.
 
 ## Teclado, deshacer y apariencia
 

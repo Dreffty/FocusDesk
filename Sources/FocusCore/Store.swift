@@ -208,6 +208,8 @@ public struct WorkspaceStore: @unchecked Sendable {
         guard (1...Workspace.currentSchema).contains(backupWorkspace.schema) else { throw StoreError.unsupported }
         let previousURL = try createTimestampedBackup(prefix: "before-restore", at: now)
         var sanitized = backupWorkspace
+        // A copy with no history inside (the rolling one, picked by hand) must not wipe the one in its own file.
+        attachHistory(to: &sanitized)
         sanitized.session?.runningSince = nil
         sanitized.session?.runningUptime = nil
         try save(sanitized)

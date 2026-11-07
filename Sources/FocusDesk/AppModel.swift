@@ -127,6 +127,7 @@ final class AppModel: ObservableObject {
     private var napActivity: NSObjectProtocol?
     /// macOS asked FocusDesk to quit for a restart, a shutdown or a log-out: it goes, and the session comes back.
     var quittingForSystem = false
+    private var saveGeneration = 0
     /// For the screenshot tool only: the editor's folded sections have to be seen too.
     var unfoldEditorForSnapshot = false
     // What the Keychain holds, so it is only written when that changes.
@@ -555,6 +556,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     func persist() -> Bool {
         guard writable || hasUnsavedChanges else { return false }
+        saveGeneration &+= 1
         do {
             try saver.saveNow(workspace)
             saveSucceeded()
@@ -568,10 +570,14 @@ final class AppModel: ObservableObject {
     /// The checkpoint that runs every minute: nobody is waiting for its result, so it does not hold up the window.
     func persistInBackground() {
         guard writable || hasUnsavedChanges else { return }
+        saveGeneration &+= 1
+        let generation = saveGeneration
         saver.saveInBackground(workspace) { [weak self] failure in
             let reason = failure?.localizedDescription
             Task { @MainActor [weak self] in
-                if let reason { self?.saveFailed(because: reason) } else { self?.saveSucceeded() }
+                // A newer save has already said how things stand; this older answer must not undo it.
+                guard let self, generation == self.saveGeneration else { return }
+                if let reason { self.saveFailed(because: reason) } else { self.saveSucceeded() }
             }
         }
     }

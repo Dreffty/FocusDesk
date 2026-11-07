@@ -283,3 +283,18 @@ final class StoreWritesTests: XCTestCase {
         XCTAssertTrue(WitnessPlan.rulesNeedSaving(edited, lastSaved: rules))
     }
 }
+
+extension StoreWritesTests {
+    /// Restaurar `workspace.backup.json` a mano: la copia automática no lleva el historial dentro, y el historial no se
+    /// puede perder por eso.
+    func testRestoringACopyWithoutHistoryKeepsTheCurrentOne() throws {
+        let current = workspace(sessions: 2)
+        try store.save(current)
+        let light = try store.validateBackup(at: store.backupURL)
+        XCTAssertTrue(light.history.isEmpty)
+
+        let (restored, _) = try store.restore(light, at: Date(timeIntervalSince1970: 1_000_000))
+        XCTAssertEqual(restored.history.map(\.id), current.history.map(\.id))
+        XCTAssertEqual(try store.load().history.map(\.id), current.history.map(\.id))
+    }
+}
