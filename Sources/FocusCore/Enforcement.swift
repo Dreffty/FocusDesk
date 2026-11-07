@@ -771,6 +771,8 @@ public enum RelaunchDecision {
     public static let window: TimeInterval = 180
     /// A watcher younger than this has just been started by a log-in, not lived through a log-out.
     public static let startupGrace: TimeInterval = 90
+    /// How long after a restart, a shutdown or a log-out closed FocusDesk the watcher leaves it closed.
+    public static let systemQuitGrace: TimeInterval = 180
 
     public static func shouldRelaunch(
         session: WorkSession?,
@@ -778,10 +780,14 @@ public enum RelaunchDecision {
         appRunning: Bool,
         watcherAge: TimeInterval,
         recentRelaunches: Int,
+        closedBySystemAt: Date? = nil,
         now: Date = Date()
     ) -> Bool {
         guard !appRunning, recentRelaunches < maxRelaunches else { return false }
-        if hasActiveProtectedRule && watcherAge >= startupGrace { return true }
+        // macOS just closed it to restart, shut down or log out: reopening it now would get in the way of the one
+        // exit that always has to work. If the restart was called off, it comes back when this time is up.
+        let closingForSystem = closedBySystemAt.map { now.timeIntervalSince($0) < systemQuitGrace } ?? false
+        if hasActiveProtectedRule && watcherAge >= startupGrace && !closingForSystem { return true }
         guard let session else { return false }
         // Killed or crashed mid-session: what was saved last still says it was running.
         if session.runningSince != nil { return session.shouldResumeAfterRelaunch(now: now) }
@@ -791,6 +797,21 @@ public enum RelaunchDecision {
             return session.shouldResumeAfterRelaunch(now: now)
         }
         return false
+    }
+}
+
+/// When FocusDesk puts its own watcher back: a rule that is mandatory 24/7 turns the setting on, and a setting that
+/// says «on» with nothing installed is a promise nobody is keeping. Turning it off stays possible: from Ajustes once
+/// nothing is protected, or by hand with `launchctl bootout`, which is documented in the README.
+public enum RelaunchGuardPlan {
+    public static func shouldInstall(settingOn: Bool, fileExists: Bool, runningInstalledApp: Bool, demo: Bool) -> Bool {
+        settingOn && !fileExists && runningInstalledApp && !demo
+    }
+
+    /// The Aplicaciones folders. Build folders and backups of older versions also end in `.app`, and the login item
+    /// must not end up pointing at them.
+    public static func isInstalledLocation(bundlePath: String, home: String) -> Bool {
+        bundlePath.hasPrefix("/Applications/") || bundlePath.hasPrefix(home + "/Applications/")
     }
 }
 

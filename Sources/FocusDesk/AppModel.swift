@@ -223,6 +223,7 @@ final class AppModel: ObservableObject {
                 error = "\(count == 1 ? "Un elemento" : "\(count) elementos") de tus datos no se \(count == 1 ? "podía" : "podían") leer y se \(count == 1 ? "ha" : "han") dejado fuera. El resto funciona con normalidad; el archivo original está guardado en \(kept?.lastPathComponent ?? "backups")."
             }
             workspace.prune(at: Date())
+            workspace.closedBySystemAt = nil
             if workspace.session != nil {
                 // Decided on the session as it was saved, before it is paused just below.
                 resumeProtected = workspace.session?.shouldResumeAfterRelaunch(now: Date()) == true
@@ -374,6 +375,19 @@ final class AppModel: ObservableObject {
             workspace.settings.relaunchGuard = true
         }
         relaunchGuard.refresh(repair: !preview)
+        // The setting said «on» with nothing installed: a mandatory rule that nobody would bring back after a force-quit.
+        if RelaunchGuardPlan.shouldInstall(
+            settingOn: workspace.settings.relaunchGuard,
+            fileExists: relaunchGuard.installed,
+            runningInstalledApp: relaunchGuard.runningInstalledApp,
+            demo: preview
+        ) {
+            relaunchGuard.install()
+            let outcome = relaunchGuard.installed
+                ? "El vigilante estaba activado en Ajustes pero no instalado: ya lo está. Si FocusDesk se cierra a la fuerza con algo protegido, vuelve a abrirse."
+                : relaunchGuard.message
+            notice = [notice, outcome].compactMap { $0 }.joined(separator: " ")
+        }
     }
 
     /// A session read from disk (at launch, or in a restored or recovered copy) never runs on its own. The design
@@ -2389,6 +2403,8 @@ final class AppModel: ObservableObject {
             }
         }
         floatingPill.hide()
+        // Read by the watcher, which must not reopen FocusDesk in the middle of a restart.
+        workspace.closedBySystemAt = quittingForSystem ? Date() : nil
         _ = persist()
         syncCalendar()
         if !preview { focusMode.turnOffNowIfOurs() }

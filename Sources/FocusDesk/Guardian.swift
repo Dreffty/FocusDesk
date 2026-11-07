@@ -235,6 +235,14 @@ final class RelaunchGuard: ObservableObject {
     /// Only meaningful when FocusDesk runs from a real `.app`: from a build folder there is nothing stable to point at.
     var available: Bool { bundledExecutable != nil }
 
+    /// Running from an Aplicaciones folder, not from a build folder or a backup of an older version.
+    var runningInstalledApp: Bool {
+        available && RelaunchGuardPlan.isInstalledLocation(
+            bundlePath: Bundle.main.bundleURL.standardizedFileURL.path,
+            home: FileManager.default.homeDirectoryForCurrentUser.path
+        )
+    }
+
     private var bundledExecutable: URL? {
         guard let executable = Bundle.main.executableURL else { return nil }
         return executable.path.contains(".app/Contents/MacOS/") ? executable : nil
@@ -367,6 +375,7 @@ enum RelaunchWatcher {
                 appRunning: appRunning,
                 watcherAge: now.timeIntervalSince(started),
                 recentRelaunches: relaunches.count,
+                closedBySystemAt: loadedWorkspace?.closedBySystemAt,
                 now: now
             )
             if dryRun {

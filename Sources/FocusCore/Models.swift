@@ -1421,6 +1421,9 @@ public struct Workspace: Codable, Equatable, Sendable {
     public var temporaryAllows: [TemporaryAllowEntry]
     /// Audit log of rule/session changes, micro-pauses, and overrides (`PlanChangeLog` in FocusMe).
     public var auditLog: [RuleAuditEntry]
+    /// When macOS last closed FocusDesk for a restart, a shutdown or a log-out; the watcher keeps out of the way for a
+    /// moment after it. Cleared as soon as FocusDesk opens again.
+    public var closedBySystemAt: Date?
     /// Elements that could not be read when this workspace was loaded (not saved). Above zero, the app keeps a copy
     /// of the original file before writing anything.
     public var decodingSkipped = 0
@@ -1447,7 +1450,7 @@ public struct Workspace: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case schema, tasks, profiles, session, history, settings, pendingCalendarOps
         case generalRules, dailyRuleUsage, dailyRuleLaunches, dailyRuleMatches, dailyVerifiedStudySeconds, dailyMicroPausesUsed
-        case dailyContinuousBreakSkips, temporaryAllows, auditLog
+        case dailyContinuousBreakSkips, temporaryAllows, auditLog, closedBySystemAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -1479,6 +1482,7 @@ public struct Workspace: Codable, Equatable, Sendable {
         dailyContinuousBreakSkips = (try? c.decodeIfPresent([String: Int].self, forKey: .dailyContinuousBreakSkips)) ?? [:]
         temporaryAllows = (try? c.decodeIfPresent([TemporaryAllowEntry].self, forKey: .temporaryAllows)) ?? []
         auditLog = (try? c.decodeIfPresent([RuleAuditEntry].self, forKey: .auditLog)) ?? []
+        closedBySystemAt = try? c.decodeIfPresent(Date.self, forKey: .closedBySystemAt)
         let brokenSession = c.contains(.session) && readableSession == nil && (try? c.decodeNil(forKey: .session)) != true ? 1 : 0
         decodingSkipped = (lossyTasks?.skipped ?? 0) + (lossyProfiles?.skipped ?? 0) + (lossyHistory?.skipped ?? 0)
             + (lossyOps?.skipped ?? 0) + (lossyRules?.skipped ?? 0) + brokenSession
