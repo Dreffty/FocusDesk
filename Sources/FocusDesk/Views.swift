@@ -945,7 +945,7 @@ private struct PassiveStudyLoLCard: View {
                                 Chip("Obligatoria 24/7 · Código \(rule.unlockChars) díg.", icon: "key.fill", color: Palette.muted)
                             }
                         }
-                        Text("Modo pasivo: suma tiempo automáticamente mientras estudias o trabajas con una pestaña/ventana abierta (Claude, navegador, PDFs, código remain libres). Al acabar la 2.ª partida da \(rule.postMatchGraceSeconds) s y cierra LoL.")
+                        Text("Modo pasivo: suma tiempo automáticamente mientras estudias o trabajas con una pestaña/ventana abierta (Claude, el navegador, PDFs o código siguen libres). Al acabar la 2.ª partida da \(rule.postMatchGraceSeconds) s y cierra LoL.")
                             .font(.app(11))
                             .foregroundStyle(Palette.muted)
                     }

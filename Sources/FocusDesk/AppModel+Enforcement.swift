@@ -608,7 +608,7 @@ extension AppModel {
             let punisherJustFired = workspace.session?.registerBlock() ?? false
             let verb = applyBlockAction(to: distracting, bundleID: id)
             let ok = target.activate(options: [])
-            strictTracker.recordRedirectAttempt(succeeded: ok)
+            strictTracker.recordRedirectAttempt()
             if punisherJustFired, let message = punisherMessage(for: s) {
                 notice = message
             } else {
@@ -926,7 +926,8 @@ extension AppModel {
         guard !preview else { return }
         if !witnessLoaded {
             witnessLoaded = true
-            storedRulesWitness = KeychainWitness.loadRulesWitness()?.rules
+            // One whose fingerprint does not match is written again, also the first time after the fingerprint changes.
+            storedRulesWitness = KeychainWitness.loadRulesWitness().flatMap { $0.intact ? $0.rules : nil }
             storedSessionWitness = KeychainWitness.load()
         }
 

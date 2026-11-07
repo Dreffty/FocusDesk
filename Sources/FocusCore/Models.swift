@@ -1102,14 +1102,10 @@ public struct StrictRedirectTracker: Equatable, Sendable {
         return .redirect
     }
 
-    public mutating func recordRedirectAttempt(succeeded: Bool) {
-        if succeeded {
-            // Still increment consecutive attempts if the OS reported true but never actually switched away from the unallowed app;
-            // `registerAllowedAppObserved()` resets it to 0 as soon as an allowed app becomes active.
-            consecutiveFailures += 1
-        } else {
-            consecutiveFailures += 1
-        }
+    /// Counts even when macOS reports success: it often says yes without the app in front changing. Only
+    /// `registerAllowedAppObserved()`, seeing an allowed app actually become active, brings it back to 0.
+    public mutating func recordRedirectAttempt() {
+        consecutiveFailures += 1
     }
 }
 

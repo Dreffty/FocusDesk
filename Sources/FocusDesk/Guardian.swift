@@ -346,7 +346,7 @@ enum RelaunchWatcher {
         let dryRun = arguments.contains("--dry-run")
         let directory = testDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("FocusDesk")
-        let store = WorkspaceStore(url: directory.appendingPathComponent("workspace.json"))
+        let reader = WorkspaceWatchReader(store: WorkspaceStore(url: directory.appendingPathComponent("workspace.json")))
         var relaunches: [Date] = []
         // Right after a log-in, the login items get a moment to open FocusDesk themselves.
         if !dryRun && testDirectory == nil { Thread.sleep(forTimeInterval: 10) }
@@ -355,7 +355,7 @@ enum RelaunchWatcher {
             relaunches.removeAll { now.timeIntervalSince($0) > RelaunchDecision.window }
             let appRunning = interfaceRunning()
             // The data file is only read while FocusDesk is gone, never under its feet.
-            let loadedWorkspace = appRunning ? nil : (try? store.loadWithoutHistory())
+            let loadedWorkspace = appRunning ? nil : reader.read()
             let session = loadedWorkspace?.session
             let hasActiveProtectedRule = loadedWorkspace.map { ws in
                 ws.generalRules.contains { rule in

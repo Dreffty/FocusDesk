@@ -232,8 +232,31 @@ public struct WorkspaceStore: @unchecked Sendable {
     }
 }
 
+/// For the watcher, which looks at the data every two seconds while FocusDesk is closed: the file is only read and
+/// decoded again when it changed on disk.
+public final class WorkspaceWatchReader {
+    public let store: WorkspaceStore
+    public private(set) var decodeCount = 0
+    private var lastStamp: WriteMemory.Stamp?
+    private var cached: Workspace?
+    private var hasRead = false
+
+    public init(store: WorkspaceStore) { self.store = store }
+
+    public func read() -> Workspace? {
+        // The date and size are taken first: a change made while reading is seen on the next look.
+        let stamp = WriteMemory.stamp(of: store.url)
+        if hasRead, stamp == lastStamp { return cached }
+        hasRead = true
+        lastStamp = stamp
+        decodeCount += 1
+        cached = try? store.loadWithoutHistory()
+        return cached
+    }
+}
+
 /// What was last written to each file, to know when writing again would change nothing.
-private final class WriteMemory: @unchecked Sendable {
+final class WriteMemory: @unchecked Sendable {
     struct Stamp: Equatable {
         var size: Int
         var modified: Date

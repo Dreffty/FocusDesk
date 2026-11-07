@@ -64,12 +64,12 @@ final class SessionTests: XCTestCase {
 
         // Consecutive failures without returning to allowed app eventually pause to avoid infinite loop
         XCTAssertEqual(tracker.evaluateUnallowed(hasRunningAllowedApp: true, at: zero), .redirect)
-        tracker.recordRedirectAttempt(succeeded: false)
+        tracker.recordRedirectAttempt()
         XCTAssertEqual(tracker.evaluateUnallowed(hasRunningAllowedApp: true, at: zero.addingTimeInterval(0.5)), .cooldown)
         XCTAssertEqual(tracker.evaluateUnallowed(hasRunningAllowedApp: true, at: zero.addingTimeInterval(2.0)), .redirect)
-        tracker.recordRedirectAttempt(succeeded: false)
+        tracker.recordRedirectAttempt()
         XCTAssertEqual(tracker.evaluateUnallowed(hasRunningAllowedApp: true, at: zero.addingTimeInterval(4.0)), .redirect)
-        tracker.recordRedirectAttempt(succeeded: false)
+        tracker.recordRedirectAttempt()
         if case .pauseSession = tracker.evaluateUnallowed(hasRunningAllowedApp: true, at: zero.addingTimeInterval(6.0)) {} else {
             XCTFail("Expected pause after 3 consecutive redirect failures")
         }

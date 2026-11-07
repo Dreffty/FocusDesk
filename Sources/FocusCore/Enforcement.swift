@@ -1103,7 +1103,10 @@ public struct ProtectedRulesWitness: Codable, Equatable, Sendable {
     static func computeDigest(rules: [GeneralBlockRule]) -> String {
         let material = rules
             .sorted { $0.id.uuidString < $1.id.uuidString }
-            .map { "\($0.id.uuidString):\($0.name):\($0.kind.rawValue):\($0.protection.rawValue):\($0.domains)" }
+            .map { rule in
+                let apps = rule.apps.map(\.id).sorted().joined(separator: ",")
+                return "\(rule.id.uuidString):\(rule.name):\(rule.kind.rawValue):\(rule.protection.rawValue):\(rule.domains):\(rule.blockApps):\(rule.appListMode.rawValue):\(apps)"
+            }
             .joined(separator: "|")
         return SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
     }
@@ -1180,7 +1183,6 @@ public enum GuardedSettingsPane: String, CaseIterable, Sendable {
 public enum SearchMediaRules {
     public static func matches(host: String, pathAndQuery: String) -> String? {
         let h = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let pq = pathAndQuery.lowercased()
         let isGoogle = h == "google.com" || h.hasSuffix(".google.com") || h.contains("google.")
         let isBing = h == "bing.com" || h.hasSuffix(".bing.com")
         let isDuck = h == "duckduckgo.com" || h.hasSuffix(".duckduckgo.com")
@@ -1189,33 +1191,40 @@ public enum SearchMediaRules {
         let isEcosia = h == "ecosia.org" || h.hasSuffix(".ecosia.org")
         let isYandex = h.contains("yandex.")
 
+        // The real path and the real parameters: `udm=28` is Shopping, and `?q=udm=2` is what somebody searched for.
+        let address = pathAndQuery.lowercased().split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+        let parts = address.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        let path = parts[0]
+        let parameters = parts.count > 1 ? parts[1].split(separator: "&").map(String.init) : []
+        func has(_ parameter: String) -> Bool { parameters.contains(parameter) }
+
         if isGoogle {
-            if pq.contains("tbm=isch") || pq.contains("udm=2") || pq.hasPrefix("/imghp") || pq.hasPrefix("/images") {
+            if has("tbm=isch") || has("udm=2") || path.hasPrefix("/imghp") || path.hasPrefix("/images") {
                 return "Google Imágenes"
             }
-            if pq.contains("tbm=vid") || pq.contains("udm=7") || pq.contains("udm=39") || pq.hasPrefix("/videohp") || pq.hasPrefix("/videos") {
+            if has("tbm=vid") || has("udm=7") || has("udm=39") || path.hasPrefix("/videohp") || path.hasPrefix("/videos") {
                 return "Google Vídeos"
             }
         }
         if isBing {
-            if pq.hasPrefix("/images") || pq.contains("ia=images") { return "Bing Imágenes" }
-            if pq.hasPrefix("/videos") || pq.contains("ia=videos") { return "Bing Vídeos" }
+            if path.hasPrefix("/images") || has("ia=images") { return "Bing Imágenes" }
+            if path.hasPrefix("/videos") || has("ia=videos") { return "Bing Vídeos" }
         }
         if isDuck {
-            if pq.contains("iax=images") || pq.contains("ia=images") { return "DuckDuckGo Imágenes" }
-            if pq.contains("iax=videos") || pq.contains("ia=videos") { return "DuckDuckGo Vídeos" }
+            if has("iax=images") || has("ia=images") { return "DuckDuckGo Imágenes" }
+            if has("iax=videos") || has("ia=videos") { return "DuckDuckGo Vídeos" }
         }
         if isBrave {
-            if pq.hasPrefix("/images") { return "Brave Imágenes" }
-            if pq.hasPrefix("/videos") { return "Brave Vídeos" }
+            if path.hasPrefix("/images") { return "Brave Imágenes" }
+            if path.hasPrefix("/videos") { return "Brave Vídeos" }
         }
         if isYahoo {
-            if h.hasPrefix("images.search.") || pq.contains("/search/images") { return "Yahoo Imágenes" }
-            if h.hasPrefix("video.search.") || pq.contains("/search/video") { return "Yahoo Vídeos" }
+            if h.hasPrefix("images.search.") || path.contains("/search/images") { return "Yahoo Imágenes" }
+            if h.hasPrefix("video.search.") || path.contains("/search/video") { return "Yahoo Vídeos" }
         }
         if isEcosia || isYandex {
-            if pq.hasPrefix("/images") { return "Buscador de Imágenes" }
-            if pq.hasPrefix("/videos") || pq.hasPrefix("/video") { return "Buscador de Vídeos" }
+            if path.hasPrefix("/images") { return "Buscador de Imágenes" }
+            if path.hasPrefix("/videos") || path.hasPrefix("/video") { return "Buscador de Vídeos" }
         }
         return nil
     }
@@ -1491,9 +1500,10 @@ public enum StudyActivityVerifier {
 /// Inspects clipboard contents when `protectClipboard` is active (`TargetListHandler::isClipboardPassed` in FocusMe).
 public enum ClipboardGuardRules {
     private static let dangerousCommandTokens: [String] = [
-        "killall focusdesk", "pkill -9 focusdesk", "pkill focusdesk",
-        "launchctl unload", "launchctl bootout", "launchctl remove local.focusdesk"
+        "killall focusdesk", "pkill -9 focusdesk", "pkill focusdesk"
     ]
+    /// Only about FocusDesk: copying a `launchctl` command for any other app is nobody's business here.
+    private static let launchctlTokens = ["launchctl unload", "launchctl bootout", "launchctl remove"]
 
     /// Returns a human-readable reason when the clipboard text contains a blocked URL or a terminal command meant to kill FocusDesk.
     public static func violation(
@@ -1507,6 +1517,11 @@ public enum ClipboardGuardRules {
         let lower = trimmed.lowercased()
         for cmd in dangerousCommandTokens where lower.contains(cmd) {
             return "comando de terminal protegido («\(cmd)»)"
+        }
+        if lower.contains("local.focusdesk") {
+            for cmd in launchctlTokens where lower.contains(cmd) {
+                return "comando de terminal protegido («\(cmd)»)"
+            }
         }
         guard webBlockAction != .warn else { return nil }
         if (lower.hasPrefix("http://") || lower.hasPrefix("https://")),

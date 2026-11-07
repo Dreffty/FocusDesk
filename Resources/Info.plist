@@ -15,7 +15,7 @@
 <key>LSUIElement</key><false/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSCalendarsFullAccessUsageDescription</key><string>FocusDesk crea y actualiza sus propios bloques en un calendario dedicado para mostrar la cuenta atrás en Vorssaint.</string>
-<key>NSAppleEventsUsageDescription</key><string>Si lo activas, FocusDesk consulta el dominio de la pestaña activa de Brave durante una sesión. No guarda rutas ni parámetros.</string>
+<key>NSAppleEventsUsageDescription</key><string>FocusDesk pregunta a tu navegador (Safari, Chrome, Brave, Edge y otros) qué web tiene abierta y, si esa web está bloqueada, cambia o cierra esa pestaña. Al Finder le pregunta qué carpeta enseña, para cerrar las que hayas bloqueado. Del navegador solo guarda el dominio, no rutas ni parámetros.</string>
 <key>NSDocumentsFolderUsageDescription</key><string>FocusDesk compara metadatos en la carpeta de resultados que elijas para ayudarte a confirmar una tarea.</string>
 <key>NSDownloadsFolderUsageDescription</key><string>FocusDesk compara metadatos en la carpeta de resultados que elijas.</string>
 <key>NSDesktopFolderUsageDescription</key><string>FocusDesk compara metadatos en la carpeta de resultados que elijas.</string>
