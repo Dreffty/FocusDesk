@@ -961,6 +961,63 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         if activities.count > 3000 { activities.removeFirst(activities.count - 3000) }
     }
 
+    /// How old a row without a website can be and still be the one this same read of the browser opened.
+    static let freshRowSeconds: TimeInterval = 8
+
+    /// A page read in the browser in front. The same site as the last row is the same row; a row the browser just
+    /// opened takes the site. Only a different site, or time spent on a page with no address, starts another.
+    public mutating func recordVisit(appID: String, name: String, domain: String, interruption: Bool, at now: Date = Date(), uptime: TimeInterval? = nil) {
+        guard !paused, endedAt == nil else { return }
+        if let index = activities.indices.last, activities[index].appID == appID {
+            let last = activities[index]
+            let sameSite = last.domain == domain
+            let justOpened = last.domain == nil && last.domainStatus == nil && now.timeIntervalSince(last.at) <= Self.freshRowSeconds
+            if sameSite || justOpened {
+                closeOpenActivityInterval(at: now, uptime: uptime)
+                activities[index].domain = domain
+                if interruption {
+                    // Another page of the same site is another visit; the row that opened this visit was counted already.
+                    if sameSite || !last.interruption { interruptionCount += 1 }
+                    activities[index].interruption = true
+                }
+                return
+            }
+        }
+        record(Activity(at: now, appID: appID, name: name, domain: domain, interruption: interruption), at: now, uptime: uptime)
+    }
+
+    /// Joins rows that say the same thing, for what was saved before they stopped being split: the same app and the
+    /// same site, with the rows without a site in between. Time and interruptions are kept.
+    public mutating func foldActivities() {
+        guard activities.count > 1 else { return }
+        var folded: [Activity] = []
+        folded.reserveCapacity(activities.count)
+        for row in activities {
+            guard let last = folded.last, last.appID == row.appID else {
+                folded.append(row)
+                continue
+            }
+            let sameRow: Bool
+            if last.domain != nil || row.domain != nil {
+                sameRow = last.domain == nil || row.domain == nil || last.domain == row.domain
+            } else {
+                sameRow = last.title == row.title && last.titleStatus == row.titleStatus && last.domainStatus == row.domainStatus
+            }
+            guard sameRow else {
+                folded.append(row)
+                continue
+            }
+            let index = folded.count - 1
+            folded[index].duration += row.duration
+            folded[index].interruption = last.interruption || row.interruption
+            folded[index].domain = last.domain ?? row.domain
+            folded[index].title = last.title ?? row.title
+            folded[index].titleStatus = last.titleStatus ?? row.titleStatus
+            folded[index].domainStatus = last.domainStatus ?? row.domainStatus
+        }
+        activities = folded
+    }
+
     /// Observes the active application and records a single interruption per continuous exit from the allowed workspace.
     /// Returns `true` only when a new distraction episode begins.
     @discardableResult
@@ -983,7 +1040,10 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
             inDistractionEpisode = true
         }
         let last = activities.last
-        let sameSignature = last?.appID == appID && last?.title == title && last?.titleStatus == titleStatus && last?.domain == nil
+        // A row about a website (or about not being able to read it) belongs to the browser, and the reading of its
+        // address decides when it changes. A new row here on every tick made two rows every five seconds.
+        let isBrowserRow = last?.domain != nil || last?.domainStatus != nil
+        let sameSignature = last?.appID == appID && (isBrowserRow || (last?.title == title && last?.titleStatus == titleStatus))
         if isNewInterruption || !sameSignature {
             record(
                 Activity(
@@ -1624,6 +1684,8 @@ public struct Workspace: Codable, Equatable, Sendable {
             history[index].session.activities = []
             history[index].session.baseline = [:]
         }
+        for index in history.indices { history[index].session.foldActivities() }
+        session?.foldActivities()
         let minDayKey = FocusRules.dayKey(for: cutoff)
         dailyRuleUsage = dailyRuleUsage.filter { $0.key >= minDayKey }
         dailyRuleLaunches = dailyRuleLaunches.filter { $0.key >= minDayKey }

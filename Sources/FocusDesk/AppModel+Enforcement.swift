@@ -779,15 +779,8 @@ extension AppModel {
         let searchMediaHit = s.task.blockSearchMedia ? SearchMediaRules.matches(host: host, pathAndQuery: path) : nil
         let outside = searchMediaHit != nil || !FocusRules.webAllowed(host: host, path: path, list: s.task.domains, mode: s.task.webListMode)
         let visitKey = path.isEmpty || path == "/" ? host : "\(host)\(path)"
-        let changed = workspace.session?.activities.last?.domain != host
         let newVisit = outside && domainEpisodeHost != visitKey
-        if changed {
-            workspace.session?.record(
-                Activity(appID: bundleID, name: browserName, domain: host, interruption: newVisit),
-                at: Date(),
-                uptime: uptime
-            )
-        }
+        workspace.session?.recordVisit(appID: bundleID, name: browserName, domain: host, interruption: newVisit, at: Date(), uptime: uptime)
         domainEpisodeHost = outside ? visitKey : nil
         guard outside else { return }
 
