@@ -161,7 +161,7 @@ struct TaskEditor: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("DURACIÓN").fieldLabelStyle()
                                     // Same range and steps as every other duration control (it went 5 → 1 → 6 → 11 before).
-                                    Stepper("\(draft.minutes) min", value: $draft.minutes, in: FocusRules.minutesRange, step: 5)
+                                    Stepper(FocusRules.durationText(minutes: draft.minutes), value: $draft.minutes, in: FocusRules.minutesRange, step: 5)
                                     HStack(spacing: 6) {
                                         ForEach([15, 30, 60, 90], id: \.self) { minutes in
                                             Button("\(minutes)m") { draft.minutes = minutes }

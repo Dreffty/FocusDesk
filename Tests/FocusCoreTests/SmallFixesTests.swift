@@ -131,3 +131,20 @@ final class SmallFixesTests: XCTestCase {
         XCTAssertEqual(tracker.consecutiveFailures, 0)
     }
 }
+
+/// D9: «325 min» se lee mejor como «5 h 25».
+final class DurationTextTests: XCTestCase {
+    func testLongDurationsReadAsHours() {
+        XCTAssertEqual(FocusRules.durationText(minutes: 325), "5 h 25")
+        XCTAssertEqual(FocusRules.durationText(minutes: 61), "1 h 01")
+        XCTAssertEqual(FocusRules.durationText(minutes: 90), "1 h 30")
+    }
+
+    func testRoundHoursAndShortDurations() {
+        XCTAssertEqual(FocusRules.durationText(minutes: 120), "2 h")
+        XCTAssertEqual(FocusRules.durationText(minutes: 60), "1 h")
+        XCTAssertEqual(FocusRules.durationText(minutes: 45), "45 min")
+        XCTAssertEqual(FocusRules.durationText(minutes: 0), "0 min")
+        XCTAssertEqual(FocusRules.durationText(minutes: -5), "0 min", "nunca una duración negativa")
+    }
+}

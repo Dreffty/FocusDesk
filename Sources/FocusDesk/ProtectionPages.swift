@@ -778,10 +778,12 @@ struct BreaksPage: View {
 /// dismissible invitation instead (`onboarding.md › Best practices`: context-specific tips).
 struct ProtectionTodayStrip: View {
     @ObservedObject var model: AppModel
+    /// A rule that has its own line on Hoy, so it is not said twice.
+    var hiding: UUID?
     @AppStorage("FocusDesk.protectionTipDismissed", store: AppPreferences.current) private var tipDismissed = false
 
     var body: some View {
-        let live = model.liveGeneralRules
+        let live = model.liveGeneralRules.filter { $0.id != hiding }
         if !live.isEmpty || model.runningQuickBlock != nil {
             Button { model.go(to: .blocking) } label: {
                 HStack(spacing: 10) {
@@ -803,7 +805,7 @@ struct ProtectionTodayStrip: View {
                     Image(systemName: "chevron.right").font(.app(10, weight: .semibold)).foregroundStyle(Palette.mint)
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
                 .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.mint.opacity(0.22), lineWidth: 1))
                 .contentShape(Rectangle())

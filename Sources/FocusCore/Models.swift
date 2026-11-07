@@ -1773,6 +1773,13 @@ public enum FocusRules {
             : String(format: "%@%02d:%02d", prefix, value / 60, value % 60)
     }
 
+    /// A length as it is said: «45 min», «2 h», «5 h 25». Past an hour, «325 min» makes you do the sum.
+    public static func durationText(minutes: Int) -> String {
+        let value = max(0, minutes)
+        guard value >= 60 else { return "\(value) min" }
+        return value % 60 == 0 ? "\(value / 60) h" : String(format: "%d h %02d", value / 60, value % 60)
+    }
+
     /// Normalizes a domain, domain+subpath, or wildcard (`*`, `?`) token:
     /// - Full URLs with scheme (`"https://www.claude.ai/chat?x=1"`) normalize to their domain (`"claude.ai"`).
     /// - Bare domain+subpath entries (`"youtube.com/shorts"`, `"www.instagram.com/reels/"`) preserve the subpath (`"youtube.com/shorts"`).
