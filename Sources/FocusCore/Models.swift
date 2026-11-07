@@ -1359,6 +1359,10 @@ public struct Workspace: Codable, Equatable, Sendable {
     public var dailyRuleUsage: [String: [String: TimeInterval]]
     /// Daily launch counts per rule: `[dayKey: [ruleID.uuidString: launches]]`.
     public var dailyRuleLaunches: [String: [String: Int]]
+    /// Daily completed match counts per rule: `[dayKey: [ruleID.uuidString: matches]]`.
+    public var dailyRuleMatches: [String: [String: Int]]
+    /// Daily verified active study seconds (both passive and during task sessions, when an open study window/tab and real user activity are detected): `[dayKey: seconds]`.
+    public var dailyVerifiedStudySeconds: [String: TimeInterval]
     /// Daily micro-pauses used per rule: `[dayKey: [ruleID.uuidString: pauses]]`.
     public var dailyMicroPausesUsed: [String: [String: Int]]
     /// Daily skips used for continuous screen breaks: `[dayKey: skips]`.
@@ -1382,6 +1386,8 @@ public struct Workspace: Codable, Equatable, Sendable {
         self.generalRules = GeneralBlockRule.defaults
         self.dailyRuleUsage = [:]
         self.dailyRuleLaunches = [:]
+        self.dailyRuleMatches = [:]
+        self.dailyVerifiedStudySeconds = [:]
         self.dailyMicroPausesUsed = [:]
         self.dailyContinuousBreakSkips = [:]
         self.temporaryAllows = []
@@ -1390,7 +1396,7 @@ public struct Workspace: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case schema, tasks, profiles, session, history, settings, pendingCalendarOps
-        case generalRules, dailyRuleUsage, dailyRuleLaunches, dailyMicroPausesUsed
+        case generalRules, dailyRuleUsage, dailyRuleLaunches, dailyRuleMatches, dailyVerifiedStudySeconds, dailyMicroPausesUsed
         case dailyContinuousBreakSkips, temporaryAllows, auditLog
     }
 
@@ -1410,9 +1416,15 @@ public struct Workspace: Codable, Equatable, Sendable {
         history = lossyHistory?.elements ?? []
         settings = (try? c.decodeIfPresent(Settings.self, forKey: .settings)) ?? Settings()
         pendingCalendarOps = lossyOps?.elements ?? []
-        generalRules = lossyRules?.elements ?? GeneralBlockRule.defaults
+        var decodedRules = lossyRules?.elements ?? GeneralBlockRule.defaults
+        if !decodedRules.contains(where: { $0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID }) {
+            decodedRules.insert(GeneralBlockRule.mandatoryStudyThenLoLRule, at: 0)
+        }
+        generalRules = decodedRules
         dailyRuleUsage = (try? c.decodeIfPresent([String: [String: TimeInterval]].self, forKey: .dailyRuleUsage)) ?? [:]
         dailyRuleLaunches = (try? c.decodeIfPresent([String: [String: Int]].self, forKey: .dailyRuleLaunches)) ?? [:]
+        dailyRuleMatches = (try? c.decodeIfPresent([String: [String: Int]].self, forKey: .dailyRuleMatches)) ?? [:]
+        dailyVerifiedStudySeconds = (try? c.decodeIfPresent([String: TimeInterval].self, forKey: .dailyVerifiedStudySeconds)) ?? [:]
         dailyMicroPausesUsed = (try? c.decodeIfPresent([String: [String: Int]].self, forKey: .dailyMicroPausesUsed)) ?? [:]
         dailyContinuousBreakSkips = (try? c.decodeIfPresent([String: Int].self, forKey: .dailyContinuousBreakSkips)) ?? [:]
         temporaryAllows = (try? c.decodeIfPresent([TemporaryAllowEntry].self, forKey: .temporaryAllows)) ?? []
@@ -1462,6 +1474,34 @@ public struct Workspace: Codable, Equatable, Sendable {
         let updated = (dayMap[ruleID.uuidString] ?? 0) + 1
         dayMap[ruleID.uuidString] = updated
         dailyRuleLaunches[key] = dayMap
+        return updated
+    }
+
+    public func matchesToday(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
+        return dailyRuleMatches[key]?[ruleID.uuidString] ?? 0
+    }
+
+    @discardableResult
+    public mutating func incrementMatches(for ruleID: UUID, at now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
+        var dayMap = dailyRuleMatches[key] ?? [:]
+        let updated = (dayMap[ruleID.uuidString] ?? 0) + 1
+        dayMap[ruleID.uuidString] = updated
+        dailyRuleMatches[key] = dayMap
+        return updated
+    }
+
+    public func verifiedStudySecondsToday(at now: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
+        return dailyVerifiedStudySeconds[key] ?? 0
+    }
+
+    @discardableResult
+    public mutating func addVerifiedStudySeconds(_ delta: TimeInterval, at now: Date = Date(), calendar: Calendar = .current) -> TimeInterval {
+        let key = FocusRules.dayKey(for: now, rolloverHour: settings.dayRolloverHour, calendar: calendar)
+        let updated = max(0, (dailyVerifiedStudySeconds[key] ?? 0) + max(0, delta))
+        dailyVerifiedStudySeconds[key] = updated
         return updated
     }
 
@@ -1533,6 +1573,8 @@ public struct Workspace: Codable, Equatable, Sendable {
         let minDayKey = FocusRules.dayKey(for: cutoff)
         dailyRuleUsage = dailyRuleUsage.filter { $0.key >= minDayKey }
         dailyRuleLaunches = dailyRuleLaunches.filter { $0.key >= minDayKey }
+        dailyRuleMatches = dailyRuleMatches.filter { $0.key >= minDayKey }
+        dailyVerifiedStudySeconds = dailyVerifiedStudySeconds.filter { $0.key >= minDayKey }
         dailyMicroPausesUsed = dailyMicroPausesUsed.filter { $0.key >= minDayKey }
         dailyContinuousBreakSkips = dailyContinuousBreakSkips.filter { $0.key >= minDayKey }
         pruneExpiredTemporaryAllows(at: now)

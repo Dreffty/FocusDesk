@@ -882,4 +882,140 @@ final class EnforcementTests: XCTestCase {
         let nextHour = morning.addingTimeInterval(3600)
         XCTAssertEqual(ws.usedSecondsToday(for: hourlyRule.id, at: nextHour, calendar: cal), 0)
     }
+
+    func testStudyActivityVerifierAndLeagueMatchProcessDetection() {
+        // 1. Productive web tabs (Claude, docs, university PDFs) and apps count as verified study when active
+        XCTAssertTrue(StudyActivityVerifier.isVerifiedStudyActivity(
+            idleSeconds: 12,
+            frontBundleID: "com.brave.Browser",
+            frontAppPath: "/Applications/Brave Browser.app",
+            hasVisibleWindowOnScreen: true,
+            frontWindowTitle: "Claude — Apuntes de Cálculo",
+            browserHost: "claude.ai",
+            browserPath: "/chat/123"
+        ))
+        XCTAssertTrue(StudyActivityVerifier.isVerifiedStudyActivity(
+            idleSeconds: 25,
+            frontBundleID: "com.apple.Preview",
+            frontAppPath: "/System/Applications/Preview.app",
+            hasVisibleWindowOnScreen: true,
+            frontWindowTitle: "Tema_4_Estadistica.pdf",
+            browserHost: nil,
+            browserPath: nil
+        ))
+
+        // 2. AFK (idle >= 300s), no visible window, or browser on a blank new tab do NOT count as study
+        XCTAssertFalse(StudyActivityVerifier.isVerifiedStudyActivity(
+            idleSeconds: 305,
+            frontBundleID: "com.brave.Browser",
+            frontAppPath: "/Applications/Brave Browser.app",
+            hasVisibleWindowOnScreen: true,
+            frontWindowTitle: "Claude",
+            browserHost: "claude.ai",
+            browserPath: "/chat/123"
+        ))
+        XCTAssertFalse(StudyActivityVerifier.isVerifiedStudyActivity(
+            idleSeconds: 5,
+            frontBundleID: "com.apple.finder",
+            frontAppPath: "/System/Library/CoreServices/Finder.app",
+            hasVisibleWindowOnScreen: false,
+            frontWindowTitle: nil,
+            browserHost: nil,
+            browserPath: nil
+        ))
+        XCTAssertFalse(StudyActivityVerifier.isVerifiedStudyActivity(
+            idleSeconds: 5,
+            frontBundleID: "com.google.Chrome",
+            frontAppPath: "/Applications/Google Chrome.app",
+            hasVisibleWindowOnScreen: true,
+            frontWindowTitle: "Nueva pestaña",
+            browserHost: nil,
+            browserPath: nil
+        ))
+
+        // 3. League of Legends, games, and entertainment sites do NOT count as study
+        XCTAssertFalse(StudyActivityVerifier.isVerifiedStudyActivity(
+            idleSeconds: 3,
+            frontBundleID: "com.riotgames.LeagueofLegends.LeagueClientUx",
+            frontAppPath: "/Applications/League of Legends.app",
+            hasVisibleWindowOnScreen: true,
+            frontWindowTitle: "League of Legends",
+            browserHost: nil,
+            browserPath: nil
+        ))
+        XCTAssertFalse(StudyActivityVerifier.isVerifiedStudyActivity(
+            idleSeconds: 10,
+            frontBundleID: "com.brave.Browser",
+            frontAppPath: "/Applications/Brave Browser.app",
+            hasVisibleWindowOnScreen: true,
+            frontWindowTitle: "Netflix",
+            browserHost: "www.netflix.com",
+            browserPath: "/watch/123"
+        ))
+
+        // 4. LeagueMatchRules distinguishes the in-game match binary (GameClient) from the lobby client (LeagueClientUx)
+        XCTAssertTrue(LeagueMatchRules.isMatchGameProcess(
+            bundleID: "com.riotgames.LeagueofLegends.GameClient",
+            appPath: "/Applications/League of Legends.app/Contents/LoL/Game/LeagueofLegends.app"
+        ))
+        XCTAssertFalse(LeagueMatchRules.isMatchGameProcess(
+            bundleID: "com.riotgames.LeagueofLegends.LeagueClientUx",
+            appPath: "/Applications/League of Legends.app/Contents/LoL/League of Legends.app"
+        ))
+        XCTAssertTrue(LeagueMatchRules.isLeagueOrRiotProcess(
+            bundleID: "com.riotgames.LeagueofLegends.LeagueClientUx",
+            appPath: "/Applications/League of Legends.app"
+        ))
+        XCTAssertTrue(LeagueMatchRules.isLeagueOrRiotProcess(
+            bundleID: "com.riotgames.RiotGames.RiotClient",
+            appPath: "/Users/Shared/Riot Games/Riot Client.app"
+        ))
+    }
+
+    func testMandatoryStudyThenLoLRuleTwoMatchesMidMatchDeferralPostMatchGraceAnd64CharProtection() {
+        var rule = GeneralBlockRule.mandatoryStudyThenLoLRule
+        XCTAssertTrue(rule.enabled)
+        XCTAssertEqual(rule.kind, .workGoal)
+        XCTAssertEqual(rule.goalMinutesRequired, 60)
+        XCTAssertEqual(rule.goalRewardMinutes, 120)
+        XCTAssertEqual(rule.maxDailyMatches, 2)
+        XCTAssertTrue(rule.deferBlockUntilMatchEnds)
+        XCTAssertEqual(rule.postMatchGraceSeconds, 60)
+        XCTAssertTrue(rule.verifyActiveStudy)
+        XCTAssertTrue(rule.alwaysProtected)
+        XCTAssertEqual(rule.protection, .challenge)
+        XCTAssertEqual(rule.unlockChars, 64)
+        // Study mode only blocks LoL/Riot apps, never Claude or web browsers
+        XCTAssertEqual(rule.domains, "")
+        XCTAssertTrue(FocusRules.webAllowed(host: "claude.ai", path: "/new", list: rule.domains, mode: rule.webListMode))
+
+        // 64-character challenge code generation
+        let code64 = UnlockChallenge.make(length: rule.unlockChars)
+        XCTAssertEqual(code64.count, 64)
+
+        // 1. Before 60 minutes (3600s) of verified study: enforces LoL block and is protected 24/7
+        XCTAssertTrue(rule.isEnforcing(at: zero, usedTodaySeconds: 0, workedTodaySeconds: 1800, matchesToday: 0, isMatchInProgress: false, continuous: 100))
+        XCTAssertTrue(rule.isProtectedNow(at: zero, usedTodaySeconds: 0, workedTodaySeconds: 1800, matchesToday: 0, isMatchInProgress: false, continuous: 100))
+
+        // 2. After 60 minutes (3600s) of verified study and 0/2 matches: LoL is unlocked, but rule remains protected 24/7
+        XCTAssertFalse(rule.isEnforcing(at: zero, usedTodaySeconds: 600, workedTodaySeconds: 3600, matchesToday: 0, isMatchInProgress: false, continuous: 100))
+        XCTAssertTrue(rule.isTrackingQuota(at: zero, usedTodaySeconds: 600, workedTodaySeconds: 3600, matchesToday: 1, continuous: 100))
+        XCTAssertTrue(rule.isProtectedNow(at: zero, usedTodaySeconds: 600, workedTodaySeconds: 3600, matchesToday: 1, isMatchInProgress: false, continuous: 100))
+
+        // 3. Never kick mid-match: even if 120 min (7200s) budget expires during Match #2, isMatchInProgress keeps isEnforcing == false
+        XCTAssertFalse(rule.isEnforcing(at: zero, usedTodaySeconds: 7500, workedTodaySeconds: 3600, matchesToday: 1, isMatchInProgress: true, continuous: 100))
+
+        // 4. Match #2 finishes -> 1-minute (60s) post-match grace period starts
+        let matchEndWall = zero.addingTimeInterval(5400)
+        rule.startPostMatchGrace(wall: matchEndWall, continuous: 5500)
+        // At 30s after match ends: still in 1-minute grace period, not enforcing yet
+        XCTAssertTrue(rule.isInPostMatchGrace(at: matchEndWall.addingTimeInterval(30), continuous: 5530))
+        XCTAssertEqual(rule.postMatchGraceRemainingSeconds(at: matchEndWall.addingTimeInterval(30), continuous: 5530), 30, accuracy: 1)
+        XCTAssertFalse(rule.isEnforcing(at: matchEndWall.addingTimeInterval(30), usedTodaySeconds: 5400, workedTodaySeconds: 3600, matchesToday: 2, isMatchInProgress: false, continuous: 5530))
+
+        // 5. At 61s after match ends: grace period expired and matchesToday == 2 -> locks LoL for the rest of the day
+        let afterGraceWall = matchEndWall.addingTimeInterval(61)
+        XCTAssertFalse(rule.isInPostMatchGrace(at: afterGraceWall, continuous: 5561))
+        XCTAssertTrue(rule.isEnforcing(at: afterGraceWall, usedTodaySeconds: 5400, workedTodaySeconds: 3600, matchesToday: 2, isMatchInProgress: false, continuous: 5561))
+    }
 }

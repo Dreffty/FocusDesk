@@ -949,7 +949,7 @@ extension AppModel {
         if let rulesWitness = KeychainWitness.loadRulesWitness(), rulesWitness.intact {
             var restoredNames: [String] = []
             let launchNow = Date()
-            for witnessedRule in rulesWitness.rules where isRuleEnforcing(witnessedRule, at: launchNow) {
+            for witnessedRule in rulesWitness.rules where isRuleProtected(witnessedRule, at: launchNow) {
                 if let idx = workspace.generalRules.firstIndex(where: { $0.id == witnessedRule.id }) {
                     if GeneralBlockRule.loosening(current: witnessedRule, proposed: workspace.generalRules[idx], now: launchNow) != nil {
                         workspace.generalRules[idx] = witnessedRule
@@ -996,13 +996,49 @@ extension AppModel {
         )
     }
 
+    func matchesToday(for rule: GeneralBlockRule, at instant: Date? = nil) -> Int {
+        workspace.matchesToday(
+            for: rule.id,
+            at: instant ?? now
+        )
+    }
+
+    /// Returns verified active study seconds (passive + active with an open study window/tab and real user interaction)
+    /// when `rule.verifyActiveStudy` is enabled, or task session seconds otherwise.
+    func effectiveWorkedSeconds(for rule: GeneralBlockRule, at instant: Date? = nil) -> TimeInterval {
+        let ref = instant ?? now
+        if rule.verifyActiveStudy {
+            return workspace.verifiedStudySecondsToday(at: ref)
+        }
+        return workedSeconds(on: ref)
+    }
+
+    /// True while the League of Legends in-game match binary (`com.riotgames.LeagueofLegends.GameClient` / `Game/LeagueofLegends.app`) is running.
+    var isLoLMatchCurrentlyInProgress: Bool {
+        NSWorkspace.shared.runningApplications.contains { app in
+            guard !app.isTerminated else { return false }
+            return LeagueMatchRules.isMatchGameProcess(
+                bundleID: app.bundleIdentifier,
+                appPath: app.bundleURL?.path,
+                executablePath: app.executableURL?.path
+            )
+        }
+    }
+
+    func isMatchInProgress(for rule: GeneralBlockRule) -> Bool {
+        guard rule.deferBlockUntilMatchEnds, LeagueMatchRules.ruleTargetsLeague(rule) else { return false }
+        return isLoLMatchCurrentlyInProgress
+    }
+
     func remainingRuleLockSeconds(_ rule: GeneralBlockRule, at instant: Date? = nil) -> TimeInterval {
         let ref = instant ?? now
         return rule.remainingLockSeconds(
             at: ref,
             usedTodaySeconds: usedSecondsToday(for: rule, at: ref),
-            workedTodaySeconds: workedSeconds(on: ref),
-            launchesToday: launchesToday(for: rule, at: ref)
+            workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: ref),
+            launchesToday: launchesToday(for: rule, at: ref),
+            matchesToday: matchesToday(for: rule, at: ref),
+            isMatchInProgress: isMatchInProgress(for: rule)
         )
     }
 
@@ -1011,8 +1047,10 @@ extension AppModel {
         return rule.isEnforcing(
             at: ref,
             usedTodaySeconds: usedSecondsToday(for: rule, at: ref),
-            workedTodaySeconds: workedSeconds(on: ref),
-            launchesToday: launchesToday(for: rule, at: ref)
+            workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: ref),
+            launchesToday: launchesToday(for: rule, at: ref),
+            matchesToday: matchesToday(for: rule, at: ref),
+            isMatchInProgress: isMatchInProgress(for: rule)
         )
     }
 
@@ -1021,8 +1059,10 @@ extension AppModel {
         return rule.isProtectedNow(
             at: ref,
             usedTodaySeconds: usedSecondsToday(for: rule, at: ref),
-            workedTodaySeconds: workedSeconds(on: ref),
-            launchesToday: launchesToday(for: rule, at: ref)
+            workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: ref),
+            launchesToday: launchesToday(for: rule, at: ref),
+            matchesToday: matchesToday(for: rule, at: ref),
+            isMatchInProgress: isMatchInProgress(for: rule)
         )
     }
 
@@ -1031,9 +1071,234 @@ extension AppModel {
         return rule.isTrackingQuota(
             at: ref,
             usedTodaySeconds: usedSecondsToday(for: rule, at: ref),
-            workedTodaySeconds: workedSeconds(on: ref),
-            launchesToday: launchesToday(for: rule, at: ref)
+            workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: ref),
+            launchesToday: launchesToday(for: rule, at: ref),
+            matchesToday: matchesToday(for: rule, at: ref),
+            isMatchInProgress: isMatchInProgress(for: rule)
         )
+    }
+
+    /// Terminates all running League of Legends and Riot Client processes (when not inside an active match).
+    @discardableResult
+    func terminateAllLeagueAndRiotProcesses(for rule: GeneralBlockRule, reasonMessage: String? = nil) -> Bool {
+        if rule.deferBlockUntilMatchEnds && isLoLMatchCurrentlyInProgress && effectiveWorkedSeconds(for: rule, at: Date()) >= rule.goalRequiredSeconds {
+            // Never close an active match once study goal was met.
+            return false
+        }
+        let running = NSWorkspace.shared.runningApplications.filter { app in
+            guard !app.isTerminated else { return false }
+            return LeagueMatchRules.isLeagueOrRiotProcess(
+                bundleID: app.bundleIdentifier,
+                appPath: app.bundleURL?.path,
+                localizedName: app.localizedName
+            )
+        }
+        guard !running.isEmpty else { return false }
+        for app in running {
+            if !app.terminate() {
+                app.forceTerminate()
+            } else {
+                // LeagueClientUx and RiotClient often ignore gentle terminate; forceTerminate after a short grace if needed.
+                app.forceTerminate()
+            }
+        }
+        if let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+           LeagueMatchRules.isLeagueOrRiotProcess(bundleID: frontID) {
+            activateFallbackApp(excluding: frontID)
+        }
+        if let reasonMessage {
+            notice = reasonMessage
+        }
+        return true
+    }
+
+    /// Credits passive + active verified study time every second while the user is interacting with a real study/work window or productive browser tab.
+    func tickPassiveStudyTracking(at instant: Date) {
+        guard writable, !screenIsLocked,
+              workspace.generalRules.contains(where: { $0.enabled && $0.kind == .workGoal && $0.verifyActiveStudy }) else {
+            lastPassiveStudyTickAt = nil
+            return
+        }
+        let delta: TimeInterval
+        if let prev = lastPassiveStudyTickAt {
+            delta = min(3, max(0, instant.timeIntervalSince(prev)))
+        } else {
+            delta = 1.0
+        }
+        lastPassiveStudyTickAt = instant
+        guard delta > 0,
+              let frontApp = NSWorkspace.shared.frontmostApplication,
+              let id = frontApp.bundleIdentifier else { return }
+
+        let idleSeconds = MacActivity.idleSeconds()
+        let hasVisibleWindow = ScreenWindows.hasOpenWindow(for: frontApp)
+        let title = (lastTitleAppID == id) ? lastTitle.title : nil
+        let observedPage = WebRules.isBrowser(id) ? lastObservedBrowserPage[id] : nil
+        let recentPage = (observedPage != nil && instant.timeIntervalSince(observedPage!.at) <= 25) ? observedPage : nil
+
+        guard StudyActivityVerifier.isVerifiedStudyActivity(
+            idleSeconds: idleSeconds,
+            frontBundleID: id,
+            frontAppPath: frontApp.bundleURL?.path,
+            hasVisibleWindowOnScreen: hasVisibleWindow,
+            frontWindowTitle: title,
+            browserHost: recentPage?.host,
+            browserPath: recentPage?.path
+        ) else { return }
+
+        let rollover = workspace.settings.dayRolloverHour
+        let day = FocusRules.dayKey(for: instant, rolloverHour: rollover)
+        let prevStudy = workspace.verifiedStudySecondsToday(at: instant)
+        let newStudy = workspace.addVerifiedStudySeconds(delta, at: instant)
+
+        for rule in workspace.generalRules where rule.enabled && rule.kind == .workGoal && rule.verifyActiveStudy {
+            let unlockKey = "\(day)-\(rule.id.uuidString)-unlocked"
+            if prevStudy < rule.goalRequiredSeconds && newStudy >= rule.goalRequiredSeconds && !studyGoalUnlockedNotifiedToday.contains(unlockKey) {
+                studyGoalUnlockedNotifiedToday.insert(unlockKey)
+                _ = persist()
+                refreshWitness()
+                let matchInfo = rule.maxDailyMatches > 0 ? " (máx. \(rule.maxDailyMatches) partidas hoy, sin cortes a mitad)" : ""
+                let msg = "¡Meta de \(rule.goalMinutesRequired) min de estudio activo completada! Ya tienes desbloqueado «\(rule.name)»\(matchInfo)."
+                notice = msg
+                if !preview {
+                    reminders.notify("Estudio completado · \(rule.name)", body: msg, identifier: "study-ok-" + rule.id.uuidString)
+                }
+            }
+        }
+    }
+
+    /// Tracks the League of Legends in-game match lifecycle (`GameClient`), triggers the 1-minute post-match grace countdown
+    /// when the 2nd match (or time budget) ends, and closes all League / Riot processes once the grace period finishes.
+    func tickLeagueMatchAndPostMatchGrace(at instant: Date) {
+        guard writable, !screenIsLocked else { return }
+        let continuousNow = TrustedClock.continuousSeconds()
+        let matchRunning = isLoLMatchCurrentlyInProgress
+
+        // 1. Check if a match just started or just ended.
+        if matchRunning {
+            if activeLoLMatchStartedContinuous == nil {
+                // Verify whether the user is allowed to be in a match (study goal completed).
+                let blockedBeforeGoal = workspace.generalRules.first { rule in
+                    rule.enabled && LeagueMatchRules.ruleTargetsLeague(rule)
+                        && rule.kind == .workGoal
+                        && effectiveWorkedSeconds(for: rule, at: instant) < rule.goalRequiredSeconds
+                }
+                if let rule = blockedBeforeGoal {
+                    let studiedMin = Int(effectiveWorkedSeconds(for: rule, at: instant) / 60)
+                    _ = terminateAllLeagueAndRiotProcesses(
+                        for: rule,
+                        reasonMessage: "League of Legends está bloqueado hasta completar \(rule.goalMinutesRequired) min de estudio activo hoy (llevas \(studiedMin) min)."
+                    )
+                } else {
+                    activeLoLMatchStartedAt = instant
+                    activeLoLMatchStartedContinuous = continuousNow
+                    if let rule = workspace.generalRules.first(where: { $0.enabled && LeagueMatchRules.ruleTargetsLeague($0) && $0.maxDailyMatches > 0 }) {
+                        let currentMatchNum = min(rule.maxDailyMatches, matchesToday(for: rule, at: instant) + 1)
+                        notice = "Partida \(currentMatchNum)/\(rule.maxDailyMatches) de League of Legends en curso · FocusDesk no te sacará a mitad de partida."
+                    }
+                }
+            }
+        } else if let startedContinuous = activeLoLMatchStartedContinuous {
+            // The in-game `GameClient` process just exited back to the lobby!
+            let matchDuration = max(0, continuousNow - startedContinuous)
+            activeLoLMatchStartedAt = nil
+            activeLoLMatchStartedContinuous = nil
+
+            for idx in workspace.generalRules.indices {
+                let rule = workspace.generalRules[idx]
+                guard rule.enabled, LeagueMatchRules.ruleTargetsLeague(rule) else { continue }
+                let used = usedSecondsToday(for: rule, at: instant)
+                let worked = effectiveWorkedSeconds(for: rule, at: instant)
+                let timeBudgetExhausted: Bool = {
+                    if rule.kind == .workGoal, let budget = rule.earnedGoalBudgetSeconds(workedTodaySeconds: worked), budget > 0 {
+                        return used >= budget
+                    }
+                    if rule.kind == .dailyLimit {
+                        return used >= rule.dailyBudgetSeconds
+                    }
+                    return false
+                }()
+                let shouldCountMatch = matchDuration >= LeagueMatchRules.minCountedMatchDurationSeconds || timeBudgetExhausted
+                guard shouldCountMatch else { continue }
+
+                let newMatches = workspace.incrementMatches(for: rule.id, at: instant)
+                let matchLimitReached = rule.maxDailyMatches > 0 && newMatches >= rule.maxDailyMatches
+
+                if matchLimitReached || timeBudgetExhausted {
+                    workspace.generalRules[idx].startPostMatchGrace(wall: instant, continuous: continuousNow)
+                    postMatchGraceArmedRules.insert(rule.id)
+                    let graceSec = workspace.generalRules[idx].postMatchGraceSeconds
+                    workspace.recordAudit(
+                        category: "Límite de partidas alcanzado",
+                        summary: "«\(rule.name)» · Partida \(newMatches)/\(max(1, rule.maxDailyMatches)) terminada · Margen de \(graceSec)s iniciado",
+                        at: instant
+                    )
+                    _ = persist()
+                    refreshWitness()
+                    let graceText = graceSec == 60 ? "1 minuto" : "\(graceSec) segundos"
+                    let msg = "Partida \(newMatches)/\(max(1, rule.maxDailyMatches)) terminada. Tienes \(graceText) de margen para dar honor y ver estadísticas antes de que se cierre League of Legends por hoy."
+                    notice = msg
+                    if !preview {
+                        reminders.notify(
+                            "Último minuto en LoL · Partida \(newMatches)/\(max(1, rule.maxDailyMatches))",
+                            body: msg,
+                            identifier: "lol-grace-" + rule.id.uuidString
+                        )
+                    }
+                } else {
+                    _ = persist()
+                    if rule.maxDailyMatches > 0 {
+                        let leftMatches = max(0, rule.maxDailyMatches - newMatches)
+                        let msg = "Partida \(newMatches)/\(rule.maxDailyMatches) completada hoy. Te \(leftMatches == 1 ? "queda 1 partida disponible" : "quedan \(leftMatches) partidas disponibles") hoy."
+                        notice = msg
+                        if !preview {
+                            reminders.notify(
+                                "Partida \(newMatches)/\(rule.maxDailyMatches) terminada",
+                                body: msg,
+                                identifier: "lol-match-" + rule.id.uuidString
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check if any armed 1-minute post-match grace countdown just finished, or if League is running while blocked.
+        for idx in workspace.generalRules.indices {
+            let rule = workspace.generalRules[idx]
+            guard rule.enabled, LeagueMatchRules.ruleTargetsLeague(rule) else { continue }
+            if rule.isInPostMatchGrace(at: instant, continuous: continuousNow) {
+                postMatchGraceArmedRules.insert(rule.id)
+                continue
+            }
+            if postMatchGraceArmedRules.contains(rule.id) {
+                postMatchGraceArmedRules.remove(rule.id)
+                workspace.generalRules[idx].activePostMatchGraceDeadline = nil
+                _ = persist()
+                refreshWitness()
+                let msg = "Margen de 1 minuto finalizado tras la partida \(matchesToday(for: rule, at: instant))/\(max(1, rule.maxDailyMatches)). FocusDesk ha cerrado League of Legends por hoy."
+                _ = terminateAllLeagueAndRiotProcesses(for: workspace.generalRules[idx], reasonMessage: msg)
+                if !preview {
+                    reminders.notify(
+                        "League of Legends cerrado por hoy",
+                        body: msg,
+                        identifier: "lol-closed-" + rule.id.uuidString
+                    )
+                }
+                continue
+            }
+            if !matchRunning && isRuleEnforcing(rule, at: instant) {
+                let worked = effectiveWorkedSeconds(for: rule, at: instant)
+                let msg: String
+                if rule.kind == .workGoal && worked < rule.goalRequiredSeconds {
+                    let leftMin = max(1, Int(ceil((rule.goalRequiredSeconds - worked) / 60)))
+                    msg = "League of Legends está bloqueado: te faltan \(leftMin) min de estudio activo verificado hoy (con ventana o pestaña abierta)."
+                } else {
+                    msg = "League of Legends está bloqueado por hoy (\(matchesToday(for: rule, at: instant))/\(max(1, rule.maxDailyMatches)) partidas completadas)."
+                }
+                _ = terminateAllLeagueAndRiotProcesses(for: rule, reasonMessage: msg)
+            }
+        }
     }
 
     var enforcingGeneralRules: [GeneralBlockRule] {
@@ -1222,7 +1487,7 @@ extension AppModel {
             return
         }
         // Query HID idle time so natural pauses away from the keyboard/mouse reset the continuous screen counter.
-        let idleSeconds = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .null)
+        let idleSeconds = MacActivity.idleSeconds()
         if idleSeconds >= 180 {
             continuousActiveWorkSeconds = max(0, continuousActiveWorkSeconds - 3)
             return
@@ -1288,6 +1553,19 @@ extension AppModel {
             return
         }
         for rule in workspace.generalRules where rule.enabled {
+            if let graceDeadline = rule.activePostMatchGraceDeadline {
+                let rem = graceDeadline.remainingAfterPossibleReboot(wall: instant)
+                if rem > 0 {
+                    let played = matchesToday(for: rule, at: instant)
+                    let maxM = max(1, rule.maxDailyMatches)
+                    floatingPill.update(
+                        title: "Cerrando LoL (Partida \(played)/\(maxM)) · \(rule.name)",
+                        remaining: rem,
+                        urgency: .critical
+                    )
+                    return
+                }
+            }
             if let mpDeadline = rule.activeMicroPauseDeadline {
                 let rem = mpDeadline.remainingAfterPossibleReboot(wall: instant)
                 if rem > 0 {
@@ -1320,19 +1598,27 @@ extension AppModel {
             }
         }
         if let front = NSWorkspace.shared.frontmostApplication, let bundleID = front.bundleIdentifier {
+            // While an active League of Legends match (`GameClient`) is running, hide the floating pill so it never covers the top-right in-game HUD.
+            if LeagueMatchRules.isMatchGameProcess(bundleID: bundleID, appPath: front.bundleURL?.path, executablePath: front.executableURL?.path) {
+                floatingPill.hide()
+                return
+            }
             for rule in workspace.generalRules where rule.enabled && isRuleTrackingQuota(rule, at: instant) {
                 if matchesRuleUsage(rule: rule, bundleID: bundleID, app: front, title: lastTitle.title, at: instant) {
                     let rem: TimeInterval
                     if rule.kind == .dailyLimit {
                         rem = rule.remainingDailyBudgetSeconds(usedTodaySeconds: usedSecondsToday(for: rule, at: instant))
                     } else if rule.kind == .workGoal && rule.goalRewardMinutes > 0 {
-                        rem = rule.remainingGoalRewardSeconds(workedTodaySeconds: workedSeconds(on: instant), usedTodaySeconds: usedSecondsToday(for: rule, at: instant))
+                        rem = rule.remainingGoalRewardSeconds(workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: instant), usedTodaySeconds: usedSecondsToday(for: rule, at: instant))
                     } else {
                         continue
                     }
                     if rem > 0 {
                         let urgency: FloatingTimerPillController.Urgency = rem <= 60 ? .critical : (rem <= 300 ? .warning : .normal)
-                        floatingPill.update(title: rule.name, remaining: rem, urgency: urgency)
+                        let titlePrefix = rule.maxDailyMatches > 0
+                            ? "Partidas \(matchesToday(for: rule, at: instant))/\(rule.maxDailyMatches) · "
+                            : ""
+                        floatingPill.update(title: titlePrefix + rule.name, remaining: rem, urgency: urgency)
                         return
                     }
                 }
@@ -1665,9 +1951,12 @@ extension AppModel {
         workspace.dailyRuleUsage[day]?[rule.id.uuidString] = 0
         workspace.dailyRuleUsage[pKey]?[rule.id.uuidString] = 0
         workspace.dailyRuleLaunches[day]?[rule.id.uuidString] = 0
+        workspace.dailyRuleMatches[day]?[rule.id.uuidString] = 0
+        postMatchGraceArmedRules.remove(rule.id)
         if let idx = workspace.generalRules.firstIndex(where: { $0.id == rule.id }) {
             workspace.generalRules[idx].activeLaunchDeadline = nil
             workspace.generalRules[idx].launchCooldownDeadline = nil
+            workspace.generalRules[idx].activePostMatchGraceDeadline = nil
         }
         quotaExhaustedNotifiedToday.remove("\(pKey)-\(rule.id.uuidString)")
         quotaExhaustedNotifiedToday.remove("\(day)-\(rule.id.uuidString)")
@@ -1706,8 +1995,12 @@ extension AppModel {
         }
     }
 
-    /// Evaluates whether the current foreground app/browser/window matches `rule` (used for `.dailyLimit` usage tracking).
+    /// Evaluates whether the current foreground app/browser/window matches `rule` (used for `.dailyLimit` and `.workGoal` usage tracking).
     func matchesRuleUsage(rule: GeneralBlockRule, bundleID: String, app: NSRunningApplication, title: String?, at: Date) -> Bool {
+        if LeagueMatchRules.ruleTargetsLeague(rule),
+           LeagueMatchRules.isLeagueOrRiotProcess(bundleID: bundleID, appPath: app.bundleURL?.path, localizedName: app.localizedName) {
+            return true
+        }
         if rule.blockGameLibraries, GameLibraryRules.matchesGameApp(bundleID: bundleID, appPath: app.bundleURL?.path) != nil {
             return true
         }
@@ -1756,7 +2049,6 @@ extension AppModel {
 
         let rollover = workspace.settings.dayRolloverHour
         let day = FocusRules.dayKey(for: at, rolloverHour: rollover)
-        let workedToday = workedSeconds(on: at)
 
         // 1. Update usage timers for `.dailyLimit`, `.workGoal` (reward mode), and `.launchLimit` rules.
         for idx in workspace.generalRules.indices {
@@ -1779,7 +2071,9 @@ extension AppModel {
             }
 
             let updatedRule = workspace.generalRules[idx]
-            guard matchesRuleUsage(rule: updatedRule, bundleID: id, app: fg.app, title: fg.title, at: at) else { continue }
+            let matchesFront = matchesRuleUsage(rule: updatedRule, bundleID: id, app: fg.app, title: fg.title, at: at)
+            let matchesActiveLoLGame = LeagueMatchRules.ruleTargetsLeague(updatedRule) && isLoLMatchCurrentlyInProgress
+            guard matchesFront || matchesActiveLoLGame else { continue }
 
             switch updatedRule.kind {
             case .dailyLimit:
@@ -1807,20 +2101,25 @@ extension AppModel {
                 }
             case .workGoal:
                 guard updatedRule.goalRewardMinutes > 0, delta > 0 else { break }
+                let workedForRule = effectiveWorkedSeconds(for: updatedRule, at: at)
                 let wasUnder = isRuleTrackingQuota(updatedRule, at: at)
                 guard wasUnder else { break }
                 let newUsed = workspace.addUsedSeconds(delta, for: updatedRule.id, at: at)
-                let rem = updatedRule.remainingGoalRewardSeconds(workedTodaySeconds: workedToday, usedTodaySeconds: newUsed)
-                checkPreBlockWarning(for: updatedRule, remainingSeconds: rem, day: day)
+                let rem = updatedRule.remainingGoalRewardSeconds(workedTodaySeconds: workedForRule, usedTodaySeconds: newUsed)
+                if !(updatedRule.deferBlockUntilMatchEnds && isLoLMatchCurrentlyInProgress) {
+                    checkPreBlockWarning(for: updatedRule, remainingSeconds: rem, day: day)
+                }
                 let notifyKey = "\(day)-\(updatedRule.id.uuidString)-goal"
                 if rem <= 0 && !quotaExhaustedNotifiedToday.contains(notifyKey) {
                     quotaExhaustedNotifiedToday.insert(notifyKey)
                     _ = persist()
                     refreshWitness()
-                    let msg = "Has consumido la recompensa ganada en «\(updatedRule.name)». Completa más minutos de tarea enfocada para desbloquear más tiempo."
+                    let msg = (updatedRule.deferBlockUntilMatchEnds && isLoLMatchCurrentlyInProgress)
+                        ? "Se ha cumplido el tiempo de juego en «\(updatedRule.name)», pero FocusDesk esperará a que termines tu partida actual y te dará 1 minuto de margen antes de cerrar LoL."
+                        : "Has consumido el tiempo de juego de hoy en «\(updatedRule.name)»."
                     notice = msg
                     if !preview {
-                        reminders.notify("Recompensa agotada · \(updatedRule.name)", body: msg, identifier: "goalq-" + updatedRule.id.uuidString)
+                        reminders.notify("Tiempo de juego cumplido · \(updatedRule.name)", body: msg, identifier: "goalq-" + updatedRule.id.uuidString)
                     }
                 }
             case .launchLimit:
@@ -1841,9 +2140,11 @@ extension AppModel {
             }
         }
 
-        // 2. If a browser is in front and any enabled general rule cares about websites (either enforcing or tracking quota),
+        // 2. If a browser is in front and any enabled general rule cares about websites (either enforcing, tracking quota, or verifying active study),
         // read its active tab if the session did not just read it.
-        let rulesNeedWeb = workspace.generalRules.contains { $0.enabled && ($0.webBlockAction != .warn || $0.blockSearchMedia) }
+        let rulesNeedWeb = workspace.generalRules.contains {
+            $0.enabled && ($0.webBlockAction != .warn || $0.blockSearchMedia || $0.verifyActiveStudy)
+        }
         if WebRules.isBrowser(id), rulesNeedWeb, !sessionAlreadyReadBrowser,
            appChanged || Date().timeIntervalSince(lastWebReadAt[id] ?? .distantPast) >= 4.5 {
             lastWebReadAt[id] = at

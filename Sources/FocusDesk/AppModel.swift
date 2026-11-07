@@ -66,7 +66,7 @@ final class AppModel: ObservableObject {
     var isInterfaceVisible: (() -> Bool)?
     private var lastObservedAppID: String?
     private var lastBraveReadAt = Date.distantPast
-    private var lastTitleAppID: String?
+    var lastTitleAppID: String?
     private var lastTitleReadAt = Date.distantPast
     var lastTitle: (title: String?, status: String?) = (nil, nil)
 
@@ -148,6 +148,16 @@ final class AppModel: ObservableObject {
     var quotaExhaustedNotifiedToday: Set<String> = []
     /// Pre-block reminder keys sent today (`dayKey-ruleID-5m`, `dayKey-ruleID-1m`).
     var quotaWarningsSentToday: Set<String> = []
+    /// Timestamp when the current active League of Legends match (`GameClient`) started.
+    var activeLoLMatchStartedAt: Date?
+    /// Monotonic uptime when the current active League of Legends match (`GameClient`) started.
+    var activeLoLMatchStartedContinuous: Double?
+    /// Rules currently inside their post-match grace countdown (so we terminate LoL the instant the 60s countdown ends).
+    var postMatchGraceArmedRules: Set<UUID> = []
+    /// Rules whose 60-min verified study goal unlock was already announced today (`dayKey-ruleID`).
+    var studyGoalUnlockedNotifiedToday: Set<String> = []
+    /// Last timestamp when 1-second passive study tracking ticked.
+    var lastPassiveStudyTickAt: Date?
     /// Continuous active screen-work seconds accumulated before triggering a rest break (`tickAsScreenBreak`).
     @Published var continuousActiveWorkSeconds: TimeInterval = 0
     /// Active continuous screen-work rest break deadline, when triggered.
@@ -296,9 +306,12 @@ final class AppModel: ObservableObject {
                 .sink { [weak self] wanted in self?.applyDoNotDisturb(wanted) }
                 .store(in: &subscriptions)
         }
-        // A session that blocks things has to stay awake: napped by macOS, its checks ran late or not at all.
+        // A session or general rule that blocks things has to stay awake: napped by macOS, its checks ran late or not at all.
         $workspace
-            .map { workspace in workspace.session.map { !$0.paused && $0.endedAt == nil && $0.task.enforces } == true }
+            .map { workspace in
+                workspace.session.map { !$0.paused && $0.endedAt == nil && $0.task.enforces } == true
+                    || workspace.generalRules.contains(where: \.enabled)
+            }
             .removeDuplicates()
             .sink { [weak self] active in self?.keepAwakeForSession(active) }
             .store(in: &subscriptions)
@@ -346,6 +359,10 @@ final class AppModel: ObservableObject {
         }
         // A protected session the data file no longer knows about: the file was edited while FocusDesk was closed.
         checkWitnessAtLaunch()
+        refreshWitness()
+        if workspace.generalRules.contains(where: { $0.enabled && $0.alwaysProtected && $0.protection != .none }) {
+            workspace.settings.relaunchGuard = true
+        }
         relaunchGuard.refresh(repair: !preview)
     }
 
@@ -863,7 +880,7 @@ final class AppModel: ObservableObject {
         shift(task, to: target)
     }
 
-    /// Worked session time on `day`: confirmed and cancelled sessions plus the one running now.
+    /// Worked session time on `day`: confirmed and cancelled sessions plus the one running now (and passive verified study time when enabled).
     func workedSeconds(on day: Date, calendar: Calendar = .current) -> TimeInterval {
         var total = workspace.history
             .filter { calendar.isDate($0.session.startedAt, inSameDayAs: day) }
@@ -871,6 +888,10 @@ final class AppModel: ObservableObject {
         // The current session is not in the history yet (running, paused or waiting for its result).
         if let s = session, calendar.isDate(s.startedAt, inSameDayAs: day) {
             total += s.endedAt == nil ? currentElapsed(for: s) : s.accumulated
+        }
+        if workspace.generalRules.contains(where: { $0.enabled && $0.verifyActiveStudy }) {
+            let verified = workspace.verifiedStudySecondsToday(at: day, calendar: calendar)
+            return max(total, verified)
         }
         return total
     }
@@ -1910,6 +1931,8 @@ final class AppModel: ObservableObject {
         checkGeneralRuleWaitsReady()
         tickContinuousBreak(at: instant)
         tickPomodoroRules(at: instant)
+        tickPassiveStudyTracking(at: instant)
+        tickLeagueMatchAndPostMatchGrace(at: instant)
         updateFloatingPill(at: instant)
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility
@@ -2014,7 +2037,7 @@ final class AppModel: ObservableObject {
         let excludedIDs = Set(workspace.settings.excludedTitleApps.map(\.id))
         let needsTitles = workspace.settings.observeTitles
             || (activeSession.map { !FocusRules.parseTitleKeywords($0.task.blockedTitleKeywords).isEmpty } ?? false)
-            || workspace.generalRules.contains { $0.enabled && !FocusRules.parseTitleKeywords($0.blockedTitleKeywords).isEmpty }
+            || workspace.generalRules.contains { $0.enabled && ($0.verifyActiveStudy || !FocusRules.parseTitleKeywords($0.blockedTitleKeywords).isEmpty) }
         // Window titles are read through Accessibility on the main thread (up to 0.15 s each): on a change of app,
         // or every 15 s for the same app, instead of every 5 s.
         let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier

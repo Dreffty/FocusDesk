@@ -351,7 +351,14 @@ enum RelaunchWatcher {
             let session = loadedWorkspace?.session
             let hasActiveProtectedRule = loadedWorkspace.map { ws in
                 ws.generalRules.contains { rule in
-                    rule.protection != .none && rule.isEnforcing(at: now, usedTodaySeconds: ws.usedSecondsToday(for: rule.id, at: now))
+                    let worked = rule.verifyActiveStudy ? ws.verifiedStudySecondsToday(at: now) : 0
+                    return rule.isProtectedNow(
+                        at: now,
+                        usedTodaySeconds: ws.usedSecondsToday(for: rule.id, at: now),
+                        workedTodaySeconds: worked,
+                        launchesToday: ws.launchesToday(for: rule.id, at: now),
+                        matchesToday: ws.matchesToday(for: rule.id, at: now)
+                    )
                 }
             } ?? false
             let relaunch = RelaunchDecision.shouldRelaunch(

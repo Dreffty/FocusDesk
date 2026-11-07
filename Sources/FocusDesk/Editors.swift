@@ -1858,7 +1858,7 @@ struct GeneralRuleEditor: View {
     private var lockedOriginal: GeneralBlockRule? {
         guard let current = model.workspace.generalRules.first(where: { $0.id == draft.id }),
               current.protection != .none,
-              model.isRuleEnforcing(current, at: model.now) else { return nil }
+              model.isRuleProtected(current, at: model.now) else { return nil }
         return current
     }
 
@@ -2114,8 +2114,8 @@ struct GeneralRuleEditor: View {
                     Divider().overlay(Palette.stroke)
 
                     // Protection
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("PROTECCIÓN CUANDO ESTÉ BLOQUEANDO").fieldLabelStyle()
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("PROTECCIÓN Y OBLIGATORIEDAD").fieldLabelStyle()
                         Picker("Protección", selection: $draft.protection) {
                             ForEach(SessionProtection.allCases, id: \.self) { mode in
                                 Text(mode.label).tag(mode)
@@ -2127,6 +2127,26 @@ struct GeneralRuleEditor: View {
                             .font(.app(10))
                             .foregroundStyle(draft.protection == .forced ? Palette.warning : Palette.muted)
                             .fixedSize(horizontal: false, vertical: true)
+
+                        if draft.protection == .challenge {
+                            HStack(spacing: 12) {
+                                Stepper("Longitud de la contraseña/código: \(draft.unlockChars) caracteres", value: $draft.unlockChars, in: UnlockChallenge.lengthRange, step: 4)
+                                    .font(.app(12))
+                                Button("64 dígitos (máx.)") {
+                                    draft.unlockChars = 64
+                                }
+                                .buttonStyle(SelectableChipStyle(selected: draft.unlockChars == 64))
+                            }
+                        } else if draft.protection == .delay {
+                            Stepper("Esperar \(draft.stopDelayMinutes) minutos antes de permitir cambios", value: $draft.stopDelayMinutes, in: 1...60)
+                                .font(.app(12))
+                        }
+
+                        if draft.protection != .none {
+                            Toggle("Regla pasiva obligatoria 24/7 (exigir el código siempre para apagarla, editarla, reiniciarla o cerrar FocusDesk)", isOn: $draft.alwaysProtected)
+                                .toggleStyle(.checkbox)
+                                .font(.app(11))
+                        }
                     }
                 }
                 .padding(.horizontal, 26)
@@ -2231,9 +2251,11 @@ struct GeneralRuleEditor: View {
                         .font(.app(18))
                         .foregroundStyle(Palette.mint)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Primero el trabajo, luego el ocio: \(draft.goalMinutesRequired) min de enfoque requeridos hoy")
+                        Text("Primero el estudio/trabajo, luego el juego: \(draft.goalMinutesRequired) min requeridos hoy")
                             .font(.app(13, weight: .semibold))
-                        Text("Mantiene bloqueadas estas apps y webs hasta que acumules los minutos exigidos en sesiones de tareas de FocusDesk hoy.")
+                        Text(draft.verifyActiveStudy
+                             ? "Modo pasivo + activo: suma minutos tanto si pulsas «Empezar» como si estudias directamente con una ventana o pestaña abierta (ej. Claude, apuntes, PDF, código) y actividad real."
+                             : "Mantiene bloqueadas estas apps y webs hasta que acumules los minutos exigidos en sesiones de tareas de FocusDesk hoy.")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
                             .fixedSize(horizontal: false, vertical: true)
@@ -2241,26 +2263,56 @@ struct GeneralRuleEditor: View {
                 }
                 HStack(spacing: 6) {
                     ForEach([25, 45, 60, 90, 120, 180], id: \.self) { mins in
-                        Button("\(mins) min trabajo") { draft.goalMinutesRequired = mins }
+                        Button("\(mins) min estudio") { draft.goalMinutesRequired = mins }
                             .buttonStyle(SelectableChipStyle(selected: draft.goalMinutesRequired == mins))
                     }
                     Spacer()
                     Stepper("", value: $draft.goalMinutesRequired, in: 10...600, step: 15)
                         .labelsHidden()
                 }
+                Toggle("Detección pasiva de estudio activo (cuenta sin darle a «Empezar» siempre que tengas abierta una pestaña/ventana productiva y actividad real)", isOn: $draft.verifyActiveStudy)
+                    .toggleStyle(.checkbox)
+                    .font(.app(11))
                 HStack(spacing: 12) {
-                    Toggle("Limitar recompensa por bloque trabajado", isOn: Binding(
+                    Toggle("Limitar tiempo de juego/recompensa por bloque", isOn: Binding(
                         get: { draft.goalRewardMinutes > 0 },
                         set: { enabled in draft.goalRewardMinutes = enabled ? max(15, draft.goalRewardMinutes) : 0 }
                     ))
                     .font(.app(12))
                     if draft.goalRewardMinutes > 0 {
-                        Stepper("Recompensa: \(draft.goalRewardMinutes) min de ocio por cada \(draft.goalMinutesRequired) min trabajados", value: $draft.goalRewardMinutes, in: 5...240, step: 5)
+                        Stepper("Tiempo máx.: \(draft.goalRewardMinutes) min por cada \(draft.goalMinutesRequired) min de estudio", value: $draft.goalRewardMinutes, in: 5...240, step: 5)
                             .font(.app(12))
                     } else {
-                        Text("Libre el resto del día tras cumplir la meta")
+                        Text("Sin tope de minutos tras cumplir la meta")
                             .font(.app(11))
                             .foregroundStyle(Palette.mint)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 12) {
+                        Toggle("Limitar partidas de League of Legends al día", isOn: Binding(
+                            get: { draft.maxDailyMatches > 0 },
+                            set: { enabled in
+                                draft.maxDailyMatches = enabled ? max(2, draft.maxDailyMatches) : 0
+                                if enabled { draft.deferBlockUntilMatchEnds = true }
+                            }
+                        ))
+                        .font(.app(12))
+                        if draft.maxDailyMatches > 0 {
+                            Stepper("Máximo: \(draft.maxDailyMatches) partida(s) al día", value: $draft.maxDailyMatches, in: 1...10)
+                                .font(.app(12))
+                        }
+                    }
+                    if draft.maxDailyMatches > 0 || LeagueMatchRules.ruleTargetsLeague(draft) {
+                        HStack(spacing: 12) {
+                            Toggle("No sacar nunca a mitad de partida (esperar a que termine la partida en curso)", isOn: $draft.deferBlockUntilMatchEnds)
+                                .toggleStyle(.checkbox)
+                                .font(.app(11))
+                            if draft.deferBlockUntilMatchEnds {
+                                Stepper("Margen al acabar la partida: \(draft.postMatchGraceSeconds) s", value: $draft.postMatchGraceSeconds, in: 15...300, step: 15)
+                                    .font(.app(11))
+                            }
+                        }
                     }
                 }
 
@@ -2481,6 +2533,9 @@ struct GeneralRuleEditor: View {
         rule.name = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
         rule.domains = FocusRules.normalizeDomains(rule.domains)
         rule.blockedTitleKeywords = FocusRules.normalizeTitleKeywords(rule.blockedTitleKeywords)
+        if !rule.apps.isEmpty || rule.blockGameLibraries {
+            rule.blockApps = true
+        }
         if rule.kind == .countdown && startCountdownOnSave {
             rule.startCountdown(minutes: rule.countdownMinutes)
         } else if rule.kind == .pomodoro && startCountdownOnSave && rule.activePomodoroDeadline == nil {

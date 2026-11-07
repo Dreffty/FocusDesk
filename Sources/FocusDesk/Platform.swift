@@ -242,6 +242,14 @@ struct Foreground {
 
 enum MacActivity {
     static var accessibility: Bool { AXIsProcessTrusted() }
+
+    /// Seconds since the last real user input event (keyboard, mouse move, click, trackpad scroll).
+    /// Note: `CGEventType(rawValue: ~0)!` (`kCGAnyInputEventType`) must be used — `.null` returns time since boot.
+    static func idleSeconds() -> TimeInterval {
+        guard let anyInput = CGEventType(rawValue: ~0) else { return 0 }
+        return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
+    }
+
     static func requestAccessibility() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)

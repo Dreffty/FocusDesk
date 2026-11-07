@@ -267,10 +267,18 @@ private struct SidebarGeneralRulesCard: View {
                     Spacer()
                 }
                 if let first = enforcing.first {
-                    let used = model.workspace.usedSecondsToday(for: first.id, at: model.now)
-                    let left = first.remainingLockSeconds(at: model.now, usedTodaySeconds: used)
+                    let used = model.usedSecondsToday(for: first, at: model.now)
+                    let left = model.remainingRuleLockSeconds(first, at: model.now)
                     Text(first.name).font(.app(12, weight: .semibold)).lineLimit(1)
-                    if left > 0 && first.kind == .countdown {
+                    if first.kind == .workGoal {
+                        let worked = Int(model.effectiveWorkedSeconds(for: first, at: model.now) / 60)
+                        let matchesText = first.maxDailyMatches > 0
+                            ? " · \(model.matchesToday(for: first, at: model.now))/\(first.maxDailyMatches) partidas"
+                            : ""
+                        Text("Estudio: \(worked)/\(first.goalMinutesRequired) min\(matchesText)")
+                            .font(.app(10, design: .monospaced))
+                            .foregroundStyle(Palette.mint)
+                    } else if left > 0 && first.kind == .countdown {
                         Text("Quedan \(FocusRules.clock(left))")
                             .font(.app(11, design: .monospaced))
                             .foregroundStyle(Palette.mint)
@@ -280,12 +288,19 @@ private struct SidebarGeneralRulesCard: View {
                             .foregroundStyle(Palette.muted)
                     }
                 } else if let first = tracking.first {
-                    let used = model.workspace.usedSecondsToday(for: first.id, at: model.now)
+                    let used = model.usedSecondsToday(for: first, at: model.now)
                     let left = first.remainingQuotaSeconds(usedTodaySeconds: used)
                     Text(first.name).font(.app(12, weight: .semibold)).lineLimit(1)
-                    Text("Quedan \(FocusRules.clock(left)) hoy")
-                        .font(.app(11, design: .monospaced))
-                        .foregroundStyle(Palette.mint)
+                    if first.kind == .workGoal && first.maxDailyMatches > 0 {
+                        let matches = model.matchesToday(for: first, at: model.now)
+                        Text("Partidas hoy: \(matches)/\(first.maxDailyMatches) · \(FocusRules.clock(left))")
+                            .font(.app(10, design: .monospaced))
+                            .foregroundStyle(Palette.mint)
+                    } else {
+                        Text("Quedan \(FocusRules.clock(left)) hoy")
+                            .font(.app(11, design: .monospaced))
+                            .foregroundStyle(Palette.mint)
+                    }
                 }
             }
             .padding(10)
@@ -676,6 +691,10 @@ private struct TodayPage: View {
                 NextUpHero(model: model)
             }
 
+            if let lolRule = model.workspace.generalRules.first(where: { $0.enabled && ($0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID || $0.maxDailyMatches > 0 || $0.verifyActiveStudy) }) {
+                PassiveStudyLoLCard(model: model, rule: lolRule)
+            }
+
             HStack(spacing: 12) {
                 StatPill(label: "Por hacer", value: "\(pending.count + projected.count)", icon: "circle.dotted")
                 StatPill(label: "Tiempo previsto", value: "\(plannedMinutes) min", icon: "hourglass", tint: Palette.muted)
@@ -836,6 +855,105 @@ private struct NotificationPermissionBanner: View {
             .background(Palette.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.warning.opacity(0.28), lineWidth: 1))
             .task { await reminders.refresh() }
+        }
+    }
+}
+
+private struct PassiveStudyLoLCard: View {
+    @ObservedObject var model: AppModel
+    let rule: GeneralBlockRule
+
+    var body: some View {
+        let worked = model.effectiveWorkedSeconds(for: rule, at: model.now)
+        let required = Double(max(5, rule.goalMinutesRequired)) * 60
+        let workFraction = min(1.0, max(0, worked / required))
+        let goalMet = worked >= required
+        let used = model.usedSecondsToday(for: rule, at: model.now)
+        let rewardLeft = rule.remainingGoalRewardSeconds(workedTodaySeconds: worked, usedTodaySeconds: used)
+        let matches = model.matchesToday(for: rule, at: model.now)
+        let maxMatches = max(1, rule.maxDailyMatches)
+        let matchesExhausted = rule.maxDailyMatches > 0 && matches >= maxMatches
+        let matchInProgress = model.isMatchInProgress(for: rule)
+        let postGraceLeft = rule.postMatchGraceRemainingSeconds(at: model.now)
+        let enforcing = model.isRuleEnforcing(rule, at: model.now)
+
+        Card(padding: 18) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: matchInProgress ? "gamecontroller.fill" : (enforcing ? "shield.lefthalf.filled" : "checkmark.seal.fill"))
+                        .font(.app(16, weight: .semibold))
+                        .foregroundStyle(Palette.onAccent)
+                        .frame(width: 32, height: 32)
+                        .background(enforcing ? Palette.mint : Palette.warning, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(rule.name)
+                                .font(.app(15, weight: .semibold))
+                            Chip(
+                                postGraceLeft > 0 ? "Cerrando en \(Int(ceil(postGraceLeft)))s"
+                                    : (matchInProgress ? "Partida en curso · Sin corte"
+                                       : (enforcing ? "LoL bloqueado" : "LoL desbloqueado")),
+                                icon: matchInProgress ? "gamecontroller.fill" : (enforcing ? "lock.fill" : "lock.open.fill"),
+                                color: enforcing ? Palette.mint : Palette.warning
+                            )
+                            if rule.protection == .challenge {
+                                Chip("Obligatoria 24/7 · Código \(rule.unlockChars) díg.", icon: "key.fill", color: Palette.muted)
+                            }
+                        }
+                        Text("Modo pasivo: suma tiempo automáticamente mientras estudias o trabajas con una pestaña/ventana abierta (Claude, navegador, PDFs, código remain libres). Al acabar la 2.ª partida da \(rule.postMatchGraceSeconds) s y cierra LoL.")
+                            .font(.app(11))
+                            .foregroundStyle(Palette.muted)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button("Ver en Bloqueo (⌘4)") {
+                        model.go(to: .blocking)
+                    }
+                    .buttonStyle(.focus(.secondary, compact: true))
+                }
+
+                HStack(spacing: 14) {
+                    if postGraceLeft > 0 {
+                        Label("Partida terminada · cerrando League of Legends en \(Int(ceil(postGraceLeft))) s", systemImage: "timer")
+                            .font(.app(13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Palette.warning)
+                    } else if matchInProgress {
+                        Label("Partida \(min(maxMatches, matches + 1))/\(maxMatches) en curso · protegida contra cortes hasta que termine", systemImage: "gamecontroller.fill")
+                            .font(.app(13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Palette.mint)
+                    } else if !goalMet {
+                        let needed = max(0, required - worked)
+                        Label("Faltan \(FocusRules.clock(needed)) de estudio activo hoy para desbloquear League of Legends", systemImage: "book.fill")
+                            .font(.app(13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Palette.mint)
+                    } else if matchesExhausted {
+                        Label("Has completado las \(matches)/\(maxMatches) partidas de hoy · LoL bloqueado hasta mañana", systemImage: "lock.fill")
+                            .font(.app(13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Palette.warning)
+                    } else {
+                        Label("Estudio completado · te quedan \(max(0, maxMatches - matches)) partida(s) hoy (máx. \(FocusRules.clock(rewardLeft)))", systemImage: "checkmark.seal.fill")
+                            .font(.app(13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Palette.mint)
+                    }
+
+                    Spacer()
+
+                    Text("Estudio hoy: \(FocusRules.clock(worked)) / \(rule.goalMinutesRequired) min")
+                        .font(.app(12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(goalMet ? Palette.mint : Palette.text)
+
+                    if rule.maxDailyMatches > 0 {
+                        Text("Partidas: \(matches)/\(maxMatches)")
+                            .font(.app(12, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(matchesExhausted ? Palette.warning : Palette.mint)
+                    }
+                }
+
+                ProgressView(value: workFraction)
+                    .tint(goalMet && !matchesExhausted ? Palette.mint : Palette.warning)
+            }
         }
     }
 }
@@ -2437,12 +2555,13 @@ struct BlockingPage: View {
         let enforcingCount = model.enforcingGeneralRules.count
         let trackingCount = model.trackingGeneralRules.count
         let activeAllows = model.activeTemporaryAllows(at: model.now)
+        let studyTodaySeconds = max(model.workedSeconds(on: model.now), model.workspace.verifiedStudySecondsToday(at: model.now))
 
         VStack(alignment: .leading, spacing: 20) {
             HStack(spacing: 12) {
                 StatPill(label: "Bloqueando ahora", value: "\(enforcingCount)", icon: "shield.lefthalf.filled", tint: enforcingCount > 0 ? Palette.mint : Palette.muted)
                 StatPill(label: "Presupuestos en vivo", value: "\(trackingCount)", icon: "hourglass", tint: trackingCount > 0 ? Palette.mint : Palette.muted)
-                StatPill(label: "Trabajado hoy", value: "\(Int(model.workedSeconds(on: model.now) / 60)) min", icon: "flag.checkered", tint: Palette.mint)
+                StatPill(label: "Estudio / trabajo hoy", value: "\(Int(studyTodaySeconds / 60)) min", icon: "flag.checkered", tint: Palette.mint)
                 StatPill(label: "Reglas configuradas", value: "\(model.workspace.generalRules.count)", icon: "slider.horizontal.3", tint: Palette.muted)
             }
 
@@ -2771,6 +2890,11 @@ private struct GeneralRuleCard: View {
                             if microPaused {
                                 let mpLeft = rule.activeMicroPauseDeadline?.remainingAfterPossibleReboot(wall: model.now) ?? 0
                                 Chip("Micro-pausa \(FocusRules.clock(mpLeft))", icon: "cup.and.saucer.fill", color: Palette.warning)
+                            } else if rule.isInPostMatchGrace(at: model.now) {
+                                let graceLeft = rule.postMatchGraceRemainingSeconds(at: model.now)
+                                Chip("Cierre post-partida \(Int(ceil(graceLeft)))s", icon: "timer", color: Palette.warning)
+                            } else if model.isMatchInProgress(for: rule) {
+                                Chip("Partida en curso · Sin corte", icon: "gamecontroller.fill", color: Palette.mint)
                             } else if enforcing {
                                 Chip("Bloqueando ahora", icon: "shield.fill", color: Palette.mint)
                             } else if tracking {
@@ -2781,7 +2905,11 @@ private struct GeneralRuleCard: View {
                                 Chip("En espera", color: Palette.muted)
                             }
                             if rule.protection != .none {
-                                Chip(rule.protection.label, icon: "lock.shield", color: enforcing ? Palette.mint : Palette.muted)
+                                let protectedNow = model.isRuleProtected(rule, at: model.now)
+                                let protText = rule.protection == .challenge
+                                    ? "Código \(rule.unlockChars) díg.\(rule.alwaysProtected ? " · 24/7" : "")"
+                                    : rule.protection.label
+                                Chip(protText, icon: "lock.shield", color: protectedNow ? Palette.mint : Palette.muted)
                                     .help(rule.protection.explanation)
                             }
                         }
@@ -2841,7 +2969,7 @@ private struct GeneralRuleCard: View {
                             .buttonStyle(.focus(.secondary, compact: true))
                             .disabled(model.readOnly)
                         }
-                    } else if (rule.kind == .dailyLimit || rule.kind == .workGoal || rule.kind == .launchLimit) && (used > 0 || model.launchesToday(for: rule, at: model.now) > 0) {
+                    } else if (rule.kind == .dailyLimit || rule.kind == .workGoal || rule.kind == .launchLimit) && (used > 0 || model.launchesToday(for: rule, at: model.now) > 0 || model.matchesToday(for: rule, at: model.now) > 0) {
                         Button("Reiniciar contador") {
                             model.resetDailyQuota(for: rule)
                         }
@@ -2940,50 +3068,92 @@ private struct GeneralRuleCard: View {
             .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
         case .workGoal:
-            let worked = model.workedSeconds(on: model.now)
+            let worked = model.effectiveWorkedSeconds(for: rule, at: model.now)
             let required = Double(max(5, rule.goalMinutesRequired)) * 60
             let workFraction = min(1.0, max(0, worked / required))
             let goalMet = worked >= required
             let rewardLeft = rule.remainingGoalRewardSeconds(workedTodaySeconds: worked, usedTodaySeconds: used)
+            let matches = model.matchesToday(for: rule, at: model.now)
+            let maxMatches = max(0, rule.maxDailyMatches)
+            let matchesExhausted = maxMatches > 0 && matches >= maxMatches
+            let matchInProgress = model.isMatchInProgress(for: rule)
+            let postGraceLeft = rule.postMatchGraceRemainingSeconds(at: model.now)
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    if !goalMet {
+                    if postGraceLeft > 0 {
+                        Label(
+                            "Partida terminada · cerrando League of Legends en \(Int(ceil(postGraceLeft))) s",
+                            systemImage: "timer"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.warning)
+                    } else if matchInProgress {
+                        let currentMatchNum = min(max(1, maxMatches), matches + 1)
+                        Label(
+                            maxMatches > 0
+                                ? "Partida \(currentMatchNum)/\(maxMatches) en curso · protegida sin cortes hasta que acabe"
+                                : "Partida en curso · protegida sin cortes hasta que acabe",
+                            systemImage: "gamecontroller.fill"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.mint)
+                    } else if !goalMet {
                         let workNeeded = max(0, required - worked)
                         Label(
-                            "Meta pendiente: faltan \(FocusRules.clock(workNeeded)) de trabajo enfocado hoy",
+                            rule.verifyActiveStudy
+                                ? "Estudio activo pendiente: faltan \(FocusRules.clock(workNeeded)) (cuenta solo con ventana/pestaña de estudio y actividad real)"
+                                : "Meta pendiente: faltan \(FocusRules.clock(workNeeded)) de trabajo enfocado hoy",
                             systemImage: "flag.checkered"
+                        )
+                        .font(.app(13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Palette.warning)
+                    } else if matchesExhausted {
+                        Label(
+                            "Límite de \(matches)/\(maxMatches) partidas completado hoy · bloqueado hasta mañana",
+                            systemImage: "lock.fill"
                         )
                         .font(.app(13, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Palette.warning)
                     } else if rule.goalRewardMinutes <= 0 {
                         Label(
-                            "Meta cumplida (\(FocusRules.clock(worked))) · desbloqueado hoy",
+                            maxMatches > 0
+                                ? "Desbloqueado hoy · Partidas jugadas: \(matches)/\(maxMatches)"
+                                : "Meta cumplida (\(FocusRules.clock(worked))) · desbloqueado hoy",
                             systemImage: "checkmark.seal.fill"
                         )
                         .font(.app(13, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Palette.mint)
                     } else if rewardLeft > 0 {
                         Label(
-                            "Tiempo de recompensa disponible: \(FocusRules.clock(rewardLeft))",
+                            maxMatches > 0
+                                ? "Desbloqueado: quedan \( max(0, maxMatches - matches) ) partida(s) (\(matches)/\(maxMatches)) · tiempo máx. \(FocusRules.clock(rewardLeft))"
+                                : "Tiempo de recompensa disponible: \(FocusRules.clock(rewardLeft))",
                             systemImage: "gift.fill"
                         )
                         .font(.app(13, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Palette.mint)
                     } else {
                         Label(
-                            "Recompensa agotada · completa más minutos de tarea para ganar más",
+                            "Tiempo de juego agotado hoy · bloqueado hasta mañana",
                             systemImage: "lock.fill"
                         )
                         .font(.app(13, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Palette.warning)
                     }
                     Spacer()
-                    Text("Trabajado hoy: \(FocusRules.clock(worked)) / \(rule.goalMinutesRequired) min")
-                        .font(.app(11, design: .monospaced))
-                        .foregroundStyle(Palette.muted)
+                    HStack(spacing: 10) {
+                        if maxMatches > 0 {
+                            Text("Partidas: \(matches)/\(maxMatches)")
+                                .font(.app(11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(matchesExhausted ? Palette.warning : Palette.mint)
+                        }
+                        Text("\(rule.verifyActiveStudy ? "Estudio hoy" : "Trabajado hoy"): \(FocusRules.clock(worked)) / \(rule.goalMinutesRequired) min")
+                            .font(.app(11, design: .monospaced))
+                            .foregroundStyle(Palette.muted)
+                    }
                 }
                 ProgressView(value: workFraction)
-                    .tint(goalMet ? Palette.mint : Palette.warning)
+                    .tint(goalMet && !matchesExhausted ? Palette.mint : Palette.warning)
             }
             .padding(10)
             .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))

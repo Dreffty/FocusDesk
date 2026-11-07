@@ -299,7 +299,7 @@ public enum UnlockChallenge {
     /// No 0/O, 1/l/I: a typo you cannot even see is friction with no purpose.
     static let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789")
 
-    public static let lengthRange = 8...60
+    public static let lengthRange = 8...64
 
     public static func clampedLength(_ value: Int) -> Int {
         max(lengthRange.lowerBound, min(lengthRange.upperBound, value))
@@ -1146,6 +1146,219 @@ public enum GameLibraryRules {
     }
 }
 
+/// Detects League of Legends / Riot Client processes, distinguishes the in-game match process (`GameClient`)
+/// from the lobby client (`LeagueClientUx` / `LeagueClient` / `RiotClient`), and defines the default mandatory rule.
+public enum LeagueMatchRules {
+    /// Stable UUID of the mandatory passive rule «Primero 60 min de estudio · luego máx. 2 partidas de LoL».
+    public static let mandatoryStudyThenLoLRuleID = UUID(uuidString: "22222222-2222-2222-2222-222222222206")!
+
+    /// Bundle ID of the inner League of Legends match binary (`/Contents/LoL/Game/LeagueofLegends.app`) that only exists while an active match is running.
+    public static let gameClientBundleID = "com.riotgames.LeagueofLegends.GameClient"
+
+    /// Minimum seconds the in-game `GameClient` process must run before its exit counts as a completed match (avoids counting a failed loading screen crash under 2 min).
+    public static let minCountedMatchDurationSeconds: TimeInterval = 120
+
+    public static let riotAndLeagueBundleIDs: Set<String> = [
+        "com.riotgames.leagueoflegends",
+        "com.riotgames.leagueoflegends.leagueclient",
+        "com.riotgames.leagueoflegends.leagueclientux",
+        "com.riotgames.leagueoflegends.gameclient",
+        "com.riotgames.riotgames.riotclient"
+    ]
+
+    public static let defaultLoLApps: [AllowedApp] = [
+        AllowedApp(
+            id: "com.riotgames.leagueoflegends",
+            name: "League of Legends",
+            path: "/Applications/League of Legends.app"
+        ),
+        AllowedApp(
+            id: "com.riotgames.LeagueofLegends.LeagueClientUx",
+            name: "League of Legends (Lobby)",
+            path: "/Applications/League of Legends.app/Contents/LoL/League of Legends.app"
+        ),
+        AllowedApp(
+            id: "com.riotgames.LeagueofLegends.LeagueClient",
+            name: "LeagueClient",
+            path: "/Applications/League of Legends.app/Contents/LoL/LeagueClient.app"
+        ),
+        AllowedApp(
+            id: "com.riotgames.LeagueofLegends.GameClient",
+            name: "League of Legends (Partida)",
+            path: "/Applications/League of Legends.app/Contents/LoL/Game/LeagueofLegends.app"
+        ),
+        AllowedApp(
+            id: "com.riotgames.RiotGames.RiotClient",
+            name: "Cliente de Riot",
+            path: "/Users/Shared/Riot Games/Riot Client.app"
+        )
+    ]
+
+    /// True ONLY when the process is the active in-game League of Legends match binary (`GameClient`), NOT the lobby or Riot launcher.
+    public static func isMatchGameProcess(
+        bundleID: String?,
+        appPath: String? = nil,
+        executablePath: String? = nil
+    ) -> Bool {
+        if let id = bundleID?.lowercased(), id == "com.riotgames.leagueoflegends.gameclient" {
+            return true
+        }
+        if let path = appPath?.lowercased(),
+           (path.hasSuffix("/game/leagueoflegends.app") || path.contains("/contents/lol/game/leagueoflegends.app")) {
+            return true
+        }
+        if let exec = executablePath?.lowercased(),
+           exec.contains("/contents/lol/game/leagueoflegends.app/contents/macos/leagueoflegends") {
+            return true
+        }
+        return false
+    }
+
+    /// True for ANY League of Legends or Riot Client process (wrapper, lobby UI, background daemon, match client, or Riot Client launcher).
+    public static func isLeagueOrRiotProcess(
+        bundleID: String?,
+        appPath: String? = nil,
+        localizedName: String? = nil
+    ) -> Bool {
+        if isMatchGameProcess(bundleID: bundleID, appPath: appPath) { return true }
+        if let id = bundleID?.lowercased(), !id.isEmpty {
+            if riotAndLeagueBundleIDs.contains(id) || id.hasPrefix("com.riotgames.") {
+                return true
+            }
+        }
+        if let path = appPath?.lowercased(), !path.isEmpty {
+            if path.contains("league of legends.app")
+                || path.contains("leagueoflegends.app")
+                || path.contains("leagueclient.app")
+                || path.contains("riot client.app")
+                || path.contains("cliente de riot.app") {
+                return true
+            }
+        }
+        if let name = localizedName?.lowercased(), !name.isEmpty {
+            if name == "league of legends" || name == "leagueclient" || name == "leagueclientux"
+                || name == "riot client" || name == "cliente de riot" {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// True when `rule` targets League of Legends / Riot Client.
+    public static func ruleTargetsLeague(_ rule: GeneralBlockRule) -> Bool {
+        if rule.id == mandatoryStudyThenLoLRuleID { return true }
+        return rule.apps.contains { isLeagueOrRiotProcess(bundleID: $0.id, appPath: $0.path, localizedName: $0.name) }
+    }
+}
+
+/// Verifies whether the user is actively studying or working on the Mac (either passively or during a task session),
+/// requiring recent keyboard/mouse/trackpad interaction (`idleSeconds < maxIdleSeconds`), a real open window on screen,
+/// and an active non-entertainment app or browser tab (allowing Claude, ChatGPT, docs, PDFs, IDEs, Office, etc.).
+public enum StudyActivityVerifier {
+    /// Maximum seconds since last user input (mouse/keyboard/scroll) for passive time to count as active study.
+    /// Set to 300s (5 min) so reading a PDF, lecture notes, or a long Claude explanation without moving the mouse still counts continuously.
+    public static let maxIdleSeconds: TimeInterval = 300
+
+    /// Apps that do not count as active study when sitting in the foreground.
+    public static let nonStudyAppBundleIDs: Set<String> = [
+        "com.apple.loginwindow",
+        "com.apple.screensaver.engine",
+        "com.apple.tv",
+        "com.apple.music",
+        "com.spotify.client",
+        "com.hnc.discord",
+        "com.netflix.netflix"
+    ]
+
+    /// Entertainment, social, streaming, and gaming domains/subpaths that do not count as active study in a browser.
+    /// Productive sites (`claude.ai`, `chatgpt.com`, docs, PDFs, campuses, regular educational videos, etc.) DO count.
+    public static let nonStudyWebEntries: String = [
+        "youtube.com/shorts",
+        "instagram.com",
+        "tiktok.com",
+        "x.com",
+        "twitter.com",
+        "facebook.com",
+        "threads.net",
+        "bsky.app",
+        "netflix.com",
+        "twitch.tv",
+        "primevideo.com",
+        "disneyplus.com",
+        "max.com",
+        "store.steampowered.com",
+        "steamcommunity.com",
+        "epicgames.com",
+        "roblox.com",
+        "poki.com",
+        "crazygames.com",
+        "leagueoflegends.com",
+        "op.gg",
+        "u.gg",
+        "porofessor.gg",
+        "mobafire.com"
+    ].joined(separator: ", ")
+
+    /// Blank/new-tab browser window titles that indicate no actual page is open when URL inspection is unavailable.
+    public static let emptyTabTitles: Set<String> = [
+        "nueva pestaña", "new tab", "página de inicio", "start page", "about:blank", "sin título", "untitled"
+    ]
+
+    /// Returns `true` when the user is actively interacting with a real study/work window or productive browser tab.
+    public static func isVerifiedStudyActivity(
+        idleSeconds: TimeInterval,
+        frontBundleID: String,
+        frontAppPath: String? = nil,
+        hasVisibleWindowOnScreen: Bool,
+        frontWindowTitle: String? = nil,
+        browserHost: String? = nil,
+        browserPath: String? = nil
+    ) -> Bool {
+        guard idleSeconds >= 0, idleSeconds < maxIdleSeconds else { return false }
+        let trimmedID = frontBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty, hasVisibleWindowOnScreen else { return false }
+        let lowerID = trimmedID.lowercased()
+
+        // Games and game launchers never count as study.
+        if LeagueMatchRules.isLeagueOrRiotProcess(bundleID: trimmedID, appPath: frontAppPath) {
+            return false
+        }
+        if GameLibraryRules.matchesGameApp(bundleID: trimmedID, appPath: frontAppPath) != nil {
+            return false
+        }
+        if nonStudyAppBundleIDs.contains(lowerID) {
+            return false
+        }
+
+        // If the foreground app is a web browser, verify that an actual tab is open and it is not an entertainment site.
+        if WebRules.isBrowser(trimmedID) {
+            let cleanHost = browserHost?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            let cleanPath = browserPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "/"
+            if !cleanHost.isEmpty {
+                return FocusRules.webAllowed(
+                    host: cleanHost,
+                    path: cleanPath,
+                    list: nonStudyWebEntries,
+                    mode: .blockListed
+                )
+            }
+            // Fallback if the browser tab is a local PDF/file or when AppleEvents/Accessibility has not returned a URL yet:
+            // if a window title is available, verify it is not a blank new tab or an obvious distraction title;
+            // if neither URL nor title could be read due to macOS permissions/timeout, allow as long as a real browser window is visible on screen.
+            if let title = frontWindowTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                let lowerTitle = title.lowercased()
+                if emptyTabTitles.contains(lowerTitle) { return false }
+                for keyword in ["netflix", "twitch", "tiktok", "instagram", "league of legends", "shorts"] {
+                    if lowerTitle.contains(keyword) { return false }
+                }
+            }
+            return true
+        }
+
+        return true
+    }
+}
+
 /// Inspects clipboard contents when `protectClipboard` is active (`TargetListHandler::isClipboardPassed` in FocusMe).
 public enum ClipboardGuardRules {
     private static let dangerousCommandTokens: [String] = [
@@ -1401,6 +1614,18 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     public var goalMinutesRequired: Int
     /// Reward minutes unlocked per `goalMinutesRequired` worked today (`0` = unlimited for the rest of today once goal is reached).
     public var goalRewardMinutes: Int
+    /// Maximum number of completed matches allowed per day once `goalMinutesRequired` is met (`0` = no match limit, `1...20` = max daily matches, e.g. `2` for League of Legends).
+    public var maxDailyMatches: Int
+    /// When `true`, FocusDesk never interrupts or closes an active in-game match (`GameClient`), waiting until the match finishes even if the time budget expires mid-game.
+    public var deferBlockUntilMatchEnds: Bool
+    /// Seconds of grace after the final allowed match finishes (`GameClient` exits) before closing the lobby client and locking for the rest of the day (`15...300`, default `60`).
+    public var postMatchGraceSeconds: Int
+    /// Active post-match grace countdown deadline (e.g. 60 seconds after match 2 ends so the user can give honor / view stats).
+    public var activePostMatchGraceDeadline: TrustedDeadline?
+    /// When `true` on a `.workGoal` rule, counts both active task sessions and passive verified study (where the user is not idle and has an open study window or productive browser tab).
+    public var verifyActiveStudy: Bool
+    /// When `true`, the rule is protected 24/7 while `enabled` (requires its challenge code / wait even during study or while playing unlocked reward matches).
+    public var alwaysProtected: Bool
     /// Maximum number of launches/visits allowed per day when `kind == .launchLimit` (1...50).
     public var maxDailyLaunches: Int
     /// Maximum duration in minutes of each launch visit when `kind == .launchLimit` (1...120).
@@ -1489,6 +1714,12 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         limitPeriodUnit: LimitPeriodUnit = .day,
         goalMinutesRequired: Int = 60,
         goalRewardMinutes: Int = 0,
+        maxDailyMatches: Int = 0,
+        deferBlockUntilMatchEnds: Bool = false,
+        postMatchGraceSeconds: Int = 60,
+        activePostMatchGraceDeadline: TrustedDeadline? = nil,
+        verifyActiveStudy: Bool = false,
+        alwaysProtected: Bool = false,
         maxDailyLaunches: Int = 5,
         maxLaunchDurationMinutes: Int = 5,
         launchCooldownMinutes: Int = 30,
@@ -1545,6 +1776,12 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         self.limitPeriodUnit = limitPeriodUnit
         self.goalMinutesRequired = max(5, min(720, goalMinutesRequired))
         self.goalRewardMinutes = max(0, min(360, goalRewardMinutes))
+        self.maxDailyMatches = max(0, min(20, maxDailyMatches))
+        self.deferBlockUntilMatchEnds = deferBlockUntilMatchEnds
+        self.postMatchGraceSeconds = max(15, min(300, postMatchGraceSeconds))
+        self.activePostMatchGraceDeadline = activePostMatchGraceDeadline
+        self.verifyActiveStudy = verifyActiveStudy
+        self.alwaysProtected = alwaysProtected
         self.maxDailyLaunches = max(1, min(50, maxDailyLaunches))
         self.maxLaunchDurationMinutes = max(1, min(120, maxLaunchDurationMinutes))
         self.launchCooldownMinutes = max(0, min(360, launchCooldownMinutes))
@@ -1597,6 +1834,8 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, enabled, kind, dailyLimitMinutes, limitPeriodUnit, countdownMinutes, activeDeadline
         case goalMinutesRequired, goalRewardMinutes
+        case maxDailyMatches, deferBlockUntilMatchEnds, postMatchGraceSeconds, activePostMatchGraceDeadline
+        case verifyActiveStudy, alwaysProtected
         case maxDailyLaunches, maxLaunchDurationMinutes, launchCooldownMinutes, activeLaunchDeadline, launchCooldownDeadline
         case pomodoroWorkMinutes, pomodoroShortBreakMinutes, pomodoroLongBreakMinutes, pomodoroLongBreakEvery
         case pomodoroTotalCycles, pomodoroPenaltyReset, protectPomodoroBreaks, pomodoroWaitForUser
@@ -1620,6 +1859,12 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         limitPeriodUnit = try c.decodeIfPresent(LimitPeriodUnit.self, forKey: .limitPeriodUnit) ?? .day
         goalMinutesRequired = max(5, min(720, try c.decodeIfPresent(Int.self, forKey: .goalMinutesRequired) ?? 60))
         goalRewardMinutes = max(0, min(360, try c.decodeIfPresent(Int.self, forKey: .goalRewardMinutes) ?? 0))
+        maxDailyMatches = max(0, min(20, try c.decodeIfPresent(Int.self, forKey: .maxDailyMatches) ?? 0))
+        deferBlockUntilMatchEnds = try c.decodeIfPresent(Bool.self, forKey: .deferBlockUntilMatchEnds) ?? false
+        postMatchGraceSeconds = max(15, min(300, try c.decodeIfPresent(Int.self, forKey: .postMatchGraceSeconds) ?? 60))
+        activePostMatchGraceDeadline = try c.decodeIfPresent(TrustedDeadline.self, forKey: .activePostMatchGraceDeadline)
+        verifyActiveStudy = try c.decodeIfPresent(Bool.self, forKey: .verifyActiveStudy) ?? false
+        alwaysProtected = try c.decodeIfPresent(Bool.self, forKey: .alwaysProtected) ?? false
         maxDailyLaunches = max(1, min(50, try c.decodeIfPresent(Int.self, forKey: .maxDailyLaunches) ?? 5))
         maxLaunchDurationMinutes = max(1, min(120, try c.decodeIfPresent(Int.self, forKey: .maxLaunchDurationMinutes) ?? 5))
         launchCooldownMinutes = max(0, min(360, try c.decodeIfPresent(Int.self, forKey: .launchCooldownMinutes) ?? 30))
@@ -1836,6 +2081,9 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     public func earnedGoalBudgetSeconds(workedTodaySeconds: TimeInterval) -> TimeInterval? {
         guard workedTodaySeconds >= goalRequiredSeconds else { return 0 }
         guard goalRewardMinutes > 0 else { return nil }
+        if maxDailyMatches > 0 {
+            return Double(goalRewardMinutes * 60)
+        }
         let blocks = max(1, Int(workedTodaySeconds / goalRequiredSeconds))
         return Double(blocks * goalRewardMinutes * 60)
     }
@@ -1844,6 +2092,32 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     public func remainingGoalRewardSeconds(workedTodaySeconds: TimeInterval, usedTodaySeconds: TimeInterval) -> TimeInterval {
         guard let budget = earnedGoalBudgetSeconds(workedTodaySeconds: workedTodaySeconds) else { return 0 }
         return max(0, budget - max(0, usedTodaySeconds))
+    }
+
+    /// Seconds left in the post-match grace countdown (e.g. 60 seconds after the 2nd match ends before closing League of Legends).
+    public func postMatchGraceRemainingSeconds(
+        at now: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) -> TimeInterval {
+        activePostMatchGraceDeadline?.remainingAfterPossibleReboot(wall: now, continuous: continuous) ?? 0
+    }
+
+    /// True while the post-match grace countdown (e.g. 1 minute for honor/stats) is actively running.
+    public func isInPostMatchGrace(
+        at now: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) -> Bool {
+        postMatchGraceRemainingSeconds(at: now, continuous: continuous) > 0
+    }
+
+    /// Starts the post-match grace countdown (default `postMatchGraceSeconds`, 60s) when the final allowed match finishes.
+    public mutating func startPostMatchGrace(
+        seconds: Int? = nil,
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds()
+    ) {
+        let chosen = max(15, min(300, seconds ?? postMatchGraceSeconds))
+        activePostMatchGraceDeadline = TrustedDeadline(seconds: Double(chosen), wall: wall, continuous: continuous)
     }
 
     /// True while a `.launchLimit` rule is inside an active visit window (`activeLaunchDeadline`).
@@ -1900,12 +2174,14 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
-    /// True while a `.dailyLimit`, `.workGoal` (with finite reward) or `.launchLimit` rule is enabled and actively counting down usage/visit time.
+    /// True while a `.dailyLimit`, `.workGoal` (with finite reward / match limit) or `.launchLimit` rule is enabled and actively counting down usage/visit time.
     public func isTrackingQuota(
         at now: Date = Date(),
         usedTodaySeconds: TimeInterval,
         workedTodaySeconds: TimeInterval = 0,
         launchesToday: Int = 0,
+        matchesToday: Int = 0,
+        isMatchInProgress: Bool = false,
         continuous: Double = TrustedClock.continuousSeconds()
     ) -> Bool {
         guard enabled else { return false }
@@ -1913,7 +2189,13 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         case .dailyLimit:
             return usedTodaySeconds < dailyBudgetSeconds
         case .workGoal:
-            guard let budget = earnedGoalBudgetSeconds(workedTodaySeconds: workedTodaySeconds) else { return false }
+            guard workedTodaySeconds >= goalRequiredSeconds else { return false }
+            if isInPostMatchGrace(at: now, continuous: continuous) { return true }
+            if deferBlockUntilMatchEnds && isMatchInProgress { return true }
+            if maxDailyMatches > 0 && matchesToday >= maxDailyMatches { return false }
+            guard let budget = earnedGoalBudgetSeconds(workedTodaySeconds: workedTodaySeconds) else {
+                return maxDailyMatches > 0 && matchesToday < maxDailyMatches
+            }
             return budget > 0 && usedTodaySeconds < budget
         case .launchLimit:
             return isInLaunchVisit(at: now, continuous: continuous) || (!isInLaunchCooldown(at: now, continuous: continuous) && launchesToday < maxDailyLaunches)
@@ -1928,6 +2210,8 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         usedTodaySeconds: TimeInterval = 0,
         workedTodaySeconds: TimeInterval = 0,
         launchesToday: Int = 0,
+        matchesToday: Int = 0,
+        isMatchInProgress: Bool = false,
         continuous: Double = TrustedClock.continuousSeconds(),
         calendar: Calendar = .current
     ) -> Bool {
@@ -1948,6 +2232,16 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         case .dailyLimit:
             return usedTodaySeconds >= dailyBudgetSeconds
         case .workGoal:
+            guard workedTodaySeconds >= goalRequiredSeconds else { return true }
+            if isInPostMatchGrace(at: now, continuous: continuous) {
+                return false
+            }
+            if deferBlockUntilMatchEnds && isMatchInProgress {
+                return false
+            }
+            if maxDailyMatches > 0 && matchesToday >= maxDailyMatches {
+                return true
+            }
             guard let budget = earnedGoalBudgetSeconds(workedTodaySeconds: workedTodaySeconds) else { return false }
             return usedTodaySeconds >= budget
         case .launchLimit:
@@ -1958,21 +2252,28 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     }
 
     /// True when the rule requires its protection challenge/wait before disabling, editing, or deleting it.
-    /// Includes Pomodoro breaks when `protectPomodoroBreaks` is enabled (`PlanScheduleHandler` break lock).
+    /// Includes Pomodoro breaks when `protectPomodoroBreaks` is enabled and 24/7 mandatory rules when `alwaysProtected` is enabled.
     public func isProtectedNow(
         at now: Date = Date(),
         usedTodaySeconds: TimeInterval = 0,
         workedTodaySeconds: TimeInterval = 0,
         launchesToday: Int = 0,
+        matchesToday: Int = 0,
+        isMatchInProgress: Bool = false,
         continuous: Double = TrustedClock.continuousSeconds(),
         calendar: Calendar = .current
     ) -> Bool {
         guard protection != .none else { return false }
+        if enabled && alwaysProtected {
+            return true
+        }
         if isEnforcing(
             at: now,
             usedTodaySeconds: usedTodaySeconds,
             workedTodaySeconds: workedTodaySeconds,
             launchesToday: launchesToday,
+            matchesToday: matchesToday,
+            isMatchInProgress: isMatchInProgress,
             continuous: continuous,
             calendar: calendar
         ) {
@@ -1990,6 +2291,8 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         usedTodaySeconds: TimeInterval = 0,
         workedTodaySeconds: TimeInterval = 0,
         launchesToday: Int = 0,
+        matchesToday: Int = 0,
+        isMatchInProgress: Bool = false,
         continuous: Double = TrustedClock.continuousSeconds(),
         calendar: Calendar = .current
     ) -> TimeInterval {
@@ -1998,11 +2301,14 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             usedTodaySeconds: usedTodaySeconds,
             workedTodaySeconds: workedTodaySeconds,
             launchesToday: launchesToday,
+            matchesToday: matchesToday,
+            isMatchInProgress: isMatchInProgress,
             continuous: continuous,
             calendar: calendar
         )
         let protectedPomodoroBreak = (kind == .pomodoro && enabled && protectPomodoroBreaks && pomodoroPhase != .idle)
-        guard enforcing || protectedPomodoroBreak else {
+        let protectedAlways = (enabled && alwaysProtected && protection != .none)
+        guard enforcing || protectedPomodoroBreak || protectedAlways else {
             return 0
         }
         switch kind {
@@ -2113,12 +2419,24 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
                 return "cambiar el periodo del presupuesto de «\(current.name)»"
             }
         }
+        if current.alwaysProtected && !proposed.alwaysProtected {
+            return "quitar la protección obligatoria 24/7 de «\(current.name)»"
+        }
         if current.kind == .workGoal {
             if proposed.goalMinutesRequired < current.goalMinutesRequired {
                 return "rebajar la meta de enfoque de «\(current.name)»"
             }
             if current.goalRewardMinutes > 0 && (proposed.goalRewardMinutes == 0 || proposed.goalRewardMinutes > current.goalRewardMinutes) {
                 return "ampliar la recompensa de «\(current.name)»"
+            }
+            if current.maxDailyMatches > 0 && (proposed.maxDailyMatches == 0 || proposed.maxDailyMatches > current.maxDailyMatches) {
+                return "ampliar el límite de partidas diarias de «\(current.name)»"
+            }
+            if current.verifyActiveStudy && !proposed.verifyActiveStudy {
+                return "desactivar la verificación de estudio activo en «\(current.name)»"
+            }
+            if proposed.postMatchGraceSeconds > current.postMatchGraceSeconds {
+                return "alargar el margen tras terminar la partida en «\(current.name)»"
             }
         }
         if current.kind == .launchLimit {
@@ -2223,7 +2541,38 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         return nil
     }
 
+    /// Built-in mandatory passive rule: 60 minutes of verified study (passive or active) first, then up to 2 matches of League of Legends (never kicking mid-match, 1-minute post-match grace, protected 24/7 by a 64-character challenge code).
+    public static var mandatoryStudyThenLoLRule: GeneralBlockRule {
+        GeneralBlockRule(
+            id: LeagueMatchRules.mandatoryStudyThenLoLRuleID,
+            name: "Primero 60 min de estudio · luego máx. 2 partidas de LoL",
+            enabled: true,
+            kind: .workGoal,
+            goalMinutesRequired: 60,
+            goalRewardMinutes: 120,
+            maxDailyMatches: 2,
+            deferBlockUntilMatchEnds: true,
+            postMatchGraceSeconds: 60,
+            verifyActiveStudy: true,
+            alwaysProtected: true,
+            blockApps: true,
+            appListMode: .blockListed,
+            apps: LeagueMatchRules.defaultLoLApps,
+            blockAction: .forceQuit,
+            webListMode: .blockListed,
+            domains: "",
+            webBlockAction: .warn,
+            motivationalMessage: "Primero completa tus 60 min de estudio real (con ventana o pestaña de trabajo abierta). Después tienes hasta 2 partidas de LoL sin cortes a mitad y 1 minuto de margen al terminar.",
+            protection: .challenge,
+            unlockChars: 64,
+            guardSystemPanes: true,
+            punisherEnabled: true,
+            dailyMicroPausesAllowed: 0
+        )
+    }
+
     public static let defaults: [GeneralBlockRule] = [
+        mandatoryStudyThenLoLRule,
         GeneralBlockRule(
             id: UUID(uuidString: "22222222-2222-2222-2222-222222222201")!,
             name: "Redes y vídeos cortos · 20 min al día",

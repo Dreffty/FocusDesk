@@ -31,6 +31,26 @@ enum ScreenWindows {
         return pids
     }
 
+    /// Returns `true` when `app` has a real document window (`width >= 120, height >= 90`) on screen or in an active Space.
+    static func hasOpenWindow(for app: NSRunningApplication) -> Bool {
+        guard !app.isTerminated, !app.isHidden else { return false }
+        let pid = app.processIdentifier
+        if visibleOwnerPIDs().contains(pid) { return true }
+        guard let allWindows = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        for window in allWindows {
+            guard (window[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                  (window[kCGWindowLayer as String] as? Int) == 0,
+                  (window[kCGWindowAlpha as String] as? Double ?? 1) > 0.05 else { continue }
+            let bounds = window[kCGWindowBounds as String] as? [String: Any]
+            let width = bounds?["Width"] as? Double ?? 0
+            let height = bounds?["Height"] as? Double ?? 0
+            if width >= 120, height >= 90 { return true }
+        }
+        return false
+    }
+
     /// Running applications with a visible window that are not in `allowed` and may be acted on.
     static func visibleUnallowedApps(allowedBundleIDs: Set<String>, exempt: Set<String>) -> [NSRunningApplication] {
         let pids = visibleOwnerPIDs()
