@@ -127,8 +127,8 @@ extension AppModel {
               protectedBeforeStart(current, at: instant) else { return true }
         let what: String?
         switch change.outcome(from: current, now: instant) {
-        case .deleted: what = RunUp.loosening(current: current, proposed: nil)
-        case .changed(let proposed): what = RunUp.loosening(current: current, proposed: proposed)
+        case .deleted: what = RunUp.loosening(current: current, proposed: nil, now: instant)
+        case .changed(let proposed): what = RunUp.loosening(current: current, proposed: proposed, now: instant)
         }
         guard let what else { return true }
 

@@ -478,11 +478,13 @@ public enum Ratchet {
 /// FocusMe's `activeProtectionRunUp`. At 8:55 a task that starts at 9:00 has «not started yet», and deleting it is
 /// free: the exact moment the impulse wins. From `minutes` before its start until its planned end, a protected task
 /// defends itself, and anything that puts it off or softens it costs what stopping it would cost — the code, the
-/// wait or the emergency exit. Doing it earlier, for longer or more strictly stays free.
+/// wait or the emergency exit. Doing it earlier (at a time still ahead), for longer or more strictly stays free.
 public enum RunUp {
     public static let defaultMinutes = 10
     /// What Ajustes offers; 0 switches it off.
     public static let choices = [0, 5, 10, 15, 30, 60]
+    /// How far behind now a task can be moved and still count as doing it earlier: setting it to when you sat down.
+    public static let pastGraceSeconds: TimeInterval = 5 * 60
 
     public static func clampedMinutes(_ value: Int) -> Int { max(0, min(120, value)) }
 
@@ -504,7 +506,7 @@ public enum RunUp {
 
     /// What `proposed` would do to an armed task, named as an action («Retrasarla»), or nil when it only makes the
     /// task sooner, longer or stricter. `nil` as `proposed` means deleting it.
-    public static func loosening(current: FocusTask, proposed: FocusTask?, calendar: Calendar = .current) -> String? {
+    public static func loosening(current: FocusTask, proposed: FocusTask?, now: Date, calendar: Calendar = .current) -> String? {
         guard let proposed else { return "Borrarla" }
         if !proposed.isScheduled { return "Pasarla a la bandeja" }
         if proposed.completed && !current.completed { return "Marcarla como hecha sin hacerla" }
@@ -512,6 +514,12 @@ public enum RunUp {
         if proposed.skippedDates.contains(day) && !current.skippedDates.contains(day) { return "Saltársela" }
         // Half a minute of slack: rounding a time in the editor is not putting the task off.
         if proposed.scheduledAt > current.scheduledAt.addingTimeInterval(30) { return "Retrasarla" }
+        // Earlier is free only while the new time is still ahead (or barely behind): moved into the past, the task
+        // would leave its window a moment later and deleting it would be free. Stretching it to reach now is the same.
+        if proposed.scheduledAt < current.scheduledAt.addingTimeInterval(-30),
+           proposed.end <= now || proposed.scheduledAt < now.addingTimeInterval(-pastGraceSeconds) {
+            return "Sacarla de su hora"
+        }
         if current.autoStart && !proposed.autoStart { return "Quitarle el inicio automático" }
         return Ratchet.loosening(current: current, proposed: proposed)?.asAction
     }

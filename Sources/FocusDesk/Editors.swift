@@ -566,7 +566,7 @@ struct TaskEditor: View {
                 Text(draft.protection.explanation).font(.app(11)).foregroundStyle(Palette.muted)
                 if let saved = model.workspace.tasks.first(where: { $0.id == draft.id }),
                    model.protectedBeforeStart(saved) {
-                    Label("Ya está protegida: empieza a las \(saved.scheduledAt.formatted(date: .omitted, time: .shortened)). Retrasarla o ablandarla costará lo mismo que pararla; adelantarla, alargarla o endurecerla, no.",
+                    Label("Ya está protegida: empieza a las \(saved.scheduledAt.formatted(date: .omitted, time: .shortened)). Retrasarla, moverla al pasado o ablandarla costará lo mismo que pararla; adelantarla a una hora por venir, alargarla o endurecerla, no.",
                           systemImage: "lock.fill")
                         .font(.app(10, weight: .medium))
                         .foregroundStyle(Palette.warning)
@@ -985,7 +985,7 @@ private struct RunUpSettings: View {
                     }
                 }
                 .frame(maxWidth: 360)
-                Text("A las 8:55, una tarea de las 9:00 aún no ha empezado y borrarla sería gratis: justo cuando gana el impulso. Desde este margen, retrasar, borrar o ablandar una tarea protegida cuesta lo mismo que pararla —su código, su espera o la salida de emergencia—. Adelantarla, alargarla o endurecerla sigue libre, y las tareas que «Se pueden parar» no cambian.")
+                Text("A las 8:55, una tarea de las 9:00 aún no ha empezado y borrarla sería gratis: justo cuando gana el impulso. Desde este margen, retrasar, borrar, mover al pasado o ablandar una tarea protegida cuesta lo mismo que pararla —su código, su espera o la salida de emergencia—. Adelantarla a una hora por venir, alargarla o endurecerla sigue libre, y las tareas que «Se pueden parar» no cambian.")
                     .font(.app(10))
                     .foregroundStyle(Palette.muted)
                     .fixedSize(horizontal: false, vertical: true)
