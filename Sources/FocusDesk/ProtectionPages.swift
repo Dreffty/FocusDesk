@@ -79,11 +79,11 @@ extension AppModel {
 
     /// What «Bloquear ahora» blocks and how hard, remembered so the page, the menu bar and ⌘K start the same block.
     var quickBlockProtection: SessionProtection {
-        SessionProtection(rawValue: UserDefaults.standard.string(forKey: Self.quickBlockProtectionKey) ?? "") ?? .challenge
+        SessionProtection(rawValue: AppPreferences.current.string(forKey: Self.quickBlockProtectionKey) ?? "") ?? .challenge
     }
 
     var quickBlockPreset: DistractionPreset? {
-        DistractionPreset(rawValue: UserDefaults.standard.string(forKey: Self.quickBlockPresetKey) ?? "")
+        DistractionPreset(rawValue: AppPreferences.current.string(forKey: Self.quickBlockPresetKey) ?? "")
     }
 
     func startQuickBlockWithSavedChoice(minutes: Int) {
@@ -216,8 +216,8 @@ struct NewRuleButton: View {
 
 struct QuickBlockPage: View {
     @ObservedObject var model: AppModel
-    @AppStorage(AppModel.quickBlockProtectionKey) private var protectionRaw = SessionProtection.challenge.rawValue
-    @AppStorage(AppModel.quickBlockPresetKey) private var presetRaw = ""
+    @AppStorage(AppModel.quickBlockProtectionKey, store: AppPreferences.current) private var protectionRaw = SessionProtection.challenge.rawValue
+    @AppStorage(AppModel.quickBlockPresetKey, store: AppPreferences.current) private var presetRaw = ""
     @State private var tempAllowDomain = ""
     @State private var tempAllowMinutes = 10
 
@@ -778,7 +778,7 @@ struct BreaksPage: View {
 /// dismissible invitation instead (`onboarding.md › Best practices`: context-specific tips).
 struct ProtectionTodayStrip: View {
     @ObservedObject var model: AppModel
-    @AppStorage("FocusDesk.protectionTipDismissed") private var tipDismissed = false
+    @AppStorage("FocusDesk.protectionTipDismissed", store: AppPreferences.current) private var tipDismissed = false
 
     var body: some View {
         let live = model.liveGeneralRules

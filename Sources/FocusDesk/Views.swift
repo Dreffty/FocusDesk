@@ -710,7 +710,7 @@ private struct BannerStack: View {
 private struct TodayPage: View {
     @ObservedObject var model: AppModel
     var onDelete: (FocusTask) -> Void
-    @AppStorage("FocusDesk.dayLayoutHourly") private var hourly = true
+    @AppStorage("FocusDesk.dayLayoutHourly", store: AppPreferences.current) private var hourly = true
     @State private var overdueExpanded = true
     @FocusState private var agendaFocused: Bool
 

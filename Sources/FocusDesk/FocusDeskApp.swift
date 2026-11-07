@@ -37,6 +37,7 @@ struct FocusDeskApplication {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSWindowDelegate, NSMenuItemValidation {
+    static let mainWindowID = "FocusDeskMainWindow"
     let model: AppModel = {
         let preview = CommandLine.arguments.contains("--preview")
         let args = CommandLine.arguments
@@ -283,7 +284,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             window.isReleasedWhenClosed = false
             window.minSize = NSSize(width: 960, height: 680)
             window.contentView = NSHostingView(rootView: MainView(model: model).environment(\.locale, Locale(identifier: "es_ES")))
-            window.setFrameAutosaveName("FocusDeskMainWindow")
+            window.identifier = NSUserInterfaceItemIdentifier(Self.mainWindowID)
+            // The window remembers where it was in the real preferences, so the demo mode leaves that alone.
+            if !model.preview { window.setFrameAutosaveName(Self.mainWindowID) }
             window.delegate = self
             if !window.setFrameUsingName("FocusDeskMainWindow") { window.center() }
             self.window = window
@@ -324,10 +327,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 item.image = NSImage(systemSymbolName: pane.icon, accessibilityDescription: pane.rawValue)
                 tabs.addTabViewItem(item)
             }
-            let saved = UserDefaults.standard.integer(forKey: "FocusDesk.settingsPane")
+            let saved = AppPreferences.current.integer(forKey: "FocusDesk.settingsPane")
             tabs.selectedTabViewItemIndex = min(max(0, saved), SettingsSectionTab.panes.count - 1)
             settingsPaneObservation = tabs.observe(\.selectedTabViewItemIndex, options: [.new]) { _, change in
-                if let index = change.newValue { UserDefaults.standard.set(index, forKey: "FocusDesk.settingsPane") }
+                if let index = change.newValue { AppPreferences.current.set(index, forKey: "FocusDesk.settingsPane") }
             }
             let window = NSWindow(contentViewController: tabs)
             window.styleMask = [.titled, .closable]
@@ -336,7 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             window.setContentSize(NSSize(width: 820, height: 640))
             window.backgroundColor = NSColor(Palette.background)
             window.center()
-            window.setFrameAutosaveName("FocusDeskSettingsWindow")
+            if !model.preview { window.setFrameAutosaveName("FocusDeskSettingsWindow") }
             settingsWindow = window
         }
         if let section, let index = SettingsSectionTab.panes.firstIndex(of: section),

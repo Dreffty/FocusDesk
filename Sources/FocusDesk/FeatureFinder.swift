@@ -308,8 +308,8 @@ enum WhatsNew {
     static let release = "2026-10-antidistraccion"
     private static let key = "FocusDesk.whatsNewSeen"
 
-    static var pending: Bool { UserDefaults.standard.string(forKey: key) != release }
-    static func markSeen() { UserDefaults.standard.set(release, forKey: key) }
+    static var pending: Bool { AppPreferences.current.string(forKey: key) != release }
+    static func markSeen() { AppPreferences.current.set(release, forKey: key) }
 }
 
 struct WhatsNewSheet: View {

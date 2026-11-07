@@ -463,8 +463,8 @@ final class FocusModeController: ObservableObject {
 
     /// Remembered across launches: FocusDesk only turns off a No molestar it turned on itself, also after a crash.
     private var turnedOnByFocusDesk: Bool {
-        get { UserDefaults.standard.bool(forKey: Self.turnedOnKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Self.turnedOnKey) }
+        get { AppPreferences.current.bool(forKey: Self.turnedOnKey) }
+        set { AppPreferences.current.set(newValue, forKey: Self.turnedOnKey) }
     }
 
     func refresh() async {

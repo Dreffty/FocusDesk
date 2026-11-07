@@ -64,7 +64,7 @@ enum SnapshotTool {
                 return "SNAPSHOTS: " + written.joined(separator: ", ")
             }
 
-            UserDefaults.standard.set(true, forKey: "FocusDesk.dayLayoutHourly")
+            AppPreferences.current.set(true, forKey: "FocusDesk.dayLayoutHourly")
             model.page = AppPage.today.rawValue
 
             // Editor of a recurring occurrence (shows the series picker and its hint).
@@ -230,8 +230,8 @@ enum SnapshotTool {
 
     private static func pagesToShow(_ model: AppModel) -> [(String, () -> Void)] {
         [
-            ("hoy-horas", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(true, forKey: "FocusDesk.dayLayoutHourly") }),
-            ("hoy-lista", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(false, forKey: "FocusDesk.dayLayoutHourly") }),
+            ("hoy-horas", { model.page = AppPage.today.rawValue; AppPreferences.current.set(true, forKey: "FocusDesk.dayLayoutHourly") }),
+            ("hoy-lista", { model.page = AppPage.today.rawValue; AppPreferences.current.set(false, forKey: "FocusDesk.dayLayoutHourly") }),
             ("semana", { model.page = AppPage.week.rawValue }),
             ("historial", { model.historyShowsAudit = false; model.page = AppPage.history.rawValue }),
             ("historial-registro", { model.historyShowsAudit = true; model.page = AppPage.history.rawValue }),
@@ -256,7 +256,7 @@ enum SnapshotTool {
     }
 
     private static func mainWindow() -> NSWindow? {
-        NSApp.windows.first { $0.frameAutosaveName == "FocusDeskMainWindow" }
+        NSApp.windows.first { $0.identifier?.rawValue == AppDelegate.mainWindowID }
     }
 
     private static func settle(_ seconds: Double = 0.5) async throws {
