@@ -1842,6 +1842,60 @@ public enum FocusRules {
         return true
     }
 
+    /// True when some page could match both entries. Used to know whether a new allow list lets through something an
+    /// old block list closed. Two patterns cannot be compared without listing every address, so they count as overlapping.
+    public static func domainEntriesOverlap(_ a: String, _ b: String) -> Bool {
+        func isPattern(_ entry: String) -> Bool { entry.contains("*") || entry.contains("?") }
+        func parts(_ entry: String) -> (host: String, path: String) {
+            let split = entry.lowercased().split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            return (String(split[0]), split.count > 1 ? String(split[1]).trimmingCharacters(in: CharacterSet(charactersIn: "/")) : "")
+        }
+        if isPattern(a) && isPattern(b) { return true }
+        if isPattern(a) || isPattern(b) {
+            let (pattern, plain) = isPattern(a) ? (a, b) : (b, a)
+            let target = parts(plain)
+            // An entry without a path covers every page of its host, so only the pattern's host matters then.
+            return target.path.isEmpty
+                ? entryMatches(host: target.host, entry: parts(pattern).host)
+                : entryMatches(host: target.host, path: "/" + target.path, entry: pattern)
+        }
+        let first = parts(a), second = parts(b)
+        guard first.host == second.host || first.host.hasSuffix("." + second.host) || second.host.hasSuffix("." + first.host) else { return false }
+        guard !first.path.isEmpty, !second.path.isEmpty else { return true }
+        return first.path == second.path || first.path.hasPrefix(second.path + "/") || second.path.hasPrefix(first.path + "/")
+    }
+
+    /// True when changing a website list would let through something the current one closes. The judge behind the
+    /// ratchets: whatever is blocked today has to stay blocked, however the list and its mode are rewritten.
+    public static func webListOpens(currentMode: WebListMode, current: [String], proposedMode: WebListMode, proposed: [String]) -> Bool {
+        // `blockAll` is the hardest list there is, so going to it opens nothing.
+        if proposedMode == .blockAll { return false }
+        // Empty allow and block lists both let every page through, so there is nothing to keep closed.
+        if currentMode != .blockAll && current.isEmpty { return false }
+        switch (currentMode, proposedMode) {
+        case (.blockAll, _), (.allowListed, .blockListed):
+            return true
+        case (.allowListed, _):
+            return proposed.isEmpty || !Set(proposed).isSubset(of: Set(current))
+        case (.blockListed, .blockListed):
+            return !Set(current).isSubset(of: Set(proposed))
+        case (.blockListed, _):
+            // Black to white hardens the rest of the web, but only if nothing that was closed is on the new list.
+            return proposed.isEmpty || proposed.contains { allowed in current.contains { domainEntriesOverlap(allowed, $0) } }
+        }
+    }
+
+    /// The same for an app list. An empty list blocks no app in either mode.
+    public static func appListOpens(currentMode: AppListMode, current: Set<String>, proposedMode: AppListMode, proposed: Set<String>) -> Bool {
+        guard !current.isEmpty else { return false }
+        switch (currentMode, proposedMode) {
+        case (.allowListed, .blockListed): return true
+        case (.allowListed, .allowListed): return proposed.isEmpty || !proposed.isSubset(of: current)
+        case (.blockListed, .blockListed): return !current.isSubset(of: proposed)
+        case (.blockListed, .allowListed): return proposed.isEmpty || !current.isDisjoint(with: proposed)
+        }
+    }
+
     public static func domainAllowed(_ host: String, list: String) -> Bool {
         webAllowed(host: host, path: "", list: list, mode: .allowListed)
     }

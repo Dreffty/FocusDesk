@@ -380,7 +380,7 @@ public enum Loosening: Equatable, Sendable {
         case .systemPanesUnguarded: return "La protección de «Privacidad y seguridad» y «Fecha y hora» no se quita con la sesión en marcha."
         case .punisherRemoved: return "El endurecimiento tras varios intentos seguidos no se quita con la sesión en marcha."
         case .foldersUnblocked: return "No se pueden desbloquear carpetas con la sesión en marcha. Bloquear más sí."
-        case .appsUnblocked: return "No se pueden desbloquear apps ni pasar de lista blanca a lista negra con la sesión en marcha."
+        case .appsUnblocked: return "No se pueden desbloquear apps con la sesión en marcha, ni cambiar la lista de forma que algo bloqueado deje de estarlo."
         case .domainsUnblocked: return "No se pueden desbloquear webs ni abrir más dominios mientras la sesión bloquea webs."
         case .titleKeywordsRemoved: return "No se pueden quitar palabras bloqueadas del título de ventana con la sesión en marcha."
         case .searchMediaUnblocked: return "No se puede quitar el bloqueo de imágenes y vídeos en buscadores con la sesión en marcha."
@@ -429,32 +429,21 @@ public enum Ratchet {
         if proposed.stopDelayMinutes < current.stopDelayMinutes { return .shorterWait(current.stopDelayMinutes) }
         if proposed.blockAction.strength < current.blockAction.strength { return .softerAppAction }
         if proposed.webBlockAction.strength < current.webBlockAction.strength { return .softerWebAction }
-        let currentApps = Set(current.apps.map(\.id))
-        let proposedApps = Set(proposed.apps.map(\.id))
-        if current.appListMode == .allowListed && proposed.appListMode == .blockListed && current.strict {
-            return .appsUnblocked
-        }
-        if current.appListMode == .allowListed {
-            // The app list is a list of what IS allowed: adding to it widens the hole, removing narrows it.
-            if !proposedApps.subtracting(currentApps).isEmpty { return .moreAllowedApps }
-            if current.strict && proposedApps.isEmpty && !current.blockGameLibraries { return .noAllowedApps }
-        } else {
-            // In blacklist mode, removing an app from the blocked list opens a hole.
-            if current.strict && !currentApps.isSubset(of: proposedApps) { return .appsUnblocked }
+        // Without the app block the list does nothing, so changing it costs nothing either.
+        if current.strict {
+            let currentApps = Set(current.apps.map(\.id))
+            let proposedApps = Set(proposed.apps.map(\.id))
+            if FocusRules.appListOpens(currentMode: current.appListMode, current: currentApps, proposedMode: proposed.appListMode, proposed: proposedApps) {
+                guard current.appListMode == .allowListed, proposed.appListMode == .allowListed else { return .appsUnblocked }
+                return proposedApps.isEmpty ? .noAllowedApps : .moreAllowedApps
+            }
         }
         if current.webBlockAction != .warn {
-            if current.webListMode == .blockAll && proposed.webListMode != .blockAll {
-                return .domainsUnblocked
-            }
-            if current.webListMode == .allowListed && proposed.webListMode == .blockListed {
-                return .domainsUnblocked
-            }
-            let currentDomains = Set(FocusRules.parseDomains(current.domains).valid)
-            let proposedDomains = Set(FocusRules.parseDomains(proposed.domains).valid)
-            if current.webListMode == .allowListed && proposed.webListMode == .allowListed {
-                if !proposedDomains.subtracting(currentDomains).isEmpty { return .moreAllowedDomains }
-            } else if current.webListMode == .blockListed && proposed.webListMode == .blockListed {
-                if !currentDomains.isSubset(of: proposedDomains) { return .domainsUnblocked }
+            let currentDomains = FocusRules.parseDomains(current.domains).valid
+            let proposedDomains = FocusRules.parseDomains(proposed.domains).valid
+            if FocusRules.webListOpens(currentMode: current.webListMode, current: currentDomains, proposedMode: proposed.webListMode, proposed: proposedDomains) {
+                let stillAllowList = current.webListMode == .allowListed && proposed.webListMode == .allowListed
+                return stillAllowList && !proposedDomains.isEmpty ? .moreAllowedDomains : .domainsUnblocked
             }
             if current.blockSearchMedia && !proposed.blockSearchMedia { return .searchMediaUnblocked }
         }
@@ -2492,15 +2481,12 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         if current.blockApps && !proposed.blockApps {
             return "quitar el bloqueo de apps en «\(current.name)»"
         }
-        if current.blockApps {
-            let curApps = Set(current.apps.map(\.id))
-            let nextApps = Set(proposed.apps.map(\.id))
-            if current.appListMode == .allowListed && (proposed.appListMode != .allowListed || !nextApps.subtracting(curApps).isEmpty) {
-                return "abrir más apps en «\(current.name)»"
-            }
-            if current.appListMode == .blockListed && !curApps.isSubset(of: nextApps) {
-                return "desbloquear apps en «\(current.name)»"
-            }
+        if current.blockApps,
+           FocusRules.appListOpens(
+               currentMode: current.appListMode, current: Set(current.apps.map(\.id)),
+               proposedMode: proposed.appListMode, proposed: Set(proposed.apps.map(\.id))
+           ) {
+            return current.appListMode == .allowListed ? "abrir más apps en «\(current.name)»" : "desbloquear apps en «\(current.name)»"
         }
         if current.blockGameLibraries && !proposed.blockGameLibraries {
             return "quitar el bloqueo de bibliotecas de juegos en «\(current.name)»"
@@ -2512,16 +2498,15 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             return "suavizar el bloqueo web en «\(current.name)»"
         }
         if current.webBlockAction != .warn {
-            let curDomains = Set(FocusRules.parseDomains(current.domains).valid)
-            let nextDomains = Set(FocusRules.parseDomains(proposed.domains).valid)
-            if current.webListMode == .blockAll && proposed.webListMode != .blockAll {
-                return "abrir webs en «\(current.name)»"
-            }
-            if current.webListMode == .allowListed && (proposed.webListMode != .allowListed || !nextDomains.subtracting(curDomains).isEmpty) {
-                return "permitir más webs en «\(current.name)»"
-            }
-            if current.webListMode == .blockListed && !curDomains.isSubset(of: nextDomains) {
-                return "desbloquear webs en «\(current.name)»"
+            if FocusRules.webListOpens(
+                currentMode: current.webListMode, current: FocusRules.parseDomains(current.domains).valid,
+                proposedMode: proposed.webListMode, proposed: FocusRules.parseDomains(proposed.domains).valid
+            ) {
+                switch current.webListMode {
+                case .blockAll: return "abrir webs en «\(current.name)»"
+                case .allowListed: return "permitir más webs en «\(current.name)»"
+                case .blockListed: return "desbloquear webs en «\(current.name)»"
+                }
             }
             if current.blockSearchMedia && !proposed.blockSearchMedia {
                 return "quitar el bloqueo de imágenes/vídeos en buscadores de «\(current.name)»"
