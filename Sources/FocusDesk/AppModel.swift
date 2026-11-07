@@ -127,6 +127,8 @@ final class AppModel: ObservableObject {
     private var napActivity: NSObjectProtocol?
     /// macOS asked FocusDesk to quit for a restart, a shutdown or a log-out: it goes, and the session comes back.
     var quittingForSystem = false
+    /// For the screenshot tool only: the editor's folded sections have to be seen too.
+    var unfoldEditorForSnapshot = false
     // What the Keychain holds, so it is only written when that changes.
     var witnessLoaded = false
     var storedRulesWitness: [GeneralBlockRule]?

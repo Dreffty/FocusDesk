@@ -97,6 +97,14 @@ enum SnapshotTool {
             }
             model.editingTask = guarded
             try await settle(0.8)
+            try capture(window.attachedSheet?.contentView, name: "editor-plegado", in: folder)
+            written.append("editor-plegado")
+            model.editingTask = nil
+            try await settle()
+            model.unfoldEditorForSnapshot = true
+            model.editingTask = guarded
+            try await settle(0.8)
+            model.unfoldEditorForSnapshot = false
             try capture(window.attachedSheet?.contentView, name: "editor-proteccion", in: folder)
             written.append("editor-proteccion")
             if let page = largestScrollContent(in: window.attachedSheet?.contentView) {

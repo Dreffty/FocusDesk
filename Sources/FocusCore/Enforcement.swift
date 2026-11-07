@@ -225,22 +225,22 @@ public enum AppListMode: String, Codable, CaseIterable, Sendable {
 
     public var label: String {
         switch self {
-        case .allowListed: return "Permitir solo estas apps (lista blanca)"
-        case .blockListed: return "Bloquear estas apps (lista negra)"
+        case .allowListed: return "Solo estas apps"
+        case .blockListed: return "Todas menos estas"
         }
     }
 
     public var shortLabel: String {
         switch self {
-        case .allowListed: return "Permitir solo estas"
-        case .blockListed: return "Bloquear estas"
+        case .allowListed: return "Solo estas"
+        case .blockListed: return "Todas menos estas"
         }
     }
 
     public var explanation: String {
         switch self {
         case .allowListed: return "Solo puedes usar las apps elegidas abajo; cualquier otra se oculta o se cierra."
-        case .blockListed: return "Solo se bloquean las apps elegidas abajo; el resto del Mac queda libre."
+        case .blockListed: return "Puedes usar todo menos las apps elegidas abajo: el resto del Mac queda libre."
         }
     }
 }
@@ -257,17 +257,17 @@ public enum WebListMode: String, Codable, CaseIterable, Sendable {
 
     public var label: String {
         switch self {
-        case .allowListed: return "Permitir solo estas webs (lista blanca)"
-        case .blockListed: return "Bloquear estas webs o rutas (lista negra)"
-        case .blockAll: return "Bloquear todas las webs"
+        case .allowListed: return "Solo estas webs"
+        case .blockListed: return "Todas menos estas"
+        case .blockAll: return "Ninguna"
         }
     }
 
     public var shortLabel: String {
         switch self {
-        case .allowListed: return "Permitir solo estas"
-        case .blockListed: return "Bloquear estas"
-        case .blockAll: return "Bloquear todas"
+        case .allowListed: return "Solo estas"
+        case .blockListed: return "Todas menos estas"
+        case .blockAll: return "Ninguna"
         }
     }
 }

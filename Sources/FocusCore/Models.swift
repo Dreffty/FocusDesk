@@ -493,6 +493,62 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         return hasTitle && validDuration && validStrict && validRepeat && validWeb
     }
 
+    /// What is folded inside «Bloqueo» in the editor, in one line.
+    public var blockingSummary: String {
+        func count(_ value: Int, _ one: String, _ many: String) -> String { "\(value) \(value == 1 ? one : many)" }
+        var parts: [String] = []
+        if strict {
+            let list = count(apps.count, "app", "apps")
+            parts.append(appListMode == .allowListed ? "Solo \(list)" : "Todas menos \(list)")
+        }
+        if blockGameLibraries { parts.append("Juegos") }
+        if webBlockAction != .warn {
+            let list = count(FocusRules.parseDomains(domains).valid.count, "web", "webs")
+            switch webListMode {
+            case .blockAll: parts.append("Ninguna web")
+            case .allowListed: parts.append("Solo \(list)")
+            case .blockListed: parts.append("Todas menos \(list)")
+            }
+        }
+        if blockSearchMedia { parts.append("Imágenes y vídeos") }
+        let keywords = FocusRules.parseTitleKeywords(blockedTitleKeywords).count
+        if keywords > 0 { parts.append(count(keywords, "palabra", "palabras")) }
+        if !blockedFolders.isEmpty { parts.append(count(blockedFolders.count, "carpeta", "carpetas")) }
+        if protection != .none { parts.append(protection.label) }
+        return parts.isEmpty ? "Sin bloqueo" : parts.joined(separator: " · ")
+    }
+
+    /// A block that does not say what to block cannot be saved, so it has to be in sight, not folded away.
+    public var blockingIsIncomplete: Bool {
+        let appsMissing = strict && apps.isEmpty && !blockGameLibraries
+        let websMissing = webBlockAction != .warn && webListMode != .blockAll && !blockSearchMedia && FocusRules.parseDomains(domains).valid.isEmpty
+        return appsMissing || websMissing
+    }
+
+    /// What is folded inside «Resultado».
+    public var resultSummary: String {
+        let steps = checklist.split(whereSeparator: \.isNewline)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+        var parts: [String] = []
+        if steps > 0 { parts.append(steps == 1 ? "1 paso" : "\(steps) pasos") }
+        if folder != nil { parts.append("Carpeta elegida") }
+        return parts.isEmpty ? "Sin checklist" : parts.joined(separator: " · ")
+    }
+
+    /// What is folded inside «Más opciones».
+    public var optionsSummary: String {
+        var parts = [category]
+        if isScheduled {
+            if repeatRule != .never { parts.append(repeatRule.label) }
+            parts.append("Avisa \(leadMinutes) min antes")
+            if autoStart { parts.append("Empieza sola") }
+        }
+        if usesPomodoro { parts.append("Pomodoro") }
+        if dueDate != nil { parts.append("Fecha límite") }
+        if isScheduled && isFixedAppointment { parts.append("Cita fija") }
+        return parts.joined(separator: " · ")
+    }
+
     /// Whether this task defends itself at all: it blocks something, or it resists being stopped.
     public var enforces: Bool {
         strict || blockGameLibraries || webBlockAction != .warn || blockSearchMedia || protection != .none || !blockedFolders.isEmpty

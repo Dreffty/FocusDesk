@@ -570,7 +570,7 @@ extension AppModel {
             if punisherJustFired, let message = punisherMessage(for: s) {
                 notice = message
             } else {
-                notice = "\(distractingName) está en la lista negra de «\(s.task.title)»: \(verb)."
+                notice = "\(distractingName) está bloqueada en «\(s.task.title)»: \(verb)."
             }
             if isNewInterruption, !preview { notifyDistraction(notice ?? "", session: s) }
             scheduleStrictRecheck(after: 0.8)
