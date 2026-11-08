@@ -1148,7 +1148,7 @@ private struct GeneralRuleCard: View {
                         let workNeeded = max(0, required - worked)
                         Label(
                             rule.verifyActiveStudy
-                                ? "Estudio activo pendiente: faltan \(FocusRules.clock(workNeeded)) (cuenta solo con ventana/pestaña de estudio y actividad real)"
+                                ? "Estudio activo pendiente: faltan \(FocusRules.clock(workNeeded)) (solo cuenta lo marcado en Ajustes › Qué cuenta como estudio, y cualquier PDF)"
                                 : "Meta pendiente: faltan \(FocusRules.clock(workNeeded)) de trabajo enfocado hoy",
                             systemImage: "flag.checkered"
                         )

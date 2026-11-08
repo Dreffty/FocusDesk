@@ -1033,6 +1033,126 @@ private struct RunUpSettings: View {
 }
 
 /// No molestar during the sessions that block apps, with the one-time setup of its two shortcuts.
+/// FD-09: what counts as verified study for the rules that ask for it (the LoL one among them). Only what is here.
+struct StudySourcesSettings: View {
+    @ObservedObject var model: AppModel
+    @State private var newWeb = ""
+    @State private var showMissingApps = false
+
+    private var sources: [StudySource] { model.workspace.settings.studySources }
+    private var installedApps: [StudySource] { sources.filter { $0.kind == .app && Self.appURL($0) != nil } }
+    private var missingApps: [StudySource] { sources.filter { $0.kind == .app && Self.appURL($0) == nil } }
+    private var webs: [StudySource] { sources.filter { $0.kind == .web } }
+
+    static func appURL(_ source: StudySource) -> URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: source.value)
+    }
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Qué cuenta como estudio", icon: "book")
+                Text("Las reglas que piden estudio verificado, como la de LoL, solo cuentan el tiempo en estas apps y webs, y en cualquier PDF. Lo demás no cuenta, y los juegos nunca.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Apps").font(.app(11, weight: .semibold))
+                FlowLayout(spacing: 6) {
+                    ForEach(installedApps) { chip($0) }
+                }
+                if !missingApps.isEmpty {
+                    DisclosureGroup(isExpanded: $showMissingApps) {
+                        FlowLayout(spacing: 6) {
+                            ForEach(missingApps) { chip($0) }
+                        }
+                        .padding(.top, 6)
+                    } label: {
+                        Text("\(missingApps.count) más que no tienes instaladas")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                    }
+                }
+                Button("Añadir app…") { chooseApps() }
+                    .buttonStyle(.focus(.secondary, compact: true))
+                    .disabled(model.readOnly)
+
+                Divider().overlay(Palette.stroke)
+                Text("Webs").font(.app(11, weight: .semibold))
+                FlowLayout(spacing: 6) {
+                    ForEach(webs) { chip($0) }
+                }
+                HStack(spacing: 8) {
+                    TextField("apuntes.ejemplo.com", text: $newWeb)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 260)
+                        .onSubmit(addWeb)
+                        .accessibilityLabel("Web que cuenta como estudio")
+                    Button("Añadir web", action: addWeb)
+                        .buttonStyle(.focus(.secondary, compact: true))
+                        .disabled(model.readOnly || newWeb.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                Text("Una web incluye sus subdominios: usal.es cuenta también para Studium. Lo que añades cuenta desde mañana, para que no sirva para cumplir la meta de hoy. Quitar algo es inmediato.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private func chip(_ source: StudySource) -> some View {
+        let pending = !source.counts(today: model.studyToday)
+        HStack(spacing: 5) {
+            if source.kind == .app, let url = Self.appURL(source) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                    .resizable()
+                    .frame(width: 14, height: 14)
+                    .accessibilityHidden(true)
+            }
+            Text(source.name).font(.app(10, weight: .medium))
+            if pending {
+                Text("desde mañana").font(.app(9)).foregroundStyle(Palette.muted)
+            }
+            Button {
+                model.removeStudySource(source)
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Palette.muted)
+            .disabled(model.readOnly)
+            .accessibilityLabel("Quitar \(source.name) de lo que cuenta como estudio")
+            .help("Dejar de contar \(source.name) como estudio")
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Palette.fill, in: Capsule())
+        .overlay(Capsule().strokeBorder(Palette.stroke, lineWidth: 1))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(pending ? "\(source.name), cuenta desde mañana" : source.name)
+    }
+
+    private func addWeb() {
+        let text = newWeb.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        model.addStudyWeb(text)
+        newWeb = ""
+    }
+
+    private func chooseApps() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let id = Bundle(url: url)?.bundleIdentifier else { continue }
+            model.addStudySource(StudySource(kind: .app, value: id, name: url.deletingPathExtension().lastPathComponent))
+        }
+    }
+}
+
 private struct DoNotDisturbSettings: View {
     @ObservedObject var model: AppModel
     @ObservedObject var focusMode: FocusModeController
@@ -1197,6 +1317,7 @@ struct SettingsView: View {
                 }
                 DoNotDisturbSettings(model: model, focusMode: model.focusMode)
                 RunUpSettings(model: model)
+                StudySourcesSettings(model: model)
             }
 
             if section == .connections || section == .all {

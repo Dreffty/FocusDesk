@@ -1181,6 +1181,9 @@ extension AppModel {
         let observedPage = WebRules.isBrowser(id) ? lastObservedBrowserPage[id] : nil
         let recentPage = (observedPage != nil && instant.timeIntervalSince(observedPage!.at) <= 25) ? observedPage : nil
 
+        let rollover = workspace.settings.dayRolloverHour
+        let day = FocusRules.dayKey(for: instant, rolloverHour: rollover)
+        let study = StudySources.active(workspace.settings.studySources, today: day)
         guard StudyActivityVerifier.isVerifiedStudyActivity(
             idleSeconds: idleSeconds,
             frontBundleID: id,
@@ -1188,11 +1191,11 @@ extension AppModel {
             hasVisibleWindowOnScreen: hasVisibleWindow,
             frontWindowTitle: title,
             browserHost: recentPage?.host,
-            browserPath: recentPage?.path
+            browserPath: recentPage?.path,
+            studyApps: study.apps,
+            studyWebEntries: study.webs
         ) else { return }
 
-        let rollover = workspace.settings.dayRolloverHour
-        let day = FocusRules.dayKey(for: instant, rolloverHour: rollover)
         let prevStudy = workspace.verifiedStudySecondsToday(at: instant)
         let newStudy = workspace.addVerifiedStudySeconds(delta, at: instant)
 
@@ -1836,6 +1839,41 @@ extension AppModel {
         refreshWitness()
         observe()
         notice = "Regla «\(rule.name)» guardada."
+    }
+
+    // MARK: - What counts as study (FD-09)
+
+    /// Today's key, with the day rollover from Ajustes.
+    var studyToday: String { FocusRules.dayKey(for: now, rolloverHour: workspace.settings.dayRolloverHour) }
+
+    /// Marks an app or site as study. It counts from tomorrow: added now, it could finish today's goal on the spot.
+    func addStudySource(_ source: StudySource) {
+        guard writable, !source.value.isEmpty else { return }
+        guard !workspace.settings.studySources.contains(where: { $0.id == source.id }) else {
+            notice = "«\(source.name)» ya cuenta como estudio."
+            return
+        }
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86_400)
+        var added = source
+        added.countsFrom = FocusRules.dayKey(for: tomorrow, rolloverHour: workspace.settings.dayRolloverHour)
+        updateSettings { $0.studySources.append(added) }
+        notice = "«\(source.name)» contará como estudio desde mañana."
+    }
+
+    /// Adds a site typed by hand («apuntes.ejemplo.com» or a full address).
+    func addStudyWeb(_ text: String) {
+        let parsed = FocusRules.parseDomains(text)
+        guard let domain = parsed.valid.first else {
+            notice = "«\(text)» no parece una web. Escribe algo como apuntes.ejemplo.com."
+            return
+        }
+        addStudySource(StudySource(kind: .web, value: domain, name: domain))
+    }
+
+    /// Unmarking only makes the count stricter, so it is always free.
+    func removeStudySource(_ source: StudySource) {
+        guard writable else { return }
+        updateSettings { $0.studySources.removeAll { $0.id == source.id } }
     }
 
     func deleteGeneralRule(_ rule: GeneralBlockRule) {

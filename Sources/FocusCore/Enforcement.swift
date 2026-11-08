@@ -1392,57 +1392,105 @@ public enum LeagueMatchRules {
 /// Verifies whether the user is actively studying or working on the Mac (either passively or during a task session),
 /// requiring recent keyboard/mouse/trackpad interaction (`idleSeconds < maxIdleSeconds`), a real open window on screen,
 /// and an active non-entertainment app or browser tab (allowing Claude, ChatGPT, docs, PDFs, IDEs, Office, etc.).
+/// One app or site that counts as verified study (FD-09).
+public struct StudySource: Codable, Equatable, Hashable, Identifiable, Sendable {
+    public enum Kind: String, Codable, Sendable { case app, web }
+
+    public var kind: Kind
+    /// A bundle identifier for an app; a domain or domain/path for a site.
+    public var value: String
+    public var name: String
+    /// First day (`FocusRules.dayKey`) on which it counts; nil for the starting list. Adding a site at minute 59
+    /// must not finish today's study goal, so whatever is added starts counting the next day.
+    public var countsFrom: String?
+
+    public init(kind: Kind, value: String, name: String, countsFrom: String? = nil) {
+        self.kind = kind
+        self.value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.name = name
+        self.countsFrom = countsFrom
+    }
+
+    public var id: String { kind.rawValue + ":" + value.lowercased() }
+
+    public func counts(today: String) -> Bool {
+        guard let countsFrom else { return true }
+        return countsFrom <= today
+    }
+}
+
+public enum StudySources {
+    private static func app(_ id: String, _ name: String) -> StudySource { StudySource(kind: .app, value: id, name: name) }
+    private static func web(_ domain: String) -> StudySource { StudySource(kind: .web, value: domain, name: domain) }
+
+    /// The starting list: AI assistants, PDFs, code and office work, and the university.
+    public static let defaults: [StudySource] = [
+        app("com.anthropic.claudefordesktop", "Claude"),
+        app("com.openai.chat", "ChatGPT"),
+        app("com.openai.codex", "ChatGPT (Codex)"),
+        app("com.apple.Preview", "Vista Previa"),
+        app("com.adobe.Reader", "Adobe Acrobat Reader"),
+        app("com.adobe.Acrobat.Pro", "Adobe Acrobat"),
+        app("com.readdle.PDFExpert-Mac", "PDF Expert"),
+        app("net.sourceforge.skim-app.skim", "Skim"),
+        app("com.apple.dt.Xcode", "Xcode"),
+        app("com.microsoft.VSCode", "Visual Studio Code"),
+        app("com.todesktop.230313mzl4w4u92", "Cursor"),
+        app("ai.opencode.desktop", "OpenCode"),
+        app("com.apple.Terminal", "Terminal"),
+        app("com.googlecode.iterm2", "iTerm"),
+        app("com.utmapp.UTM", "UTM"),
+        app("com.microsoft.Word", "Word"),
+        app("com.microsoft.Excel", "Excel"),
+        app("com.microsoft.Powerpoint", "PowerPoint"),
+        app("com.microsoft.onenote.mac", "OneNote"),
+        app("com.apple.iWork.Pages", "Pages"),
+        app("com.apple.iWork.Numbers", "Numbers"),
+        app("com.apple.iWork.Keynote", "Keynote"),
+        app("com.apple.Notes", "Notas"),
+        app("md.obsidian", "Obsidian"),
+        app("notion.id", "Notion"),
+        web("claude.ai"),
+        web("chatgpt.com"),
+        web("chat.openai.com"),
+        web("gemini.google.com"),
+        web("notebooklm.google.com"),
+        web("docs.google.com"),
+        web("drive.google.com"),
+        web("usal.es"),
+        web("educa.jcyl.es"),
+        web("office.com"),
+        web("overleaf.com"),
+        web("notion.so"),
+        web("github.com"),
+        web("stackoverflow.com"),
+        web("cppreference.com"),
+        web("programiz.com"),
+        web("wikipedia.org"),
+        web("wolframalpha.com"),
+        web("desmos.com"),
+        web("khanacademy.org")
+    ]
+
+    /// What counts on `today`, ready for `StudyActivityVerifier`: lowercased bundle identifiers and a site list.
+    public static func active(_ sources: [StudySource], today: String) -> (apps: Set<String>, webs: String) {
+        let live = sources.filter { $0.counts(today: today) && !$0.value.isEmpty }
+        let apps = Set(live.filter { $0.kind == .app }.map { $0.value.lowercased() })
+        let webs = live.filter { $0.kind == .web }.map(\.value).joined(separator: ", ")
+        return (apps, webs)
+    }
+}
+
 public enum StudyActivityVerifier {
     /// Maximum seconds since last user input (mouse/keyboard/scroll) for passive time to count as active study.
     /// Set to 300s (5 min) so reading a PDF, lecture notes, or a long Claude explanation without moving the mouse still counts continuously.
     public static let maxIdleSeconds: TimeInterval = 300
 
-    /// Apps that do not count as active study when sitting in the foreground.
-    public static let nonStudyAppBundleIDs: Set<String> = [
-        "com.apple.loginwindow",
-        "com.apple.screensaver.engine",
-        "com.apple.tv",
-        "com.apple.music",
-        "com.spotify.client",
-        "com.hnc.discord",
-        "com.netflix.netflix"
-    ]
+    private static let startingList = StudySources.active(StudySources.defaults, today: "")
 
-    /// Entertainment, social, streaming, and gaming domains/subpaths that do not count as active study in a browser.
-    /// Productive sites (`claude.ai`, `chatgpt.com`, docs, PDFs, campuses, regular educational videos, etc.) DO count.
-    public static let nonStudyWebEntries: String = [
-        "youtube.com/shorts",
-        "instagram.com",
-        "tiktok.com",
-        "x.com",
-        "twitter.com",
-        "facebook.com",
-        "threads.net",
-        "bsky.app",
-        "netflix.com",
-        "twitch.tv",
-        "primevideo.com",
-        "disneyplus.com",
-        "max.com",
-        "store.steampowered.com",
-        "steamcommunity.com",
-        "epicgames.com",
-        "roblox.com",
-        "poki.com",
-        "crazygames.com",
-        "leagueoflegends.com",
-        "op.gg",
-        "u.gg",
-        "porofessor.gg",
-        "mobafire.com"
-    ].joined(separator: ", ")
-
-    /// Blank/new-tab browser window titles that indicate no actual page is open when URL inspection is unavailable.
-    public static let emptyTabTitles: Set<String> = [
-        "nueva pestaña", "new tab", "página de inicio", "start page", "about:blank", "sin título", "untitled"
-    ]
-
-    /// Returns `true` when the user is actively interacting with a real study/work window or productive browser tab.
+    /// Returns `true` when the user is actively in an app or on a site marked as study (`StudySource`), or reading a
+    /// PDF in the browser. Anything not on the list does not count: a browser whose address could not be read
+    /// included, unless its title is a PDF.
     public static func isVerifiedStudyActivity(
         idleSeconds: TimeInterval,
         frontBundleID: String,
@@ -1450,50 +1498,37 @@ public enum StudyActivityVerifier {
         hasVisibleWindowOnScreen: Bool,
         frontWindowTitle: String? = nil,
         browserHost: String? = nil,
-        browserPath: String? = nil
+        browserPath: String? = nil,
+        studyApps: Set<String>? = nil,
+        studyWebEntries: String? = nil
     ) -> Bool {
         guard idleSeconds >= 0, idleSeconds < maxIdleSeconds else { return false }
         let trimmedID = frontBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedID.isEmpty, hasVisibleWindowOnScreen else { return false }
-        let lowerID = trimmedID.lowercased()
 
-        // Games and game launchers never count as study.
+        // Games and game launchers never count as study, even if someone marks them.
         if LeagueMatchRules.isLeagueOrRiotProcess(bundleID: trimmedID, appPath: frontAppPath) {
             return false
         }
         if GameLibraryRules.matchesGameApp(bundleID: trimmedID, appPath: frontAppPath) != nil {
             return false
         }
-        if nonStudyAppBundleIDs.contains(lowerID) {
-            return false
-        }
 
-        // If the foreground app is a web browser, verify that an actual tab is open and it is not an entertainment site.
         if WebRules.isBrowser(trimmedID) {
             let cleanHost = browserHost?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
             let cleanPath = browserPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "/"
             if !cleanHost.isEmpty {
-                return FocusRules.webAllowed(
-                    host: cleanHost,
-                    path: cleanPath,
-                    list: nonStudyWebEntries,
-                    mode: .blockListed
-                )
+                if cleanPath.lowercased().hasSuffix(".pdf") { return true }
+                let webs = studyWebEntries ?? startingList.webs
+                guard !FocusRules.parseDomains(webs).valid.isEmpty else { return false }
+                return FocusRules.webAllowed(host: cleanHost, path: cleanPath, list: webs, mode: .allowListed)
             }
-            // Fallback if the browser tab is a local PDF/file or when AppleEvents/Accessibility has not returned a URL yet:
-            // if a window title is available, verify it is not a blank new tab or an obvious distraction title;
-            // if neither URL nor title could be read due to macOS permissions/timeout, allow as long as a real browser window is visible on screen.
-            if let title = frontWindowTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
-                let lowerTitle = title.lowercased()
-                if emptyTabTitles.contains(lowerTitle) { return false }
-                for keyword in ["netflix", "twitch", "tiktok", "instagram", "league of legends", "shorts"] {
-                    if lowerTitle.contains(keyword) { return false }
-                }
-            }
-            return true
+            // No address (not read yet, or no permission): only a PDF opened from disk is known to be study.
+            let title = frontWindowTitle?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return title.hasSuffix(".pdf") || title.contains(".pdf ")
         }
 
-        return true
+        return (studyApps ?? startingList.apps).contains(trimmedID.lowercased())
     }
 }
 
@@ -2746,7 +2781,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             webListMode: .blockListed,
             domains: "",
             webBlockAction: .warn,
-            motivationalMessage: "Primero completa tus 60 min de estudio real (con ventana o pestaña de trabajo abierta). Después tienes hasta 2 partidas de LoL sin cortes a mitad y 1 minuto de margen al terminar.",
+            motivationalMessage: "Primero completa tus 60 min de estudio real (en las apps y webs de Ajustes › Qué cuenta como estudio). Después tienes hasta 2 partidas de LoL sin cortes a mitad y 1 minuto de margen al terminar.",
             protection: .challenge,
             unlockChars: 64,
             guardSystemPanes: true,

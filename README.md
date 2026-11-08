@@ -47,6 +47,8 @@ Mientras una sesión protegida corre, **también cuesta lo mismo salir de FocusD
 
 **Protegida antes de empezar.** A las 8:55, una tarea de las 9:00 aún no ha empezado y borrarla sería gratis: justo el momento en que gana el impulso. Por eso una tarea protegida se defiende **desde unos minutos antes de su hora** (10 por defecto, en Ajustes → General; «No protegerla antes» lo apaga) **hasta su hora de fin**, aunque no la hayas empezado. En ese margen, borrarla, retrasarla, pasarla a la bandeja o ablandarla (bajar su protección, acortarla, quitarle el inicio automático…) cuesta **lo mismo que pararla**: su código, su espera o la salida de emergencia. Adelantarla a una hora que aún tienes por delante, alargarla o endurecerla sigue libre (moverla más de 5 minutos al pasado es sacarla de su hora y también se cobra), y las tareas que «Se pueden parar» no cambian. En Hoy llevan el chip **«Ya protegida»**. Si la empiezas y la paras por su salida, después no se cobra otra vez; y el margen no se puede acortar mientras una tarea está dentro de él (sería la salida gratis: ponerlo a «No» y borrarla). Es el `activeProtectionRunUp` de FocusMe.
 
+Las **reglas** con protección usan el mismo margen: un horario queda protegido desde esos minutos antes de empezar, y un presupuesto o una recompensa de «Primero el trabajo» cuando le quedan esos minutos. Así no se puede subir un presupuesto de 20 min a 720 en el minuto 19, ni apagar un horario a las 8:59. La regla de LoL viene con la app y vuelve sola al abrirla, así que no ofrece borrarse: su salida es desactivarla con su código.
+
 **Las salidas que existen siempre.** Un bloqueo del que no se puede salir es una trampa, no un bloqueo:
 
 - **Apagar, reiniciar o cerrar sesión funciona siempre**, también en «Hasta el final». FocusDesk deja pasar a macOS y guarda la sesión; al volver a abrirse sigue sola si aún le quedaba tiempo (si ya habría terminado, solo te la ofrece).
@@ -88,7 +90,7 @@ Una tarea bloquea mientras dura su sesión. Una **regla** bloquea sin ninguna ta
 
 - **Presupuesto de uso** — 20 min al día de YouTube y Shorts; agotados, queda bloqueado hasta el día siguiente.
 - **Pomodoro** — 25 min de foco y 5 de descanso; con penalización, si te distraes el bloque vuelve a empezar.
-- **Primero el trabajo** — tras 60 min de tareas, un rato de ocio de premio. Con *estudio verificado* también cuenta lo que estudias sin sesión, si hay actividad real y una ventana de estudio delante.
+- **Primero el trabajo** — tras 60 min de tareas, un rato de ocio de premio. Con *estudio verificado* también cuenta lo que estudias sin sesión, si hay actividad real y delante tienes una app o web marcada en **Ajustes › Qué cuenta como estudio** (o cualquier PDF). Lo que no está en esa lista no cuenta; lo que añades cuenta desde el día siguiente.
 - **Visitas contadas** — 4 visitas al día de 5 min, con 30 min de enfriamiento entre una y otra.
 - **Cuenta atrás** — un bloqueo guardado que lanzas cuando quieras.
 - **Horario** — por días y tramos de hora.

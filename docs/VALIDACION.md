@@ -305,6 +305,19 @@ Datos: filas de actividad (`ActivityRowsTests`), escritura (`StoreWritesTests`) 
 Comprobado: `swift test` con **226 pruebas, 0 fallos**; `--smoke-test` en **PASS** en depuración y en release; capturas de
 todas las pantallas; y las preferencias reales idénticas antes y después de las pruebas con `--preview`.
 
+### Decisiones de Luis aplicadas (8 de noviembre)
+
+- **FD-09, qué cuenta como estudio.** Le he dado la vuelta: solo cuenta lo marcado en Ajustes › General › «Qué cuenta
+  como estudio» (lista inicial de IA, PDF, código, Office y la universidad), más cualquier PDF. Un navegador cuya
+  dirección no se lee ya no cuenta. Lo añadido cuenta desde el día siguiente; quitar es inmediato. `StudySourcesTests`.
+- **FD-10, reglas protegidas antes de bloquear.** Usan el margen de las tareas: horarios antes de empezar, presupuestos y
+  recompensas en sus últimos minutos. El margen no se acorta mientras una regla está dentro. `RuleRunUpTests`.
+- **FD-11, regla de LoL.** No ofrece borrarse, porque vuelve sola al abrir la app; se desactiva con su código.
+  `BuiltInRuleTests`.
+
+`swift test` con **238 pruebas, 0 fallos**, `--smoke-test` en **PASS** con la app empaquetada y preferencias reales
+idénticas antes y después.
+
 ## Sin comprobar
 
 - **Reiniciar el Mac con el vigilante puesto**: que `closedBySystemAt` lo deje en paz está probado en la lógica, no en un

@@ -1348,6 +1348,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var protectClipboard: Bool
     /// Prevents clearing session history or disabling title/browser observation while a protected block is active (`protectActivity` in FocusMe).
     public var protectActivityHistory: Bool
+    /// What counts as verified study (FD-09): only these apps and sites. Something added counts from the next day.
+    public var studySources: [StudySource]
 
     public static let defaultBreakMessages: [String] = [
         "Descansa la vista 20 segundos mirando a lo lejos.",
@@ -1391,6 +1393,7 @@ public struct Settings: Codable, Equatable, Sendable {
         self.dayRolloverHour = 0
         self.protectClipboard = false
         self.protectActivityHistory = false
+        self.studySources = StudySources.defaults
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1400,7 +1403,7 @@ public struct Settings: Codable, Equatable, Sendable {
         case watchBackgroundWindows, inspectEmbeddedPages, relaunchGuard, emergencyUses, runUpMinutes
         case enforceBreaks, showFloatingTimerPill, preBlockRemindersEnabled
         case continuousBreakEnabled, continuousWorkMinutes, continuousBreakDurationMinutes, continuousBreakMaxSkipsPerDay, breakMessages
-        case dayRolloverHour, protectClipboard, protectActivityHistory
+        case dayRolloverHour, protectClipboard, protectActivityHistory, studySources
     }
 
     public init(from decoder: Decoder) throws {
@@ -1440,6 +1443,7 @@ public struct Settings: Codable, Equatable, Sendable {
         dayRolloverHour = max(0, min(8, try c.decodeIfPresent(Int.self, forKey: .dayRolloverHour) ?? 0))
         protectClipboard = try c.decodeIfPresent(Bool.self, forKey: .protectClipboard) ?? false
         protectActivityHistory = try c.decodeIfPresent(Bool.self, forKey: .protectActivityHistory) ?? false
+        studySources = try c.decodeIfPresent([StudySource].self, forKey: .studySources) ?? StudySources.defaults
     }
 }
 

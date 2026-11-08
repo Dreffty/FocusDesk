@@ -169,6 +169,17 @@ enum SnapshotTool {
             try capture(window.contentView, name: "hoy-sin-sesion", in: folder)
             written.append("hoy-sin-sesion")
 
+            // What counts as study, with one site added today (it shows «desde mañana»).
+            model.addStudyWeb("apuntes.ejemplo.com")
+            for (suffix, appearance) in appearances {
+                let host = NSHostingView(rootView: StudySourcesSettings(model: model).padding(20).frame(width: 640).background(Palette.background))
+                host.appearance = NSAppearance(named: appearance)
+                host.frame = NSRect(origin: .zero, size: host.fittingSize)
+                try await settle(0.3)
+                try capture(host, name: "estudio-\(suffix)", in: folder)
+                written.append("estudio-\(suffix)")
+            }
+
             return "SNAPSHOTS: " + written.map { $0 + ".png" }.joined(separator: ", ") + " → " + folder.path
         } catch {
             return "SNAPSHOTS FAIL: \(error.localizedDescription)"
