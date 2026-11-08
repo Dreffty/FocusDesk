@@ -1013,7 +1013,7 @@ private struct RunUpSettings: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader("Antes de que empiece una tarea protegida", icon: "lock.shield")
+                SectionHeader("Antes de que empiece una tarea o una regla protegida", icon: "lock.shield")
                 Picker("Protegerla desde", selection: Binding(
                     get: { model.workspace.settings.runUpMinutes },
                     set: { model.setRunUpMinutes($0) }
@@ -1023,7 +1023,7 @@ private struct RunUpSettings: View {
                     }
                 }
                 .frame(maxWidth: 360)
-                Text("A las 8:55, una tarea de las 9:00 aún no ha empezado y borrarla sería gratis: justo cuando gana el impulso. Desde este margen, retrasar, borrar, mover al pasado o ablandar una tarea protegida cuesta lo mismo que pararla —su código, su espera o la salida de emergencia—. Adelantarla a una hora por venir, alargarla o endurecerla sigue libre, y las tareas que «Se pueden parar» no cambian.")
+                Text("A las 8:55, una tarea de las 9:00 aún no ha empezado y borrarla sería gratis: justo cuando gana el impulso. Desde este margen, retrasar, borrar, mover al pasado o ablandar una tarea protegida cuesta lo mismo que pararla —su código, su espera o la salida de emergencia—. Adelantarla a una hora por venir, alargarla o endurecerla sigue libre, y las tareas que «Se pueden parar» no cambian. Las reglas con protección también: un horario queda protegido desde este margen antes de empezar, y un presupuesto o una recompensa cuando le quedan esos minutos.")
                     .font(.app(10))
                     .foregroundStyle(Palette.muted)
                     .fixedSize(horizontal: false, vertical: true)

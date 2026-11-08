@@ -479,6 +479,11 @@ final class AppModel: ObservableObject {
             notice = "«\(armed.title)» ya está protegida porque está a punto de empezar: el margen se puede acortar cuando empiece o acabe su hora."
             return
         }
+        if value < workspace.settings.runUpMinutes,
+           let armed = workspace.generalRules.first(where: { isRuleArmedByRunUp($0) }) {
+            notice = "«\(armed.name)» ya está protegida porque está a punto de bloquear: el margen se puede acortar cuando empiece a bloquear o se apague."
+            return
+        }
         updateSettings { $0.runUpMinutes = value }
     }
 

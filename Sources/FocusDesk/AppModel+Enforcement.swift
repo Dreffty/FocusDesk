@@ -1094,7 +1094,20 @@ extension AppModel {
             workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: ref),
             launchesToday: launchesToday(for: rule, at: ref),
             matchesToday: matchesToday(for: rule, at: ref),
-            isMatchInProgress: isMatchInProgress(for: rule)
+            isMatchInProgress: isMatchInProgress(for: rule),
+            runUpMinutes: workspace.settings.runUpMinutes
+        )
+    }
+
+    /// True when only the run-up margin protects `rule` right now; shrinking that margin would free it.
+    func isRuleArmedByRunUp(_ rule: GeneralBlockRule, at instant: Date? = nil) -> Bool {
+        let ref = instant ?? now
+        return rule.isInRunUp(
+            at: ref,
+            usedTodaySeconds: usedSecondsToday(for: rule, at: ref),
+            workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: ref),
+            isMatchInProgress: isMatchInProgress(for: rule),
+            minutes: workspace.settings.runUpMinutes
         )
     }
 
@@ -1827,6 +1840,10 @@ extension AppModel {
 
     func deleteGeneralRule(_ rule: GeneralBlockRule) {
         guard writable else { return }
+        guard rule.canBeDeleted else {
+            notice = "«\(rule.name)» viene con FocusDesk y vuelve sola al abrirla: para que no bloquee, desactívala con su código."
+            return
+        }
         guard passesGeneralRuleGate(.delete(rule)) else { return }
         workspace.generalRules.removeAll { $0.id == rule.id }
         _ = persist()

@@ -1011,19 +1011,22 @@ private struct GeneralRuleCard: View {
                         .buttonStyle(.focus(.secondary, compact: true))
                         .disabled(model.readOnly)
                     // In a menu rather than a red bin on every card; the rule's protection still decides what it costs.
-                    Menu {
-                        Button(role: .destructive, action: onDelete) {
-                            Label(deleteTitle, systemImage: "trash")
+                    // The built-in LoL rule comes back on every launch, so it gets no delete at all.
+                    if rule.canBeDeleted {
+                        Menu {
+                            Button(role: .destructive, action: onDelete) {
+                                Label(deleteTitle, systemImage: "trash")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
                         }
-                    } label: {
-                        Image(systemName: "ellipsis")
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .frame(width: 28, height: 28)
+                        .disabled(model.readOnly)
+                        .help("Más acciones de «\(rule.name)»")
+                        .accessibilityLabel("Más acciones de \(rule.name)")
                     }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .frame(width: 28, height: 28)
-                    .disabled(model.readOnly)
-                    .help("Más acciones de «\(rule.name)»")
-                    .accessibilityLabel("Más acciones de \(rule.name)")
                 }
             }
         }

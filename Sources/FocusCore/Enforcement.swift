@@ -2404,11 +2404,22 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         launchesToday: Int = 0,
         matchesToday: Int = 0,
         isMatchInProgress: Bool = false,
+        runUpMinutes: Int = 0,
         continuous: Double = TrustedClock.continuousSeconds(),
         calendar: Calendar = .current
     ) -> Bool {
         guard protection != .none else { return false }
         if enabled && alwaysProtected {
+            return true
+        }
+        if isInRunUp(
+            at: now,
+            usedTodaySeconds: usedTodaySeconds,
+            workedTodaySeconds: workedTodaySeconds,
+            isMatchInProgress: isMatchInProgress,
+            minutes: runUpMinutes,
+            calendar: calendar
+        ) {
             return true
         }
         if isEnforcing(
@@ -2427,6 +2438,35 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             return true
         }
         return false
+    }
+
+    /// True in the minutes just before the rule starts to block: a schedule about to begin, or a budget or earned
+    /// reward about to run out. Like a task's run-up, loosening it then costs the same as once it blocks; otherwise
+    /// a 20-minute budget could be raised to 720 at minute 19, or a schedule switched off at 8:59.
+    public func isInRunUp(
+        at now: Date,
+        usedTodaySeconds: TimeInterval,
+        workedTodaySeconds: TimeInterval,
+        isMatchInProgress: Bool = false,
+        minutes: Int,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let lead = RunUp.clampedMinutes(minutes)
+        guard lead > 0, enabled, hasTargets, protection != .none else { return false }
+        let leadSeconds = Double(lead) * 60
+        switch kind {
+        case .schedule:
+            // Minute by minute, so a short slot that starts and ends inside the margin still counts.
+            return (0...lead).contains { isScheduleActive(at: now.addingTimeInterval(Double($0) * 60), calendar: calendar) }
+        case .dailyLimit:
+            return usedTodaySeconds >= dailyBudgetSeconds - leadSeconds
+        case .workGoal:
+            guard workedTodaySeconds >= goalRequiredSeconds, !isMatchInProgress,
+                  earnedGoalBudgetSeconds(workedTodaySeconds: workedTodaySeconds) != nil else { return false }
+            return remainingGoalRewardSeconds(workedTodaySeconds: workedTodaySeconds, usedTodaySeconds: usedTodaySeconds) <= leadSeconds
+        case .launchLimit, .countdown, .pomodoro, .alwaysOn:
+            return false
+        }
     }
 
     /// Seconds left until the current enforcement window ends (countdown end, Pomodoro work cycle end, cooldown end, schedule end, or period rollover).
@@ -2680,6 +2720,10 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         }
         return nil
     }
+
+    /// The built-in LoL rule is put back on every launch, so it is never offered for deletion: switching it off
+    /// (through its code) is its way out.
+    public var canBeDeleted: Bool { id != LeagueMatchRules.mandatoryStudyThenLoLRuleID }
 
     /// Built-in mandatory passive rule: 60 minutes of verified study (passive or active) first, then up to 2 matches of League of Legends (never kicking mid-match, 1-minute post-match grace, protected 24/7 by a 64-character challenge code).
     public static var mandatoryStudyThenLoLRule: GeneralBlockRule {
