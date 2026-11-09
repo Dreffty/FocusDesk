@@ -431,13 +431,6 @@ private struct BlockingOptionsCard: View {
         Card(padding: 16) {
             VStack(alignment: .leading, spacing: 10) {
                 SectionHeader("Mientras bloquea", icon: "slider.horizontal.3")
-                option("Píldora flotante con la cuenta atrás", Binding(
-                    get: { model.workspace.settings.showFloatingTimerPill },
-                    set: { value in
-                        model.updateSettings { $0.showFloatingTimerPill = value }
-                        model.updateFloatingPill(at: Date())
-                    }
-                ))
                 option("Avisarme cuando queden 5 y 1 min", Binding(
                     get: { model.workspace.settings.preBlockRemindersEnabled },
                     set: { value in model.updateSettings { $0.preBlockRemindersEnabled = value } }

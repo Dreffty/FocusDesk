@@ -114,8 +114,6 @@ enum FeatureCatalog {
             "auditoria registro log cambios desbloqueos") { $0.showAuditLog() }
 
         // Ajustes that change how blocking behaves sit next to the blocks; the rest open their pane.
-        add("Ajustes", "capsule", "Píldora flotante con la cuenta atrás", "La cuenta atrás siempre a la vista", "Bloquear ahora",
-            "pildora hud flotante contador", page(.blocking))
         add("Ajustes", "bell.badge", "Avisos a 5 y 1 min del final", "Antes de que se acabe un presupuesto o visita", "Bloquear ahora",
             "avisos notificaciones minutos", page(.blocking))
         add("Ajustes", "doc.on.clipboard", "Vaciar el portapapeles mientras bloquea", "Si copias algo bloqueado", "Bloquear ahora",

@@ -1328,8 +1328,6 @@ public struct Settings: Codable, Equatable, Sendable {
     public var runUpMinutes: Int
     /// Shows an active break timer banner/alert when a scheduled `BreakPeriod` is running.
     public var enforceBreaks: Bool
-    /// Shows a discreet floating countdown pill on screen when consuming a daily limit, launch visit or micro-pause (`showTimer` in FocusMe).
-    public var showFloatingTimerPill: Bool
     /// Sends pre-block warnings when 5 min and 1 min remain on a daily limit or launch visit (`timeLimitReminders` in FocusMe).
     public var preBlockRemindersEnabled: Bool
     /// Triggers a rest break after `continuousWorkMinutes` of continuous screen usage (`tickAsScreenBreak` in FocusMe).
@@ -1383,7 +1381,6 @@ public struct Settings: Codable, Equatable, Sendable {
         self.emergencyUses = []
         self.runUpMinutes = RunUp.defaultMinutes
         self.enforceBreaks = true
-        self.showFloatingTimerPill = true
         self.preBlockRemindersEnabled = true
         self.continuousBreakEnabled = false
         self.continuousWorkMinutes = 50
@@ -1401,7 +1398,7 @@ public struct Settings: Codable, Equatable, Sendable {
         case hotKeyEnabled, hotKeyCode, hotKeyModifiers, hotKeyLabel, hotKeyTarget
         case categories, workdays, workStartHour, workEndHour, breaks, textScale, showMenuBarItem, focusDuringStrict
         case watchBackgroundWindows, inspectEmbeddedPages, relaunchGuard, emergencyUses, runUpMinutes
-        case enforceBreaks, showFloatingTimerPill, preBlockRemindersEnabled
+        case enforceBreaks, preBlockRemindersEnabled
         case continuousBreakEnabled, continuousWorkMinutes, continuousBreakDurationMinutes, continuousBreakMaxSkipsPerDay, breakMessages
         case dayRolloverHour, protectClipboard, protectActivityHistory, studySources
     }
@@ -1432,7 +1429,6 @@ public struct Settings: Codable, Equatable, Sendable {
         emergencyUses = try c.decodeIfPresent([String].self, forKey: .emergencyUses) ?? []
         runUpMinutes = RunUp.clampedMinutes(try c.decodeIfPresent(Int.self, forKey: .runUpMinutes) ?? RunUp.defaultMinutes)
         enforceBreaks = try c.decodeIfPresent(Bool.self, forKey: .enforceBreaks) ?? true
-        showFloatingTimerPill = try c.decodeIfPresent(Bool.self, forKey: .showFloatingTimerPill) ?? true
         preBlockRemindersEnabled = try c.decodeIfPresent(Bool.self, forKey: .preBlockRemindersEnabled) ?? true
         continuousBreakEnabled = try c.decodeIfPresent(Bool.self, forKey: .continuousBreakEnabled) ?? false
         continuousWorkMinutes = max(15, min(180, try c.decodeIfPresent(Int.self, forKey: .continuousWorkMinutes) ?? 50))

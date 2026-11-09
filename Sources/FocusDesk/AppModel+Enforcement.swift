@@ -1390,7 +1390,6 @@ extension AppModel {
             at: ref
         )
         _ = persist()
-        updateFloatingPill(at: ref)
         notice = "Micro-pausa de \(rule.microPauseMinutes) min activada en «\(rule.name)». Te \(left == 1 ? "queda 1 pausa" : "quedan \(left) pausas") hoy."
     }
 
@@ -1585,7 +1584,7 @@ extension AppModel {
         notice = "Descanso pospuesto. Te \(left == 1 ? "queda 1 salto" : "quedan \(left) saltos") hoy."
     }
 
-    // MARK: - Floating Timer Pill HUD (showTimer)
+    // MARK: - Task Pomodoro
 
     /// Announces each change between focus and break in a task done in Pomodoro, once per change.
     func tickTaskPomodoro(at instant: Date) {
@@ -1609,94 +1608,6 @@ extension AppModel {
             : "\(minutes) min de foco en «\(s.task.title)». El bloqueo vuelve a estar activo."
         notice = "\(title). \(body)"
         if !preview { reminders.notify(title, body: body, identifier: "task-pomodoro-" + key) }
-    }
-
-    func updateFloatingPill(at instant: Date) {
-        guard !preview, workspace.settings.showFloatingTimerPill, !screenIsLocked else {
-            floatingPill.hide()
-            return
-        }
-        if let cBreak = activeContinuousBreak(at: instant) {
-            floatingPill.update(title: "Descanso · \(cBreak.message)", remaining: cBreak.remaining, urgency: .pauseOrBreak)
-            return
-        }
-        if let sBreak = activeBreak(at: instant) {
-            floatingPill.update(title: sBreak.period.title, remaining: sBreak.remaining, urgency: .pauseOrBreak)
-            return
-        }
-        for rule in workspace.generalRules where rule.enabled {
-            if let graceDeadline = rule.activePostMatchGraceDeadline {
-                let rem = graceDeadline.remainingAfterPossibleReboot(wall: instant)
-                if rem > 0 {
-                    let played = matchesToday(for: rule, at: instant)
-                    let maxM = max(1, rule.maxDailyMatches)
-                    floatingPill.update(
-                        title: "Cerrando LoL (Partida \(played)/\(maxM)) · \(rule.name)",
-                        remaining: rem,
-                        urgency: .critical
-                    )
-                    return
-                }
-            }
-            if let mpDeadline = rule.activeMicroPauseDeadline {
-                let rem = mpDeadline.remainingAfterPossibleReboot(wall: instant)
-                if rem > 0 {
-                    floatingPill.update(title: "Pausa · \(rule.name)", remaining: rem, urgency: .pauseOrBreak)
-                    return
-                }
-            }
-            if rule.kind == .pomodoro, let pomoDeadline = rule.activePomodoroDeadline {
-                let rem = pomoDeadline.remainingAfterPossibleReboot(wall: instant)
-                if rem > 0 {
-                    let isBreak = rule.pomodoroPhase != .work
-                    let urgency: FloatingTimerPillController.Urgency = isBreak
-                        ? .pauseOrBreak
-                        : (rem <= 60 ? .critical : (rem <= 180 ? .warning : .normal))
-                    floatingPill.update(
-                        title: "\(rule.pomodoroPhase.label) (\(rule.pomodoroCurrentCycle)/\(rule.pomodoroTotalCycles)) · \(rule.name)",
-                        remaining: rem,
-                        urgency: urgency
-                    )
-                    return
-                }
-            }
-            if rule.kind == .launchLimit, let visitDeadline = rule.activeLaunchDeadline {
-                let rem = visitDeadline.remainingAfterPossibleReboot(wall: instant)
-                if rem > 0 {
-                    let urgency: FloatingTimerPillController.Urgency = rem <= 60 ? .critical : (rem <= 300 ? .warning : .normal)
-                    floatingPill.update(title: "Visita · \(rule.name)", remaining: rem, urgency: urgency)
-                    return
-                }
-            }
-        }
-        if let front = NSWorkspace.shared.frontmostApplication, let bundleID = front.bundleIdentifier {
-            // While an active League of Legends match (`GameClient`) is running, hide the floating pill so it never covers the top-right in-game HUD.
-            if LeagueMatchRules.isMatchGameProcess(bundleID: bundleID, appPath: front.bundleURL?.path, executablePath: front.executableURL?.path) {
-                floatingPill.hide()
-                return
-            }
-            for rule in workspace.generalRules where rule.enabled && isRuleTrackingQuota(rule, at: instant) {
-                if matchesRuleUsage(rule: rule, bundleID: bundleID, app: front, title: lastTitle.title, at: instant) {
-                    let rem: TimeInterval
-                    if rule.kind == .dailyLimit {
-                        rem = rule.remainingDailyBudgetSeconds(usedTodaySeconds: usedSecondsToday(for: rule, at: instant))
-                    } else if rule.kind == .workGoal && rule.goalRewardMinutes > 0 {
-                        rem = rule.remainingGoalRewardSeconds(workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: instant), usedTodaySeconds: usedSecondsToday(for: rule, at: instant))
-                    } else {
-                        continue
-                    }
-                    if rem > 0 {
-                        let urgency: FloatingTimerPillController.Urgency = rem <= 60 ? .critical : (rem <= 300 ? .warning : .normal)
-                        let titlePrefix = rule.maxDailyMatches > 0
-                            ? "Partidas \(matchesToday(for: rule, at: instant))/\(rule.maxDailyMatches) · "
-                            : ""
-                        floatingPill.update(title: titlePrefix + rule.name, remaining: rem, urgency: urgency)
-                        return
-                    }
-                }
-            }
-        }
-        floatingPill.hide()
     }
 
     /// Gates any change to a `GeneralBlockRule` that is currently enforcing (or in a protected Pomodoro break) and protected.

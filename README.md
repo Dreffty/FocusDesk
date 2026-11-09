@@ -26,7 +26,7 @@ Cerrar la pantalla o el bloqueo del Mac pausan la observación; el reposo de la 
 
 La barra lateral tiene dos mitades. **Agenda**: Hoy (`⌘1`), Semana (`⌘2`) e Historial (`⌘3`). **Antidistracción**, para lo que funciona aunque no tengas ninguna tarea en marcha:
 
-- **Bloquear ahora** (`⌘4`): bloqueo rápido de 15 min al resto del día (también **⌃⌥⌘B**, 30 min), lo que está bloqueando en este momento con su acción (saltar fase, micro-pausa), permitir una web unos minutos y los interruptores de «Mientras bloquea» (píldora flotante, avisos a 5 y 1 min, portapapeles, historial).
+- **Bloquear ahora** (`⌘4`): bloqueo rápido de 15 min al resto del día (también **⌃⌥⌘B**, 30 min), lo que está bloqueando en este momento con su acción (saltar fase, micro-pausa), permitir una web unos minutos y los interruptores de «Mientras bloquea» (avisos a 5 y 1 min, portapapeles, historial).
 - **Reglas y límites** (`⌘5`): una galería con los siete tipos de regla (presupuesto de uso, Pomodoro, primero el trabajo, visitas contadas, cuenta atrás, horario y siempre activa), tus reglas agrupadas por lo que están haciendo, e importar o exportar en JSON.
 - **Descansos** (`⌘6`): el descanso tras mucho rato seguido, las micro-pausas de tus reglas, los descansos del Pomodoro y los descansos habituales de la agenda.
 

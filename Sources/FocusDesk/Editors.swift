@@ -1300,14 +1300,6 @@ struct SettingsView: View {
                         Text("Si lo ocultas, el tiempo sigue en el Dock y FocusDesk se abre con su atajo o desde el Dock.")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
-                        Toggle("Mostrar píldora flotante de cuenta atrás al usar un presupuesto diario o visita", isOn: Binding(
-                            get: { model.workspace.settings.showFloatingTimerPill },
-                            set: { value in
-                                model.updateSettings { $0.showFloatingTimerPill = value }
-                                model.updateFloatingPill(at: Date())
-                            }
-                        ))
-                        .toggleStyle(.trailingSwitch)
                         Toggle("Avisarme cuando queden 5 min y 1 min de un presupuesto diario o visita", isOn: Binding(
                             get: { model.workspace.settings.preBlockRemindersEnabled },
                             set: { value in model.updateSettings { $0.preBlockRemindersEnabled = value } }

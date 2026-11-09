@@ -182,8 +182,6 @@ final class AppModel: ObservableObject {
     @Published var activeContinuousBreakDeadline: TrustedDeadline?
     /// Rotating motivational message chosen for the active continuous break.
     @Published var activeContinuousBreakMessage: String = ""
-    /// Discreet non-activating floating countdown pill in the top-right corner of the screen (`showTimer`).
-    let floatingPill = FloatingTimerPillController()
     /// Dismissed break key (`dayKey-breakID-startHour:startMinute`) so the user can snooze/dismiss a break banner once.
     @Published var dismissedBreakKey: String?
     /// Last observed `NSPasteboard.general.changeCount` for `ClipboardGuardRules`.
@@ -2006,7 +2004,6 @@ final class AppModel: ObservableObject {
         tickPassiveStudyTracking(at: instant)
         tickLeagueMatchAndPostMatchGrace(at: instant)
         tickTaskPomodoro(at: instant)
-        updateFloatingPill(at: instant)
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility
             observe()
@@ -2447,7 +2444,6 @@ final class AppModel: ObservableObject {
                 enqueueProjectionForTask(s.task, session: s, now: Date())
             }
         }
-        floatingPill.hide()
         // Read by the watcher, which must not reopen FocusDesk in the middle of a restart.
         workspace.closedBySystemAt = quittingForSystem ? Date() : nil
         _ = persist()
