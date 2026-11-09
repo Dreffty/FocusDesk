@@ -321,7 +321,7 @@ struct WhatsNewSheet: View {
     }
 
     private let areas = [
-        Area(page: .blocking, items: ["Bloqueo en 1 clic: de 15 min al resto del día", "Permitir una web unos minutos", "Píldora flotante con la cuenta atrás"]),
+        Area(page: .blocking, items: ["Bloqueo en 1 clic: de 15 min al resto del día", "Permitir una web unos minutos"]),
         Area(page: .rules, items: ["Presupuesto: 20 min de Shorts al día", "Pomodoro que se reinicia si te distraes", "Primero el trabajo, luego el ocio",
                                    "Visitas contadas con enfriamiento", "Horarios de varios tramos"]),
         Area(page: .breaks, items: ["Un descanso tras mucho rato seguido", "Micro-pausas contadas en tus reglas", "Los descansos del Pomodoro, a la vista"]),
