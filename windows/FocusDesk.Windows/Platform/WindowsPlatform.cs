@@ -51,8 +51,62 @@ public static class WindowsActivity
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     private const int SW_MINIMIZE = 6;
     private const uint WM_CLOSE = 0x0010;
+
+    private static readonly object _cacheLock = new();
+    private static readonly Dictionary<(int Pid, string Name), string?> _exePathCache = new();
+    private static List<(int Pid, string Name, string? ExePath, string Title)> _cachedProcesses = new();
+    private static long _procSnapshotTick = -10_000;
+
+    private static string? QueryExePath(int pid, string processName)
+    {
+        lock (_cacheLock)
+        {
+            if (_exePathCache.TryGetValue((pid, processName), out var cached))
+                return cached;
+        }
+
+        string? resolved = null;
+        var handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, (uint)pid);
+        if (handle != IntPtr.Zero)
+        {
+            try
+            {
+                var sb = new StringBuilder(1024);
+                var size = (uint)sb.Capacity;
+                if (QueryFullProcessImageName(handle, 0, sb, ref size))
+                    resolved = sb.ToString();
+            }
+            catch { }
+            finally { CloseHandle(handle); }
+        }
+
+        lock (_cacheLock)
+        {
+            if (_exePathCache.Count > 1024) _exePathCache.Clear();
+            _exePathCache[(pid, processName)] = resolved;
+        }
+        return resolved;
+    }
+
+    public static void InvalidateProcessCache()
+    {
+        lock (_cacheLock)
+        {
+            _procSnapshotTick = -10_000;
+        }
+    }
 
     public static double IdleSeconds()
     {
@@ -73,9 +127,9 @@ public static class WindowsActivity
             using var p = Process.GetProcessById((int)pid);
             var sb = new StringBuilder(512);
             GetWindowText(hwnd, sb, sb.Capacity);
-            string? exe = null;
-            try { exe = p.MainModule?.FileName; } catch { }
-            return new ForegroundAppInfo((int)pid, p.ProcessName, exe, sb.ToString(), hwnd);
+            var name = p.ProcessName;
+            var exe = QueryExePath((int)pid, name);
+            return new ForegroundAppInfo((int)pid, name, exe, sb.ToString(), hwnd);
         }
         catch { return null; }
     }
@@ -111,9 +165,9 @@ public static class WindowsActivity
             try
             {
                 using var p = Process.GetProcessById((int)pid);
-                string? exe = null;
-                try { exe = p.MainModule?.FileName; } catch { }
-                result.Add(new ForegroundAppInfo((int)pid, p.ProcessName, exe, sb.ToString(), hwnd));
+                var name = p.ProcessName;
+                var exe = QueryExePath((int)pid, name);
+                result.Add(new ForegroundAppInfo((int)pid, name, exe, sb.ToString(), hwnd));
             }
             catch { }
             return true;
@@ -137,6 +191,7 @@ public static class WindowsActivity
                 {
                     using var p = Process.GetProcessById(app.ProcessId);
                     p.Kill(entireProcessTree: true);
+                    InvalidateProcessCache();
                 }
                 catch
                 {
@@ -152,55 +207,155 @@ public static class WindowsActivity
 
     public static List<(int Pid, string Name, string? ExePath, string Title)> RunningProcesses()
     {
+        var nowTick = Environment.TickCount64;
+        lock (_cacheLock)
+        {
+            if (nowTick - _procSnapshotTick < 1200 && _cachedProcesses.Count > 0)
+                return _cachedProcesses;
+        }
+
         var list = new List<(int, string, string?, string)>();
         foreach (var p in Process.GetProcesses())
         {
             try
             {
-                string? exe = null;
-                try { exe = p.MainModule?.FileName; } catch { }
-                list.Add((p.Id, p.ProcessName, exe, p.MainWindowTitle));
+                var pid = p.Id;
+                var name = p.ProcessName;
+                var exe = QueryExePath(pid, name);
+                var title = p.MainWindowHandle != IntPtr.Zero ? p.MainWindowTitle : "";
+                list.Add((pid, name, exe, title));
             }
             catch { }
             finally { p.Dispose(); }
+        }
+
+        lock (_cacheLock)
+        {
+            _cachedProcesses = list;
+            _procSnapshotTick = nowTick;
         }
         return list;
     }
 
     public static void TerminateProcesses(IEnumerable<int> pids)
     {
+        var killed = false;
         foreach (var pid in pids)
         {
             try
             {
                 using var p = Process.GetProcessById(pid);
-                if (!p.HasExited) p.Kill(entireProcessTree: true);
+                if (!p.HasExited)
+                {
+                    p.Kill(entireProcessTree: true);
+                    killed = true;
+                }
             }
             catch { }
         }
+        if (killed) InvalidateProcessCache();
     }
 }
 
 public static class BrowserInspector
 {
+    private const int MaxVisitedNodes = 320;
+    private const int MaxTreeDepth = 6;
+
+    private static (AutomationElement? Edit, string? Url) FindAddressBar(IntPtr hwnd)
+    {
+        var root = AutomationElement.FromHandle(hwnd);
+        if (root == null) return (null, null);
+
+        var walker = TreeWalker.ControlViewWalker;
+        var queue = new Queue<(AutomationElement Element, int Depth)>();
+        queue.Enqueue((root, 0));
+        var visited = 0;
+
+        AutomationElement? fallbackEdit = null;
+        string? fallbackRaw = null;
+
+        while (queue.Count > 0 && visited < MaxVisitedNodes)
+        {
+            var (cur, depth) = queue.Dequeue();
+            visited++;
+
+            ControlType? ct = null;
+            try { ct = cur.Current.ControlType; } catch { continue; }
+
+            // Never descend into rendered webpage DOM subtrees (slow and can match in-page text boxes).
+            if (ct == ControlType.Document) continue;
+
+            if (ct == ControlType.Edit && depth > 0)
+            {
+                try
+                {
+                    if (cur.TryGetCurrentPattern(ValuePattern.Pattern, out var patObj) && patObj is ValuePattern vp && !vp.Current.IsReadOnly)
+                    {
+                        var val = vp.Current.Value?.Trim() ?? "";
+                        var name = (cur.Current.Name ?? "").ToLowerInvariant();
+                        var aid = (cur.Current.AutomationId ?? "").ToLowerInvariant();
+                        var isNamedAddressBar =
+                            name.Contains("address") || name.Contains("direcci") || name.Contains("url") ||
+                            name.Contains("omnibox") || name.Contains("location") || name.Contains("búsqueda") ||
+                            aid.Contains("urlbar") || aid.Contains("address") || aid.Contains("omnibox");
+
+                        var hasFocus = cur.Current.HasKeyboardFocus;
+                        if (isNamedAddressBar)
+                        {
+                            return (cur, hasFocus ? null : val);
+                        }
+                        if (fallbackEdit == null && !hasFocus && LooksLikeUrl(val))
+                        {
+                            fallbackEdit = cur;
+                            fallbackRaw = val;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (depth >= MaxTreeDepth) continue;
+            try
+            {
+                var child = walker.GetFirstChild(cur);
+                while (child != null && visited + queue.Count < MaxVisitedNodes)
+                {
+                    queue.Enqueue((child, depth + 1));
+                    child = walker.GetNextSibling(child);
+                }
+            }
+            catch { }
+        }
+
+        return (fallbackEdit, fallbackRaw);
+    }
+
+    private static bool LooksLikeUrl(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw) || raw.Contains(' ')) return false;
+        var candidate = raw.Contains("://", StringComparison.Ordinal) ? raw : "https://" + raw;
+        return Uri.TryCreate(candidate, UriKind.Absolute, out var uri) &&
+               uri.Scheme is "http" or "https" &&
+               !string.IsNullOrEmpty(uri.Host) &&
+               uri.Host.Contains('.');
+    }
+
     public static (string Host, string Path)? ReadActiveUrl(IntPtr hwnd, string processName)
     {
         if (!StudyActivityVerifier.IsBrowser(processName)) return null;
         try
         {
-            var root = AutomationElement.FromHandle(hwnd);
-            if (root == null) return null;
-            var editCond = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit);
-            var edits = root.FindAll(TreeScope.Descendants, editCond);
-            foreach (AutomationElement edit in edits)
+            var (_, raw) = FindAddressBar(hwnd);
+            if (string.IsNullOrWhiteSpace(raw) || raw.Contains(' ')) return null;
+            if (raw.StartsWith("file://", StringComparison.OrdinalIgnoreCase)) return null;
+            var candidate = raw.Contains("://", StringComparison.Ordinal) ? raw : "https://" + raw;
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri) &&
+                uri.Scheme is "http" or "https" &&
+                !string.IsNullOrEmpty(uri.Host) &&
+                uri.Host.Contains('.'))
             {
-                if (!edit.TryGetCurrentPattern(ValuePattern.Pattern, out var patObj) || patObj is not ValuePattern vp)
-                    continue;
-                var raw = vp.Current.Value?.Trim();
-                if (string.IsNullOrEmpty(raw)) continue;
-                var candidate = raw.Contains("://", StringComparison.Ordinal) ? raw : "https://" + raw;
-                if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host) && uri.Host.Contains('.'))
-                    return (uri.Host.ToLowerInvariant(), uri.AbsolutePath + uri.Query);
+                return (uri.Host.ToLowerInvariant(), uri.AbsolutePath + uri.Query);
             }
         }
         catch { }
@@ -220,21 +375,13 @@ public static class BrowserInspector
             }
             if (!string.IsNullOrEmpty(redirectUrl))
             {
-                var root = AutomationElement.FromHandle(hwnd);
-                var editCond = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit);
-                var edits = root?.FindAll(TreeScope.Descendants, editCond);
-                if (edits != null)
+                var (edit, _) = FindAddressBar(hwnd);
+                if (edit != null && edit.TryGetCurrentPattern(ValuePattern.Pattern, out var patObj) && patObj is ValuePattern vp)
                 {
-                    foreach (AutomationElement edit in edits)
-                    {
-                        if (edit.TryGetCurrentPattern(ValuePattern.Pattern, out var patObj) && patObj is ValuePattern vp)
-                        {
-                            vp.SetValue(redirectUrl);
-                            edit.SetFocus();
-                            System.Windows.Forms.SendKeys.SendWait("{ENTER}");
-                            return true;
-                        }
-                    }
+                    edit.SetFocus();
+                    vp.SetValue(redirectUrl);
+                    System.Windows.Forms.SendKeys.SendWait("{ENTER}");
+                    return true;
                 }
             }
         }
@@ -251,13 +398,22 @@ public static class FolderGuard
         var list = blockedFolders.Select(f => f.Trim().TrimEnd('\\', '/').ToLowerInvariant()).Where(f => !string.IsNullOrEmpty(f)).ToList();
         if (list.Count == 0) return hits;
 
+        // Avoid waking COM Shell.Application when no Explorer window is even open.
+        if (!WindowsActivity.VisibleWindows().Any(w => w.ProcessName.Equals("explorer", StringComparison.OrdinalIgnoreCase)))
+            return hits;
+
+        object? shellObj = null;
+        object? windowsObj = null;
         try
         {
             var shellType = Type.GetTypeFromProgID("Shell.Application");
             if (shellType == null) return hits;
-            dynamic? shell = Activator.CreateInstance(shellType);
-            if (shell == null) return hits;
-            foreach (dynamic win in shell.Windows())
+            shellObj = Activator.CreateInstance(shellType);
+            if (shellObj == null) return hits;
+            dynamic shell = shellObj;
+            windowsObj = shell.Windows();
+            if (windowsObj == null) return hits;
+            foreach (dynamic win in (System.Collections.IEnumerable)windowsObj)
             {
                 try
                 {
@@ -272,9 +428,18 @@ public static class FolderGuard
                     }
                 }
                 catch { }
+                finally
+                {
+                    try { if (Marshal.IsComObject(win)) Marshal.FinalReleaseComObject(win); } catch { }
+                }
             }
         }
         catch { }
+        finally
+        {
+            try { if (windowsObj != null && Marshal.IsComObject(windowsObj)) Marshal.FinalReleaseComObject(windowsObj); } catch { }
+            try { if (shellObj != null && Marshal.IsComObject(shellObj)) Marshal.FinalReleaseComObject(shellObj); } catch { }
+        }
         return hits;
     }
 }
@@ -334,6 +499,7 @@ public static class DpapiWitness
 
     private static byte[] ProtectBytes(byte[] raw)
     {
+        if (raw.Length == 0) return Array.Empty<byte>();
         var inBlob = new DATA_BLOB { cbData = raw.Length, pbData = Marshal.AllocHGlobal(raw.Length) };
         try
         {
@@ -346,13 +512,14 @@ public static class DpapiWitness
                 Marshal.Copy(outBlob.pbData, result, 0, outBlob.cbData);
                 return result;
             }
-            finally { LocalFree(outBlob.pbData); }
+            finally { if (outBlob.pbData != IntPtr.Zero) LocalFree(outBlob.pbData); }
         }
         finally { Marshal.FreeHGlobal(inBlob.pbData); }
     }
 
     private static byte[] UnprotectBytes(byte[] cipher)
     {
+        if (cipher.Length == 0) return Array.Empty<byte>();
         var inBlob = new DATA_BLOB { cbData = cipher.Length, pbData = Marshal.AllocHGlobal(cipher.Length) };
         try
         {
@@ -365,7 +532,7 @@ public static class DpapiWitness
                 Marshal.Copy(outBlob.pbData, result, 0, outBlob.cbData);
                 return result;
             }
-            finally { LocalFree(outBlob.pbData); }
+            finally { if (outBlob.pbData != IntPtr.Zero) LocalFree(outBlob.pbData); }
         }
         finally { Marshal.FreeHGlobal(inBlob.pbData); }
     }
@@ -403,6 +570,7 @@ public static class DpapiWitness
         {
             if (!File.Exists(WitnessPath)) return null;
             var raw = UnprotectBytes(File.ReadAllBytes(WitnessPath));
+            if (raw.Length == 0) return null;
             return JsonSerializer.Deserialize<WitnessPayload>(raw, WorkspaceStore.JsonOptions);
         }
         catch { return null; }
@@ -412,7 +580,8 @@ public static class DpapiWitness
     {
         var sig = string.Join("|", rules.Where(r => r.Enabled && r.Protection != SessionProtection.None)
             .OrderBy(r => r.Id)
-            .Select(r => $"{r.Id}:{r.Kind}:{r.Protection}:{r.UnlockChars}:{r.Domains}:{string.Join(",", r.Apps.Select(a => a.Id))}"));
+            .Select(r =>
+                $"{r.Id}:{r.Kind}:{r.Protection}:{r.UnlockChars}:{r.StopDelayMinutes}:{r.DailyLimitMinutes}:{r.GoalMinutesRequired}:{r.MaxDailyMatches}:{r.AlwaysProtected}:{r.Domains}:{r.BlockedTitleKeywords}:{string.Join(",", r.Apps.Select(a => a.Id))}:{string.Join(",", r.BlockedFolders)}"));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sig)));
     }
 }
@@ -422,6 +591,8 @@ public static class RelaunchGuard
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "FocusDeskWatcher";
     public const string WatcherArg = "--watcher";
+    private const string SingleInstanceMutexName = @"Local\FocusDesk_Articdia_SingleInstance";
+    private const string WatcherMutexName = @"Local\FocusDesk_Watcher_Running";
 
     public static bool IsInstalled()
     {
@@ -462,8 +633,11 @@ public static class RelaunchGuard
         if (string.IsNullOrEmpty(exe)) return;
         try
         {
-            using var m = new Mutex(false, @"Local\FocusDesk_Watcher_Running", out var created);
-            if (!created) return;
+            if (Mutex.TryOpenExisting(WatcherMutexName, out var existing))
+            {
+                existing.Dispose();
+                return;
+            }
         }
         catch { }
         try
@@ -475,7 +649,7 @@ public static class RelaunchGuard
 
     public static void RunWatcherLoop()
     {
-        using var watcherMutex = new Mutex(true, @"Local\FocusDesk_Watcher_Running", out var acquired);
+        using var watcherMutex = new Mutex(true, WatcherMutexName, out var acquired);
         if (!acquired) return;
 
         var store = new WorkspaceStore();
@@ -486,11 +660,16 @@ public static class RelaunchGuard
             Thread.Sleep(2000);
             try
             {
-                bool guiRunning;
-                using (var m = new Mutex(false, @"Local\FocusDesk_Articdia_SingleInstance", out var free))
+                var guiRunning = false;
+                try
                 {
-                    guiRunning = !free;
+                    if (Mutex.TryOpenExisting(SingleInstanceMutexName, out var existing))
+                    {
+                        guiRunning = true;
+                        existing.Dispose();
+                    }
                 }
+                catch { }
                 if (guiRunning) continue;
 
                 var now = DateTimeOffset.UtcNow;

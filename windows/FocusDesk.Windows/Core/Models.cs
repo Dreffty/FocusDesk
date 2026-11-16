@@ -14,14 +14,13 @@ public record AllowedApp(
     [property: JsonPropertyName("path")] string Path
 );
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum RepeatRule
 {
-    [JsonPropertyName("never")] Never,
-    [JsonPropertyName("daily")] Daily,
-    [JsonPropertyName("weekly")] Weekly,
-    [JsonPropertyName("weekdays")] Weekdays,
-    [JsonPropertyName("customDays")] CustomDays
+    Never,
+    Daily,
+    Weekly,
+    Weekdays,
+    CustomDays
 }
 
 public static class RepeatRuleExtensions
@@ -37,12 +36,12 @@ public static class RepeatRuleExtensions
     };
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum SessionProtection
 {
-    [JsonPropertyName("none")] None,
-    [JsonPropertyName("delay")] Delay,
-    [JsonPropertyName("challenge")] Challenge
+    None,
+    Delay,
+    Challenge,
+    Forced
 }
 
 public static class SessionProtectionExtensions
@@ -50,8 +49,9 @@ public static class SessionProtectionExtensions
     public static int Strength(this SessionProtection p) => p switch
     {
         SessionProtection.None => 0,
-        SessionProtection.Delay => 1,
-        SessionProtection.Challenge => 2,
+        SessionProtection.Challenge => 1,
+        SessionProtection.Delay => 2,
+        SessionProtection.Forced => 3,
         _ => 0
     };
 
@@ -60,6 +60,7 @@ public static class SessionProtectionExtensions
         SessionProtection.None => "Sin protección",
         SessionProtection.Delay => "Espera",
         SessionProtection.Challenge => "Código de desbloqueo",
+        SessionProtection.Forced => "Hasta el final",
         _ => "Sin protección"
     };
 
@@ -68,6 +69,7 @@ public static class SessionProtectionExtensions
         SessionProtection.None => "Puedes pausar, editar o parar en cualquier momento.",
         SessionProtection.Delay => "Pide esperar unos minutos antes de detener o suavizar el bloqueo.",
         SessionProtection.Challenge => "Pide escribir un código aleatorio sin copiar y pegar para detener o suavizar el bloqueo.",
+        SessionProtection.Forced => "Sin salida anticipada: solo permite código de emergencia de 60 caracteres y queda registrado.",
         _ => ""
     };
 
@@ -76,16 +78,16 @@ public static class SessionProtectionExtensions
         SessionProtection.None => "",
         SessionProtection.Delay => "Para salir antes, inicia la espera en la regla o sesión.",
         SessionProtection.Challenge => "Para salir antes, escribe el código de desbloqueo.",
+        SessionProtection.Forced => "Para salir antes, teclea el código de emergencia de 60 caracteres (queda anotado).",
         _ => ""
     };
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum AppBlockAction
 {
-    [JsonPropertyName("hide")] Hide,
-    [JsonPropertyName("close")] Close,
-    [JsonPropertyName("forceQuit")] ForceQuit
+    Hide,
+    Close,
+    ForceQuit
 }
 
 public static class AppBlockActionExtensions
@@ -115,12 +117,11 @@ public static class AppBlockActionExtensions
     };
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum WebBlockAction
 {
-    [JsonPropertyName("warn")] Warn,
-    [JsonPropertyName("redirect")] Redirect,
-    [JsonPropertyName("closeTab")] CloseTab
+    Warn,
+    Redirect,
+    CloseTab
 }
 
 public static class WebBlockActionExtensions
@@ -142,11 +143,10 @@ public static class WebBlockActionExtensions
     };
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum AppListMode
 {
-    [JsonPropertyName("allowListed")] AllowListed,
-    [JsonPropertyName("blockListed")] BlockListed
+    AllowListed,
+    BlockListed
 }
 
 public static class AppListModeExtensions
@@ -159,12 +159,11 @@ public static class AppListModeExtensions
     };
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum WebListMode
 {
-    [JsonPropertyName("allowListed")] AllowListed,
-    [JsonPropertyName("blockListed")] BlockListed,
-    [JsonPropertyName("blockAll")] BlockAll
+    AllowListed,
+    BlockListed,
+    BlockAll
 }
 
 public static class WebListModeExtensions
@@ -305,6 +304,7 @@ public sealed class FocusProfile
     public string MotivationalMessage { get; set; } = "";
     public bool BlockSearchMedia { get; set; }
     public bool BlockGameLibraries { get; set; }
+    public SimilarityProtectionLevel SimilarityProtection { get; set; } = SimilarityProtectionLevel.Off;
 
     public static List<FocusProfile> Defaults() => new()
     {
@@ -362,8 +362,8 @@ public sealed class FocusTask
     public RepeatRule RepeatRule { get; set; } = RepeatRule.Never;
     public HashSet<int> RepeatDays { get; set; } = new();
     public HashSet<string> SkippedDates { get; set; } = new();
-    public Guid? SeriesId { get; set; }
-    public Guid? ProfileId { get; set; }
+    [JsonPropertyName("seriesID")] public Guid? SeriesId { get; set; }
+    [JsonPropertyName("profileID")] public Guid? ProfileId { get; set; }
     public bool IsFixedAppointment { get; set; }
     public bool Completed { get; set; }
     public bool AutoStart { get; set; }
@@ -383,6 +383,7 @@ public sealed class FocusTask
     public string MotivationalMessage { get; set; } = "";
     public bool BlockSearchMedia { get; set; }
     public bool BlockGameLibraries { get; set; }
+    public SimilarityProtectionLevel SimilarityProtection { get; set; } = SimilarityProtectionLevel.Off;
     public int PomodoroWorkMinutes { get; set; }
     public int PomodoroBreakMinutes { get; set; } = 5;
     public int PomodoroLongBreakMinutes { get; set; } = 15;
@@ -399,6 +400,41 @@ public sealed class FocusTask
         Strict || BlockGameLibraries || WebBlockAction != WebBlockAction.Warn || BlockSearchMedia ||
         Protection != SessionProtection.None || BlockedFolders.Count > 0 ||
         FocusRules.ParseTitleKeywords(BlockedTitleKeywords).Count > 0;
+
+    [JsonIgnore]
+    public bool BlockingIsIncomplete
+    {
+        get
+        {
+            var appsMissing = Strict && Apps.Count == 0 && !BlockGameLibraries;
+            var websMissing = WebBlockAction != WebBlockAction.Warn && WebListMode != WebListMode.BlockAll &&
+                              !BlockSearchMedia && FocusRules.ParseDomains(Domains).Valid.Count == 0;
+            return appsMissing || websMissing;
+        }
+    }
+
+    [JsonIgnore]
+    public string BlockingSummary
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (Strict) parts.Add(AppListMode == AppListMode.AllowListed ? $"Solo {Apps.Count} app(s)" : $"Bloq. {Apps.Count} app(s)");
+            if (BlockGameLibraries) parts.Add("Juegos");
+            if (WebBlockAction != WebBlockAction.Warn)
+            {
+                var wc = FocusRules.ParseDomains(Domains).Valid.Count;
+                parts.Add(WebListMode switch
+                {
+                    WebListMode.BlockAll => "Ninguna web",
+                    WebListMode.AllowListed => $"Solo {wc} web(s)",
+                    _ => $"Bloq. {wc} web(s)"
+                });
+            }
+            if (Protection != SessionProtection.None) parts.Add(Protection.Label());
+            return parts.Count == 0 ? "Sin bloqueo" : string.Join(" · ", parts);
+        }
+    }
 
     [JsonIgnore]
     public bool Valid
@@ -462,6 +498,7 @@ public sealed class FocusTask
         MotivationalMessage = profile.MotivationalMessage;
         BlockSearchMedia = profile.BlockSearchMedia;
         BlockGameLibraries = profile.BlockGameLibraries;
+        SimilarityProtection = profile.SimilarityProtection;
         ProfileId = profile.Id;
     }
 
@@ -520,8 +557,8 @@ public sealed class FocusTask
 
     public FocusTask Clone()
     {
-        var json = JsonSerializer.Serialize(this);
-        return JsonSerializer.Deserialize<FocusTask>(json)!;
+        var json = JsonSerializer.Serialize(this, WorkspaceStore.JsonOptions);
+        return JsonSerializer.Deserialize<FocusTask>(json, WorkspaceStore.JsonOptions)!;
     }
 }
 
@@ -529,7 +566,7 @@ public sealed class Activity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public DateTimeOffset At { get; set; } = DateTimeOffset.UtcNow;
-    public string AppId { get; set; } = "";
+    [JsonPropertyName("appID")] public string AppId { get; set; } = "";
     public string Name { get; set; } = "";
     public string? Title { get; set; }
     public string? Domain { get; set; }
@@ -729,7 +766,7 @@ public sealed class WorkSession
             last.Domain = domain;
             if (interruption)
             {
-                if (last.Domain == domain || !last.Interruption) InterruptionCount++;
+                if (!last.Interruption) InterruptionCount++;
                 last.Interruption = true;
             }
             return;
@@ -1123,10 +1160,21 @@ public static class FocusRules
         return val % 60 == 0 ? $"{val / 60} h" : $"{val / 60} h {val % 60:D2}";
     }
 
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(150);
+
+    public static bool IsRegexEntry(string entry) =>
+        entry.Length >= 3 && entry.StartsWith('/') && entry.EndsWith('/');
+
     public static string? NormalizeDomainEntry(string raw)
     {
         var token = raw.Trim().Trim(',', ';');
         if (string.IsNullOrEmpty(token)) return null;
+        if (IsRegexEntry(token))
+        {
+            var pat = token[1..^1];
+            try { _ = new Regex(pat, RegexOptions.IgnoreCase, RegexTimeout); return "/" + pat + "/"; }
+            catch { return null; }
+        }
         if (token.StartsWith("*.", StringComparison.Ordinal)) token = token[2..];
 
         string hostCandidate;
@@ -1136,6 +1184,8 @@ public static class FocusRules
         if (token.Contains("://", StringComparison.Ordinal) && Uri.TryCreate(token, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
         {
             hostCandidate = uri.Host;
+            var p = uri.AbsolutePath.Trim('/');
+            if (!string.IsNullOrEmpty(p)) pathCandidate = "/" + p.ToLowerInvariant();
         }
         else if (token.Contains('/') && !token.Contains("://", StringComparison.Ordinal))
         {
@@ -1214,13 +1264,22 @@ public static class FocusRules
         return sb.ToString();
     }
 
-    private static bool MatchesWildcard(string text, string pattern) =>
-        Regex.IsMatch(text, WildcardRegexPattern(pattern), RegexOptions.IgnoreCase);
+    private static bool MatchesWildcard(string text, string pattern)
+    {
+        try { return Regex.IsMatch(text, WildcardRegexPattern(pattern), RegexOptions.IgnoreCase, RegexTimeout); }
+        catch { return false; }
+    }
 
     public static bool EntryMatches(string host, string path, string entry)
     {
         var normHost = host.ToLowerInvariant().Trim('.');
         if (string.IsNullOrEmpty(normHost)) return false;
+        if (IsRegexEntry(entry))
+        {
+            var urlCandidate = string.IsNullOrEmpty(path) || path == "/" ? normHost : normHost + (path.StartsWith('/') ? path : "/" + path);
+            try { return Regex.IsMatch(urlCandidate, entry[1..^1], RegexOptions.IgnoreCase, RegexTimeout); }
+            catch { return false; }
+        }
         var slash = entry.IndexOf('/');
         var entryHost = (slash >= 0 ? entry[..slash] : entry).ToLowerInvariant();
         var entryPathPart = slash >= 0 ? entry[(slash + 1)..].ToLowerInvariant().Trim('/') : "";
@@ -1249,13 +1308,14 @@ public static class FocusRules
 
     public static bool DomainEntriesOverlap(string a, string b)
     {
-        static bool IsPattern(string e) => e.Contains('*') || e.Contains('?');
+        static bool IsPattern(string e) => e.Contains('*') || e.Contains('?') || IsRegexEntry(e);
         static (string Host, string Path) Parts(string e)
         {
             var idx = e.IndexOf('/');
             return idx >= 0 ? (e[..idx].ToLowerInvariant(), e[(idx + 1)..].ToLowerInvariant().Trim('/')) : (e.ToLowerInvariant(), "");
         }
         if (IsPattern(a) && IsPattern(b)) return true;
+        if (IsRegexEntry(a) || IsRegexEntry(b)) return true;
         if (IsPattern(a) || IsPattern(b))
         {
             var (pattern, plain) = IsPattern(a) ? (a, b) : (b, a);
@@ -1269,6 +1329,19 @@ public static class FocusRules
         if (!(p1.Host == p2.Host || p1.Host.EndsWith("." + p2.Host) || p2.Host.EndsWith("." + p1.Host))) return false;
         if (string.IsNullOrEmpty(p1.Path) || string.IsNullOrEmpty(p2.Path)) return true;
         return p1.Path == p2.Path || p1.Path.StartsWith(p2.Path + "/") || p2.Path.StartsWith(p1.Path + "/");
+    }
+
+    public static string? IsRedirectDestinationBlocked(string? redirectUrl, string list, WebListMode mode, bool blockSearchMedia)
+    {
+        if (string.IsNullOrWhiteSpace(redirectUrl)) return null;
+        if (!Uri.TryCreate(redirectUrl.Trim(), UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host))
+            return null;
+        if (uri.Scheme is not ("http" or "https")) return null;
+        if (blockSearchMedia && SearchMediaRules.Matches(uri.Host, uri.PathAndQuery) != null)
+            return "La URL de redirección coincide con imágenes/vídeos de buscadores bloqueados.";
+        if (!WebAllowed(uri.Host, uri.AbsolutePath, list, mode))
+            return "La URL de redirección coincide con una web bloqueada y causaría un bucle.";
+        return null;
     }
 
     public static bool WebListOpens(WebListMode curMode, List<string> current, WebListMode propMode, List<string> proposed)
@@ -1341,26 +1414,84 @@ public static class FocusRules
             {
                 try
                 {
-                    if (Regex.IsMatch(title, kw[1..^1], RegexOptions.IgnoreCase)) return kw;
+                    if (Regex.IsMatch(title, kw[1..^1], RegexOptions.IgnoreCase, RegexTimeout)) return kw;
                 }
                 catch { }
                 continue;
             }
             if (kw.Contains('*') || kw.Contains('?'))
             {
-                if (Regex.IsMatch(title, WildcardRegexPattern(kw, anchored: false), RegexOptions.IgnoreCase)) return kw;
+                try
+                {
+                    if (Regex.IsMatch(title, WildcardRegexPattern(kw, anchored: false), RegexOptions.IgnoreCase, RegexTimeout)) return kw;
+                }
+                catch { }
                 continue;
             }
             if (wholeWord)
             {
                 var pattern = $@"\b{Regex.Escape(kw)}\b";
-                if (Regex.IsMatch(title, pattern, RegexOptions.IgnoreCase)) return kw;
+                if (Regex.IsMatch(title, pattern, RegexOptions.IgnoreCase, RegexTimeout)) return kw;
             }
             else if (title.Contains(kw, StringComparison.OrdinalIgnoreCase))
             {
                 return kw;
             }
         }
+        return null;
+    }
+
+    public static bool IsTaskInRunUp(FocusTask task, int runUpMinutes, DateTimeOffset now)
+    {
+        var lead = Math.Clamp(runUpMinutes, 0, 120);
+        if (lead <= 0 || task.Protection == SessionProtection.None || !task.IsScheduled || task.Completed) return false;
+        var from = task.ScheduledAt.AddMinutes(-lead);
+        return task.End > from && now >= from && now < task.End;
+    }
+
+    public static string? TaskLoosening(FocusTask current, FocusTask? proposed, DateTimeOffset now, bool isRunningSession = false)
+    {
+        if (proposed == null) return $"borrar «{current.Title}»";
+        if (isRunningSession && proposed.Minutes < current.Minutes) return $"acortar «{current.Title}» mientras está en marcha";
+        if (!isRunningSession)
+        {
+            if (!proposed.IsScheduled && current.IsScheduled) return $"pasar a la bandeja «{current.Title}»";
+            if (proposed.Completed && !current.Completed) return $"marcar como completada «{current.Title}» sin hacerla";
+            if (proposed.ScheduledAt > current.ScheduledAt.AddSeconds(30)) return $"retrasar «{current.Title}»";
+            if (proposed.ScheduledAt < current.ScheduledAt.AddSeconds(-30) &&
+                (proposed.End <= now || proposed.ScheduledAt < now.AddMinutes(-5)))
+                return $"sacar de su hora «{current.Title}»";
+            if (current.AutoStart && !proposed.AutoStart) return $"quitar el inicio automático de «{current.Title}»";
+            if (proposed.Minutes < current.Minutes) return $"acortar «{current.Title}»";
+        }
+        if (proposed.Protection.Strength() < current.Protection.Strength()) return $"rebajar la protección de «{current.Title}»";
+        if (proposed.UnlockChars < current.UnlockChars) return $"acortar el código de «{current.Title}»";
+        if (proposed.StopDelayMinutes < current.StopDelayMinutes) return $"acortar la espera de «{current.Title}»";
+        if (current.Strict && !proposed.Strict) return $"quitar el bloqueo de apps en «{current.Title}»";
+        if (proposed.BlockAction.Strength() < current.BlockAction.Strength()) return $"suavizar el cierre de apps en «{current.Title}»";
+        if (proposed.WebBlockAction.Strength() < current.WebBlockAction.Strength()) return $"suavizar el bloqueo web en «{current.Title}»";
+        if (current.Strict && AppListOpens(
+                current.AppListMode, current.Apps.Select(a => a.Id.ToLowerInvariant()).ToHashSet(),
+                proposed.AppListMode, proposed.Apps.Select(a => a.Id.ToLowerInvariant()).ToHashSet()))
+            return $"suavizar la lista de apps en «{current.Title}»";
+        if (current.WebBlockAction != WebBlockAction.Warn)
+        {
+            if (WebListOpens(current.WebListMode, ParseDomains(current.Domains).Valid, proposed.WebListMode, ParseDomains(proposed.Domains).Valid))
+                return $"suavizar las webs bloqueadas en «{current.Title}»";
+            if (current.BlockSearchMedia && !proposed.BlockSearchMedia)
+                return $"quitar el bloqueo de imágenes/vídeos en buscadores en «{current.Title}»";
+        }
+        var curKw = ParseTitleKeywords(current.BlockedTitleKeywords).Select(k => k.ToLowerInvariant()).ToHashSet();
+        var nextKw = ParseTitleKeywords(proposed.BlockedTitleKeywords).Select(k => k.ToLowerInvariant()).ToHashSet();
+        if (!curKw.IsSubsetOf(nextKw)) return $"quitar palabras bloqueadas en «{current.Title}»";
+        if (curKw.Count > 0 && !current.WholeWordKeywords && proposed.WholeWordKeywords)
+            return $"suavizar palabras bloqueadas en «{current.Title}»";
+        if (current.BlockGameLibraries && !proposed.BlockGameLibraries) return $"quitar el bloqueo de juegos en «{current.Title}»";
+        if (current.GuardSystemPanes && !proposed.GuardSystemPanes) return $"quitar protección de ajustes en «{current.Title}»";
+        if (current.PunisherEnabled && !proposed.PunisherEnabled) return $"quitar endurecimiento en «{current.Title}»";
+        var curFolders = current.BlockedFolders.Select(f => f.Trim().TrimEnd('\\', '/').ToLowerInvariant()).ToHashSet();
+        var nextFolders = proposed.BlockedFolders.Select(f => f.Trim().TrimEnd('\\', '/').ToLowerInvariant()).ToHashSet();
+        if (!curFolders.IsSubsetOf(nextFolders)) return $"desbloquear carpetas en «{current.Title}»";
         return null;
     }
 

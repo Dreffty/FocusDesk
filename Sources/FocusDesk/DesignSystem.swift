@@ -181,26 +181,27 @@ private struct FocusButtonBody: View {
     let kind: FocusButtonKind
     let compact: Bool
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
     var body: some View {
         configuration.label
             .font(.app(compact ? 12 : 13, weight: .semibold))
             .lineLimit(1)
-            .padding(.horizontal, compact ? 10 : 14)
-            .padding(.vertical, compact ? 5 : 8)
+            .padding(.horizontal, compact ? 11 : 15)
+            .padding(.vertical, compact ? 6 : 9)
             .foregroundStyle(foreground)
             .background(fill, in: shape)
             .overlay(shape.strokeBorder(border, lineWidth: 1))
             .contentShape(shape)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.97 : 1))
             .opacity(enabled ? 1 : 0.4)
             .onHover { hovering = enabled && $0 }
-            .animation(.easeOut(duration: 0.12), value: hovering)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovering)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: configuration.isPressed)
     }
 
-    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: compact ? 7 : 9, style: .continuous) }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: compact ? 8 : 10, style: .continuous) }
 
     private var foreground: Color {
         switch kind {
@@ -225,11 +226,56 @@ private struct FocusButtonBody: View {
     private var border: Color {
         switch kind {
         case .primary, .ghost: return .clear
-        case .secondary: return Palette.stroke
-        case .warning: return Palette.warning.opacity(0.28)
-        case .destructive: return Palette.danger.opacity(0.28)
+        case .secondary: return hovering ? Palette.fieldStroke.opacity(0.65) : Palette.stroke
+        case .warning: return Palette.warning.opacity(0.32)
+        case .destructive: return Palette.danger.opacity(0.32)
         }
     }
+}
+
+// MARK: - Text Fields
+
+private struct FocusTextFieldBox<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    @FocusState private var isFocused: Bool
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var enabled
+
+    var body: some View {
+        content()
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(minHeight: 34)
+            .background(isFocused ? Palette.surface : Palette.elevated, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(
+                        isFocused ? Palette.mint : (isHovered ? Palette.fieldStroke.opacity(0.75) : Palette.fieldStroke.opacity(0.45)),
+                        lineWidth: isFocused ? 1.4 : 1
+                    )
+            )
+            .shadow(color: isFocused ? Palette.mint.opacity(0.14) : .clear, radius: 5, y: 0)
+            .focused($isFocused)
+            .onHover { isHovered = enabled && $0 }
+            .opacity(enabled ? 1 : 0.5)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: isFocused)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
+    }
+}
+
+/// Consistent custom dark/light text field replacing Aqua's `.roundedBorder` in editors.
+struct FocusTextFieldStyle: TextFieldStyle {
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        FocusTextFieldBox {
+            configuration
+        }
+    }
+}
+
+extension TextFieldStyle where Self == FocusTextFieldStyle {
+    static var focusField: FocusTextFieldStyle { FocusTextFieldStyle() }
 }
 
 struct FocusButtonStyle: ButtonStyle {
@@ -355,7 +401,7 @@ struct FoldedCard<Content: View>: View {
         Card(padding: 16) {
             VStack(alignment: .leading, spacing: 14) {
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) { isExpanded.toggle() }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { isExpanded.toggle() }
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "chevron.right")
@@ -367,9 +413,12 @@ struct FoldedCard<Content: View>: View {
                         Text(title).font(.app(13, weight: .semibold))
                         Spacer(minLength: 12)
                         Text(summary)
-                            .font(.app(11))
+                            .font(.app(11, weight: .medium))
                             .monospacedDigit()
                             .foregroundStyle(attention ? Palette.warning : Palette.muted)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(attention ? Palette.warning.opacity(0.12) : Palette.fill, in: Capsule())
                             .lineLimit(1)
                     }
                     .contentShape(Rectangle())
@@ -381,6 +430,7 @@ struct FoldedCard<Content: View>: View {
                 .accessibilityAddTraits(.isHeader)
                 if isExpanded {
                     content
+                        .transition(reduceMotion ? .identity : .opacity.combined(with: .scale(scale: 0.985, anchor: .top)))
                 }
             }
         }
@@ -606,6 +656,9 @@ extension View {
     }
 
     func fieldLabelStyle() -> some View {
-        font(.app(10, weight: .semibold)).tracking(1.2).foregroundStyle(Palette.muted)
+        font(.app(10, weight: .semibold))
+            .tracking(1.2)
+            .foregroundStyle(Palette.muted)
+            .padding(.top, 2)
     }
 }

@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using FocusDesk.Windows.Core;
 using FocusDesk.Windows.Platform;
 
@@ -17,6 +18,14 @@ public partial class MainWindow : Window
     private readonly AppEngine _engine;
     private readonly Action _onQuitRequested;
     private bool _auditView;
+    private bool _allowClose;
+    private string _lastAnimatedPage = "";
+
+    // Live UI handles updated every 1s by TickUpdated without wiping PageContent.
+    private TextBlock? _liveClockText;
+    private TextBlock? _livePomodoroText;
+    private TextBlock? _liveBreakText;
+    private readonly List<(GeneralBlockRule Rule, TextBlock TitleBlock, TextBlock SubBlock)> _liveGameStrips = new();
 
     [DllImport("user32.dll")]
     private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
@@ -37,9 +46,12 @@ public partial class MainWindow : Window
         _engine = engine;
         _onQuitRequested = onQuitRequested;
         _engine.StateRefreshed += RefreshUI;
+        _engine.TickUpdated += UpdateLiveReadouts;
         _engine.SessionCompletionRequested += s => Dialogs.ShowCompletionDialog(_engine, s, this);
         Loaded += (_, _) => RefreshUI();
     }
+
+    public void AllowClose() => _allowClose = true;
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -48,16 +60,31 @@ public partial class MainWindow : Window
         var source = HwndSource.FromHwnd(helper.Handle);
         source?.AddHook(WndProc);
         var mods = MOD_CONTROL | MOD_ALT | MOD_WIN;
-        RegisterHotKey(helper.Handle, HOTKEY_SHOW, mods, 0x46);   // F
-        RegisterHotKey(helper.Handle, HOTKEY_PAUSE, mods, 0x50);  // P
-        RegisterHotKey(helper.Handle, HOTKEY_FINISH, mods, 0x54); // T
+        RegisterHotKey(helper.Handle, HOTKEY_SHOW, mods, 0x46);   // Ctrl+Alt+Win+F
+        RegisterHotKey(helper.Handle, HOTKEY_PAUSE, mods, 0x50);  // Ctrl+Alt+Win+P
+        RegisterHotKey(helper.Handle, HOTKEY_FINISH, mods, 0x54); // Ctrl+Alt+Win+T
     }
 
     protected override void OnClosing(CancelEventArgs e)
     {
+        if (_allowClose) return;
         // Closing window minimizes to tray so background blocking and watchers stay alive.
         e.Cancel = true;
         Hide();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _engine.StateRefreshed -= RefreshUI;
+        _engine.TickUpdated -= UpdateLiveReadouts;
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle != IntPtr.Zero)
+        {
+            UnregisterHotKey(handle, HOTKEY_SHOW);
+            UnregisterHotKey(handle, HOTKEY_PAUSE);
+            UnregisterHotKey(handle, HOTKEY_FINISH);
+        }
+        base.OnClosed(e);
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -66,16 +93,52 @@ public partial class MainWindow : Window
         {
             switch (wParam.ToInt32())
             {
-                case HOTKEY_SHOW: Show(); Activate(); handled = true; break;
+                case HOTKEY_SHOW:
+                    Show();
+                    if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+                    Activate();
+                    handled = true;
+                    break;
+
                 case HOTKEY_PAUSE:
-                    if (_engine.Workspace.Session is { } s)
+                    if (_engine.Workspace.Session is { EndedAt: null } s)
                     {
+                        if (!s.Paused && s.Task.Protection != SessionProtection.None && s.Remaining(DateTimeOffset.Now) > 0)
+                        {
+                            Show();
+                            if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+                            Activate();
+                            if (!Dialogs.RequestUnlock(s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"pausar «{s.Task.Title}»", this))
+                            {
+                                handled = true;
+                                break;
+                            }
+                            if (s.Task.Protection == SessionProtection.Forced)
+                                _engine.Workspace.RecordAudit("Salida de emergencia", $"Pausa con atajo de «{s.Task.Title}».");
+                        }
                         if (s.Paused) _engine.ResumeSession(); else _engine.PauseSession();
                     }
                     handled = true;
                     break;
+
                 case HOTKEY_FINISH:
-                    if (_engine.Workspace.Session != null) _engine.FinishSession();
+                    if (_engine.Workspace.Session is { EndedAt: null } finSess)
+                    {
+                        if (finSess.Remaining(DateTimeOffset.Now) > 0 && finSess.Task.Protection != SessionProtection.None)
+                        {
+                            Show();
+                            if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+                            Activate();
+                            if (!Dialogs.RequestUnlock(finSess.Task.Protection, finSess.Task.UnlockChars, finSess.Task.StopDelayMinutes, $"terminar antes «{finSess.Task.Title}»", this))
+                            {
+                                handled = true;
+                                break;
+                            }
+                            if (finSess.Task.Protection == SessionProtection.Forced)
+                                _engine.Workspace.RecordAudit("Salida de emergencia", $"Cierre anticipado con atajo de «{finSess.Task.Title}».");
+                        }
+                        _engine.FinishSession();
+                    }
                     handled = true;
                     break;
             }
@@ -96,19 +159,18 @@ public partial class MainWindow : Window
     {
         _engine.Notice = "";
         _engine.Error = "";
-        RefreshUI();
+        UpdateNoticeAndSidebar();
     }
 
-    private void RefreshUI()
+    private void UpdateNoticeAndSidebar()
     {
-        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(RefreshUI); return; }
-
         var msg = !string.IsNullOrEmpty(_engine.Error) ? _engine.Error : _engine.Notice;
         if (!string.IsNullOrEmpty(msg))
         {
             NoticeBanner.Visibility = Visibility.Visible;
             NoticeText.Text = msg;
             NoticeText.Foreground = BrushHex(!string.IsNullOrEmpty(_engine.Error) ? "#F26D6D" : "#64E3A1");
+            NoticeBanner.BorderBrush = BrushHex(!string.IsNullOrEmpty(_engine.Error) ? "#5C262B" : "#242E40");
         }
         else
         {
@@ -117,16 +179,59 @@ public partial class MainWindow : Window
 
         SidebarStudyText.Text = $"Estudio hoy: {FocusRules.Clock(_engine.Workspace.VerifiedStudySecondsToday())}";
         SidebarGuardText.Text = $"Vigilante: {(RelaunchGuard.IsInstalled() ? "activo" : "apagado")}";
+    }
+
+    private void UpdateLiveReadouts()
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(UpdateLiveReadouts); return; }
+
+        UpdateNoticeAndSidebar();
+        var now = DateTimeOffset.Now;
+
+        if (_liveClockText != null && _engine.Workspace.Session is { EndedAt: null } s)
+        {
+            _liveClockText.Text = FocusRules.Clock(s.Remaining(now));
+            if (_livePomodoroText != null && s.Task.PomodoroPhase(s.Elapsed(now)) is { } phase)
+            {
+                _livePomodoroText.Text = $"Pomodoro · {phase.Label} (ciclo {phase.Cycle}) · {FocusRules.Clock(phase.RemainingInPhase)}";
+            }
+        }
+
+        if (_liveBreakText != null && _engine.ActiveContinuousBreakDeadline != null)
+        {
+            _liveBreakText.Text = $"Descanso activo: {FocusRules.Clock(_engine.ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot(now))} · {_engine.ActiveContinuousBreakMessage}";
+        }
+
+        foreach (var (rule, titleBlock, subBlock) in _liveGameStrips)
+        {
+            var st = _engine.GameRuleStatus(rule, now);
+            titleBlock.Text = $"{rule.Game?.Name ?? rule.Name} · {st.Text}";
+            titleBlock.Foreground = BrushHex(st.Warning ? "#F5B95F" : "#64E3A1");
+            subBlock.Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(rule, now))} · {_engine.Workspace.MatchesToday(rule.Id, now)}/{Math.Max(1, rule.MaxDailyMatches)} {rule.MatchUnitPlural}";
+        }
+    }
+
+    private void RefreshUI()
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(RefreshUI); return; }
+
+        UpdateNoticeAndSidebar();
 
         foreach (var child in NavStack.Children.OfType<System.Windows.Controls.Button>())
         {
             var active = string.Equals(child.Tag as string, _engine.ActivePage, StringComparison.Ordinal);
-            child.Background = BrushHex(active ? "#64E3A1" : "#1F2631");
-            child.Foreground = BrushHex(active ? "#0F1218" : "#F2F5FA");
+            child.Background = BrushHex(active ? "#64E3A1" : "Transparent");
+            child.BorderBrush = BrushHex(active ? "#64E3A1" : "Transparent");
+            child.Foreground = BrushHex(active ? "#0B0E14" : "#CBD5E1");
             child.FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal;
         }
 
+        _liveClockText = null;
+        _livePomodoroText = null;
+        _liveBreakText = null;
+        _liveGameStrips.Clear();
         PageContent.Children.Clear();
+
         switch (_engine.ActivePage)
         {
             case "Hoy": BuildTodayPage(); break;
@@ -137,78 +242,166 @@ public partial class MainWindow : Window
             case "Historial": BuildHistoryPage(); break;
             case "Ajustes": BuildSettingsPage(); break;
         }
+
+        if (_lastAnimatedPage != _engine.ActivePage)
+        {
+            _lastAnimatedPage = _engine.ActivePage;
+            PageScroll.ScrollToTop();
+            AnimatePageEnter();
+        }
     }
 
-    private Border Card(UIElement child) => new()
+    private void AnimatePageEnter()
     {
-        Background = BrushHex("#171C24"),
-        BorderBrush = BrushHex("#283140"),
+        PageContent.Opacity = 0;
+        var shift = new TranslateTransform(0, 6);
+        PageContent.RenderTransform = shift;
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var dur = TimeSpan.FromMilliseconds(160);
+        PageContent.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, dur) { EasingFunction = ease });
+        shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(6, 0, dur) { EasingFunction = ease });
+    }
+
+    private Border Card(UIElement child, string? accentBorder = null) => new()
+    {
+        Background = BrushHex("#131822"),
+        BorderBrush = BrushHex(accentBorder ?? "#242E40"),
         BorderThickness = new Thickness(1),
-        CornerRadius = new CornerRadius(12),
-        Padding = new Thickness(16),
+        CornerRadius = new CornerRadius(14),
+        Padding = new Thickness(18),
         Margin = new Thickness(0, 0, 0, 12),
         Child = child
     };
 
-    private TextBlock Header(string text) => new()
+    private UIElement PageHeader(string title, string subtitle, UIElement? trailingButton = null)
     {
-        Text = text,
-        FontSize = 22,
-        FontWeight = FontWeights.Bold,
-        Margin = new Thickness(0, 0, 0, 14)
+        var dock = new DockPanel { Margin = new Thickness(0, 0, 0, 18) };
+        if (trailingButton != null)
+        {
+            DockPanel.SetDock(trailingButton, Dock.Right);
+            if (trailingButton is FrameworkElement fe) fe.VerticalAlignment = VerticalAlignment.Center;
+            dock.Children.Add(trailingButton);
+        }
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock { Text = title, FontSize = 24, FontWeight = FontWeights.Bold, Foreground = BrushHex("#F2F5FA") });
+        stack.Children.Add(new TextBlock { Text = subtitle, FontSize = 12.5, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 3, 0, 0) });
+        dock.Children.Add(stack);
+        return dock;
+    }
+
+    private static System.Windows.Controls.Button PrimaryButton(string label) => new()
+    {
+        Content = label,
+        Background = BrushHex("#64E3A1"),
+        Foreground = BrushHex("#0B0E14"),
+        BorderBrush = BrushHex("#64E3A1"),
+        FontWeight = FontWeights.SemiBold
     };
+
+    private static Border PillBadge(string text, string fgHex = "#94A3B8", string bgHex = "#1B2230") => new()
+    {
+        Background = BrushHex(bgHex),
+        CornerRadius = new CornerRadius(6),
+        Padding = new Thickness(8, 3, 8, 3),
+        Margin = new Thickness(0, 0, 6, 0),
+        Child = new TextBlock { Text = text, FontSize = 11, FontWeight = FontWeights.Medium, Foreground = BrushHex(fgHex) }
+    };
+
+    private void ConfirmAndDeleteTask(FocusTask task)
+    {
+        if (_engine.Workspace.Session?.Task.Id == task.Id)
+        {
+            _engine.Error = "Termina o cancela la sesión en marcha antes de borrar esta tarea.";
+            UpdateNoticeAndSidebar();
+            return;
+        }
+        var bypass = false;
+        if (_engine.IsTaskProtected(task))
+        {
+            if (!Dialogs.RequestUnlock(task.Protection, task.UnlockChars, task.StopDelayMinutes, $"borrar «{task.Title}»", this))
+                return;
+            if (task.Protection == SessionProtection.Forced)
+                _engine.Workspace.RecordAudit("Salida de emergencia", $"Borrada tarea protegida «{task.Title}».");
+            bypass = true;
+        }
+        _engine.DeleteTask(task, bypassProtection: bypass);
+    }
 
     private void BuildTodayPage()
     {
-        var top = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
-        var addBtn = new System.Windows.Controls.Button
-        {
-            Content = "+ Nueva tarea",
-            Background = BrushHex("#64E3A1"),
-            Foreground = BrushHex("#0F1218"),
-            FontWeight = FontWeights.SemiBold
-        };
+        var addBtn = PrimaryButton("+ Nueva tarea");
         addBtn.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, null, this);
-        DockPanel.SetDock(addBtn, Dock.Right);
-        top.Children.Add(addBtn);
-        top.Children.Add(new TextBlock { Text = $"Hoy · {_engine.SelectedDate.LocalDateTime:dddd d MMM}", FontSize = 22, FontWeight = FontWeights.Bold });
-        PageContent.Children.Add(top);
+        PageContent.Children.Add(PageHeader(
+            $"Hoy · {_engine.SelectedDate.LocalDateTime:dddd d MMM}",
+            "Haz espacio para lo importante.",
+            addBtn));
 
         // Active session card
-        if (_engine.Workspace.Session is { } s)
+        if (_engine.Workspace.Session is { EndedAt: null } s)
         {
+            var now = DateTimeOffset.Now;
             var sp = new StackPanel();
-            var rem = s.Remaining(DateTimeOffset.Now);
-            sp.Children.Add(new TextBlock { Text = $"EN MARCHA · {s.Task.Title}", FontSize = 16, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#64E3A1") });
-            sp.Children.Add(new TextBlock { Text = FocusRules.Clock(rem), FontSize = 36, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 6, 0, 6) });
-            if (s.Task.PomodoroPhase(s.Elapsed(DateTimeOffset.Now)) is { } phase)
+            sp.Children.Add(new TextBlock
             {
-                sp.Children.Add(new TextBlock { Text = $"Pomodoro · {phase.Label} (ciclo {phase.Cycle}) · {FocusRules.Clock(phase.RemainingInPhase)}", Foreground = BrushHex("#F5B95F"), Margin = new Thickness(0, 0, 0, 8) });
+                Text = s.Paused ? $"EN PAUSA · {s.Task.Title}" : $"EN MARCHA · {s.Task.Title}",
+                FontSize = 14,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = BrushHex(s.Paused ? "#F5B95F" : "#64E3A1")
+            });
+            _liveClockText = new TextBlock
+            {
+                Text = FocusRules.Clock(s.Remaining(now)),
+                FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"),
+                FontSize = 38,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 8, 0, 6)
+            };
+            sp.Children.Add(_liveClockText);
+
+            if (s.Task.PomodoroPhase(s.Elapsed(now)) is { } phase)
+            {
+                _livePomodoroText = new TextBlock
+                {
+                    Text = $"Pomodoro · {phase.Label} (ciclo {phase.Cycle}) · {FocusRules.Clock(phase.RemainingInPhase)}",
+                    Foreground = BrushHex("#F5B95F"),
+                    FontSize = 12.5,
+                    Margin = new Thickness(0, 0, 0, 10)
+                };
+                sp.Children.Add(_livePomodoroText);
             }
-            var btns = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+
+            var btns = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
             var pauseBtn = new System.Windows.Controls.Button { Content = s.Paused ? "Reanudar" : "Pausar", Margin = new Thickness(0, 0, 8, 0) };
             pauseBtn.Click += (_, _) =>
             {
-                if (!s.Paused && s.Task.Protection != SessionProtection.None &&
-                    !Dialogs.RequestUnlock(s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"pausar «{s.Task.Title}»", this))
-                    return;
+                if (!s.Paused && s.Task.Protection != SessionProtection.None && s.Remaining(DateTimeOffset.Now) > 0)
+                {
+                    if (!Dialogs.RequestUnlock(s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"pausar «{s.Task.Title}»", this))
+                        return;
+                    if (s.Task.Protection == SessionProtection.Forced)
+                        _engine.Workspace.RecordAudit("Salida de emergencia", $"Pausa anticipada de «{s.Task.Title}».");
+                }
                 if (s.Paused) _engine.ResumeSession(); else _engine.PauseSession();
             };
             var add10 = new System.Windows.Controls.Button { Content = "+10 min", Margin = new Thickness(0, 0, 8, 0) };
             add10.Click += (_, _) => _engine.AddSessionMinutes(10);
-            var fin = new System.Windows.Controls.Button { Content = "He terminado", Background = BrushHex("#64E3A1"), Foreground = BrushHex("#0F1218"), FontWeight = FontWeights.SemiBold };
+            var fin = PrimaryButton("He terminado");
             fin.Click += (_, _) =>
             {
-                if (s.Remaining(DateTimeOffset.Now) > 0 && s.Task.Protection != SessionProtection.None &&
-                    !Dialogs.RequestUnlock(s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"terminar antes «{s.Task.Title}»", this))
-                    return;
+                if (s.Remaining(DateTimeOffset.Now) > 0 && s.Task.Protection != SessionProtection.None)
+                {
+                    if (!Dialogs.RequestUnlock(s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"terminar antes «{s.Task.Title}»", this))
+                        return;
+                    if (s.Task.Protection == SessionProtection.Forced)
+                        _engine.Workspace.RecordAudit("Salida de emergencia", $"Finalización anticipada de «{s.Task.Title}».");
+                }
                 _engine.FinishSession();
             };
             btns.Children.Add(pauseBtn);
             btns.Children.Add(add10);
             btns.Children.Add(fin);
             sp.Children.Add(btns);
-            PageContent.Children.Add(Card(sp));
+            PageContent.Children.Add(Card(sp, s.Paused ? "#4A3A1E" : "#275943"));
         }
 
         // Game rules live strip
@@ -218,39 +411,48 @@ public partial class MainWindow : Window
             var dock = new DockPanel();
             if (st.CanFinish)
             {
-                var endMatch = new System.Windows.Controls.Button { Content = "He terminado", Margin = new Thickness(10, 0, 0, 0) };
+                var endMatch = new System.Windows.Controls.Button { Content = "He terminado", Margin = new Thickness(12, 0, 0, 0) };
                 endMatch.Click += (_, _) => _engine.FinishTimedMatch(gr, TimedMatchPlanner.FinishReason.UserFinished);
                 DockPanel.SetDock(endMatch, Dock.Right);
                 dock.Children.Add(endMatch);
             }
             var info = new StackPanel();
-            info.Children.Add(new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, Foreground = BrushHex(st.Warning ? "#F5B95F" : "#64E3A1") });
-            info.Children.Add(new TextBlock { Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(gr))} · {_engine.Workspace.MatchesToday(gr.Id)}/{gr.MaxDailyMatches} {gr.MatchUnitPlural}", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0) });
+            var titleBlock = new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, FontSize = 14, Foreground = BrushHex(st.Warning ? "#F5B95F" : "#64E3A1") };
+            var subBlock = new TextBlock { Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(gr))} · {_engine.Workspace.MatchesToday(gr.Id)}/{gr.MaxDailyMatches} {gr.MatchUnitPlural}", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0) };
+            info.Children.Add(titleBlock);
+            info.Children.Add(subBlock);
             dock.Children.Add(info);
+            _liveGameStrips.Add((gr, titleBlock, subBlock));
             PageContent.Children.Add(Card(dock));
         }
 
-        // Tasks for today + inbox
+        // Scheduled tasks for today
         var todayTasks = _engine.Workspace.Tasks
             .Where(t => !t.Completed && t.IsScheduled && t.ScheduledAt.LocalDateTime.Date == _engine.SelectedDate.LocalDateTime.Date)
             .OrderBy(t => t.ScheduledAt)
             .ToList();
 
-        PageContent.Children.Add(new TextBlock { Text = $"Agenda ({todayTasks.Count})", FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 8) });
+        PageContent.Children.Add(new TextBlock { Text = $"AGENDA ({todayTasks.Count})", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 8, 0, 10) });
         if (todayTasks.Count == 0)
         {
-            PageContent.Children.Add(Card(new TextBlock { Text = "Sin tareas programadas para hoy.", Foreground = BrushHex("#94A3B8") }));
+            PageContent.Children.Add(Card(new TextBlock
+            {
+                Text = "Sin tareas programadas para hoy. Pulsa «+ Nueva tarea» para crear tu primer bloque.",
+                Foreground = BrushHex("#94A3B8"),
+                FontSize = 13
+            }));
         }
         foreach (var t in todayTasks)
         {
             var dock = new DockPanel();
-            var right = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-            var start = new System.Windows.Controls.Button { Content = "Iniciar", Background = BrushHex("#64E3A1"), Foreground = BrushHex("#0F1218"), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 6, 0) };
+            var right = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            var start = PrimaryButton("Iniciar");
+            start.Margin = new Thickness(0, 0, 6, 0);
             start.Click += (_, _) => _engine.StartSession(t);
             var edit = new System.Windows.Controls.Button { Content = "Editar", Margin = new Thickness(0, 0, 6, 0) };
             edit.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, t, this);
             var del = new System.Windows.Controls.Button { Content = "Borrar" };
-            del.Click += (_, _) => _engine.DeleteTask(t);
+            del.Click += (_, _) => ConfirmAndDeleteTask(t);
             right.Children.Add(start);
             right.Children.Add(edit);
             right.Children.Add(del);
@@ -259,23 +461,43 @@ public partial class MainWindow : Window
 
             var left = new StackPanel();
             left.Children.Add(new TextBlock { Text = t.Title, FontSize = 15, FontWeight = FontWeights.SemiBold });
-            left.Children.Add(new TextBlock { Text = $"{t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm} · {t.Minutes} min · {t.Category}", Foreground = BrushHex("#94A3B8"), FontSize = 12 });
+            var meta = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
+            meta.Children.Add(PillBadge($"{t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}", "#64E3A1", "#173228"));
+            meta.Children.Add(PillBadge(FocusRules.DurationText(t.Minutes)));
+            meta.Children.Add(PillBadge(t.Category));
+            if (t.Protection != SessionProtection.None)
+                meta.Children.Add(PillBadge(t.Protection.Label(), "#F5B95F", "#251D10"));
+            left.Children.Add(meta);
             dock.Children.Add(left);
             PageContent.Children.Add(Card(dock));
         }
 
+        // Inbox tasks
         var inbox = _engine.Workspace.Tasks.Where(t => !t.Completed && !t.IsScheduled).ToList();
         if (inbox.Count > 0)
         {
-            PageContent.Children.Add(new TextBlock { Text = $"Bandeja sin hora ({inbox.Count})", FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 8) });
+            PageContent.Children.Add(new TextBlock { Text = $"BANDEJA SIN HORA ({inbox.Count})", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 12, 0, 10) });
             foreach (var t in inbox)
             {
                 var dock = new DockPanel();
-                var start = new System.Windows.Controls.Button { Content = "Iniciar", Margin = new Thickness(8, 0, 0, 0) };
+                var right = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                var start = PrimaryButton("Iniciar");
+                start.Margin = new Thickness(0, 0, 6, 0);
                 start.Click += (_, _) => _engine.StartSession(t);
-                DockPanel.SetDock(start, Dock.Right);
-                dock.Children.Add(start);
-                dock.Children.Add(new TextBlock { Text = $"{t.Title} · {t.Minutes} min", VerticalAlignment = VerticalAlignment.Center });
+                var edit = new System.Windows.Controls.Button { Content = "Editar", Margin = new Thickness(0, 0, 6, 0) };
+                edit.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, t, this);
+                var del = new System.Windows.Controls.Button { Content = "Borrar" };
+                del.Click += (_, _) => ConfirmAndDeleteTask(t);
+                right.Children.Add(start);
+                right.Children.Add(edit);
+                right.Children.Add(del);
+                DockPanel.SetDock(right, Dock.Right);
+                dock.Children.Add(right);
+
+                var left = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                left.Children.Add(new TextBlock { Text = t.Title, FontSize = 14.5, FontWeight = FontWeights.SemiBold });
+                left.Children.Add(new TextBlock { Text = $"{t.Category} · {FocusRules.DurationText(t.Minutes)}", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 3, 0, 0) });
+                dock.Children.Add(left);
                 PageContent.Children.Add(Card(dock));
             }
         }
@@ -283,59 +505,61 @@ public partial class MainWindow : Window
 
     private void BuildWeekPage()
     {
-        PageContent.Children.Add(Header("Semana"));
+        var addBtn = PrimaryButton("+ Nueva tarea");
+        addBtn.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, null, this);
+        PageContent.Children.Add(PageHeader("Semana", "Una semana con intención.", addBtn));
+
         var startOfWeek = _engine.SelectedDate.LocalDateTime.Date.AddDays(-(((int)_engine.SelectedDate.LocalDateTime.DayOfWeek + 6) % 7));
         for (var i = 0; i < 7; i++)
         {
             var day = startOfWeek.AddDays(i);
+            var isToday = day == DateTime.Now.Date;
             var dayTasks = _engine.Workspace.Tasks
                 .Where(t => !t.Completed && t.IsScheduled && t.ScheduledAt.LocalDateTime.Date == day)
                 .OrderBy(t => t.ScheduledAt).ToList();
             var sp = new StackPanel();
-            sp.Children.Add(new TextBlock { Text = day.ToString("dddd d MMM"), FontWeight = FontWeights.SemiBold, Foreground = BrushHex(day == DateTime.Now.Date ? "#64E3A1" : "#F2F5FA") });
+            sp.Children.Add(new TextBlock
+            {
+                Text = isToday ? $"{day:dddd d MMM} · Hoy" : day.ToString("dddd d MMM"),
+                FontSize = 14.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = BrushHex(isToday ? "#64E3A1" : "#F2F5FA")
+            });
             if (dayTasks.Count == 0)
-                sp.Children.Add(new TextBlock { Text = "Libre", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0) });
+                sp.Children.Add(new TextBlock { Text = "Sin bloques programados", Foreground = BrushHex("#64748B"), FontSize = 12, Margin = new Thickness(0, 5, 0, 0) });
             foreach (var t in dayTasks)
-                sp.Children.Add(new TextBlock { Text = $"• {t.ScheduledAt.LocalDateTime:HH:mm} {t.Title} ({t.Minutes} min)", Foreground = BrushHex("#CBD5E1"), Margin = new Thickness(0, 3, 0, 0) });
-            PageContent.Children.Add(Card(sp));
+                sp.Children.Add(new TextBlock { Text = $"• {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min)", Foreground = BrushHex("#CBD5E1"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
+            PageContent.Children.Add(Card(sp, isToday ? "#275943" : null));
         }
     }
 
     private void BuildRulesPage()
     {
-        var top = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
-        var createBtn = new System.Windows.Controls.Button
-        {
-            Content = "+ Regla personalizada",
-            Background = BrushHex("#64E3A1"),
-            Foreground = BrushHex("#0F1218"),
-            FontWeight = FontWeights.SemiBold
-        };
+        var createBtn = PrimaryButton("+ Regla personalizada");
         createBtn.Click += (_, _) => Dialogs.ShowRuleEditor(_engine, null, null, this);
-        DockPanel.SetDock(createBtn, Dock.Right);
-        top.Children.Add(createBtn);
-        top.Children.Add(new TextBlock { Text = "Reglas y juegos", FontSize = 22, FontWeight = FontWeights.Bold });
-        PageContent.Children.Add(top);
+        PageContent.Children.Add(PageHeader("Reglas y juegos", "Tus límites automáticos, también fuera de las tareas.", createBtn));
 
-        // Game templates gallery
-        PageContent.Children.Add(new TextBlock { Text = "Juegos: primero estudio, luego partida", FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 2, 0, 8) });
-        var wrap = new WrapPanel { Margin = new Thickness(0, 0, 0, 16) };
+        PageContent.Children.Add(new TextBlock { Text = "PLANTILLAS DE JUEGOS · PRIMERO ESTUDIO, LUEGO PARTIDA", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 2, 0, 10) });
+        var wrap = new WrapPanel { Margin = new Thickness(0, 0, 0, 18) };
         foreach (var game in GameCatalog.All)
         {
             var btn = new System.Windows.Controls.Button
             {
-                Width = 205,
-                Margin = new Thickness(0, 0, 8, 8),
+                Width = 216,
+                Margin = new Thickness(0, 0, 10, 10),
                 HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left,
-                Padding = new Thickness(12, 10, 12, 10)
+                Padding = new Thickness(14, 11, 14, 11),
+                Background = BrushHex("#131822"),
+                BorderBrush = BrushHex("#242E40")
             };
             var sp = new StackPanel();
-            sp.Children.Add(new TextBlock { Text = game.Name, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#F2F5FA") });
+            sp.Children.Add(new TextBlock { Text = game.Name, FontWeight = FontWeights.SemiBold, FontSize = 13.5, Foreground = BrushHex("#F2F5FA") });
             sp.Children.Add(new TextBlock
             {
                 Text = game.Detection.IsExact() ? game.Detection.Label() : $"{game.TypicalMatchMinutes} min + prórroga",
-                FontSize = 11,
-                Foreground = BrushHex("#64E3A1")
+                FontSize = 11.5,
+                Foreground = BrushHex("#64E3A1"),
+                Margin = new Thickness(0, 3, 0, 0)
             });
             btn.Content = sp;
             btn.Click += (_, _) => Dialogs.ShowRuleEditor(_engine, null, GeneralBlockRule.GameTemplate(game), this);
@@ -343,12 +567,12 @@ public partial class MainWindow : Window
         }
         PageContent.Children.Add(wrap);
 
-        PageContent.Children.Add(new TextBlock { Text = $"Tus reglas ({_engine.Workspace.GeneralRules.Count})", FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 4, 0, 8) });
+        PageContent.Children.Add(new TextBlock { Text = $"TUS REGLAS ({_engine.Workspace.GeneralRules.Count})", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 4, 0, 10) });
         foreach (var rule in _engine.Workspace.GeneralRules)
         {
             var sp = new StackPanel();
             var header = new DockPanel();
-            var actions = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+            var actions = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
 
             if (rule.Kind == GeneralRuleKind.Pomodoro)
             {
@@ -366,10 +590,19 @@ public partial class MainWindow : Window
             var toggle = new System.Windows.Controls.Button { Content = rule.Enabled ? "Apagar" : "Activar", Margin = new Thickness(0, 0, 6, 0) };
             toggle.Click += (_, _) =>
             {
-                if (rule.Enabled && _engine.IsRuleProtected(rule) &&
-                    !Dialogs.RequestUnlock(rule.Protection, rule.UnlockChars, rule.StopDelayMinutes, $"apagar «{rule.Name}»", this))
-                    return;
+                if (rule.Enabled && _engine.IsRuleProtected(rule))
+                {
+                    if (!Dialogs.RequestUnlock(rule.Protection, rule.UnlockChars, rule.StopDelayMinutes, $"apagar «{rule.Name}»", this))
+                        return;
+                    if (rule.Protection == SessionProtection.Forced)
+                        _engine.Workspace.RecordAudit("Salida de emergencia", $"Apagada regla protegida «{rule.Name}».");
+                }
                 rule.Enabled = !rule.Enabled;
+                if (!rule.Enabled && rule.Kind == GeneralRuleKind.Pomodoro)
+                {
+                    rule.PomodoroPhase = PomodoroPhase.Idle;
+                    rule.ActivePomodoroDeadline = null;
+                }
                 _engine.Persist();
             };
 
@@ -379,9 +612,13 @@ public partial class MainWindow : Window
             var del = new System.Windows.Controls.Button { Content = "Borrar" };
             del.Click += (_, _) =>
             {
-                if (_engine.IsRuleProtected(rule) &&
-                    !Dialogs.RequestUnlock(rule.Protection, rule.UnlockChars, rule.StopDelayMinutes, $"borrar «{rule.Name}»", this))
-                    return;
+                if (_engine.IsRuleProtected(rule))
+                {
+                    if (!Dialogs.RequestUnlock(rule.Protection, rule.UnlockChars, rule.StopDelayMinutes, $"borrar «{rule.Name}»", this))
+                        return;
+                    if (rule.Protection == SessionProtection.Forced)
+                        _engine.Workspace.RecordAudit("Salida de emergencia", $"Borrada regla protegida «{rule.Name}».");
+                }
                 _engine.DeleteGeneralRule(rule);
             };
 
@@ -394,20 +631,18 @@ public partial class MainWindow : Window
             var titleStack = new StackPanel();
             var enforcing = _engine.IsRuleEnforcing(rule);
             titleStack.Children.Add(new TextBlock { Text = rule.Name, FontSize = 15, FontWeight = FontWeights.SemiBold });
-            titleStack.Children.Add(new TextBlock
-            {
-                Text = $"{rule.Kind.GalleryTitle()} · {(enforcing ? "Bloqueando ahora" : rule.Enabled ? "Activa" : "Apagada")} · {rule.Protection.Label()}",
-                Foreground = BrushHex(enforcing ? "#64E3A1" : "#94A3B8"),
-                FontSize = 12,
-                Margin = new Thickness(0, 2, 0, 0)
-            });
+            var pills = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
+            pills.Children.Add(PillBadge(rule.Kind.GalleryTitle()));
+            pills.Children.Add(PillBadge(enforcing ? "Bloqueando" : rule.Enabled ? "Activa" : "Apagada", enforcing ? "#64E3A1" : rule.Enabled ? "#E2E8F0" : "#64748B", enforcing ? "#173228" : "#1B2230"));
+            pills.Children.Add(PillBadge(rule.Protection.Label(), rule.Protection == SessionProtection.None ? "#94A3B8" : "#F5B95F", rule.Protection == SessionProtection.None ? "#1B2230" : "#251D10"));
+            titleStack.Children.Add(pills);
             header.Children.Add(titleStack);
             sp.Children.Add(header);
 
             if (rule.Kind == GeneralRuleKind.WorkGoal && rule.MaxDailyMatches > 0)
             {
                 var st = _engine.GameRuleStatus(rule);
-                var gRow = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
+                var gRow = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
                 if (st.CanFinish)
                 {
                     var finBtn = new System.Windows.Controls.Button { Content = "He terminado" };
@@ -419,23 +654,18 @@ public partial class MainWindow : Window
                 sp.Children.Add(gRow);
             }
 
-            PageContent.Children.Add(Card(sp));
+            PageContent.Children.Add(Card(sp, enforcing ? "#275943" : null));
         }
     }
 
     private void BuildBlockingPage()
     {
-        PageContent.Children.Add(Header("Perfiles y bloqueo rápido"));
+        PageContent.Children.Add(PageHeader("Bloquear ahora", "Inicia un perfil al instante sin rellenar formularios."));
         foreach (var profile in _engine.Workspace.Profiles)
         {
             var dock = new DockPanel();
-            var launch = new System.Windows.Controls.Button
-            {
-                Content = $"Empezar {profile.Minutes} min",
-                Background = BrushHex("#64E3A1"),
-                Foreground = BrushHex("#0F1218"),
-                FontWeight = FontWeights.SemiBold
-            };
+            var launch = PrimaryButton($"Empezar {profile.Minutes} min");
+            launch.VerticalAlignment = VerticalAlignment.Center;
             launch.Click += (_, _) =>
             {
                 var t = new FocusTask { Title = profile.Name, ScheduledAt = DateTimeOffset.Now };
@@ -448,7 +678,7 @@ public partial class MainWindow : Window
             dock.Children.Add(launch);
             var sp = new StackPanel();
             sp.Children.Add(new TextBlock { Text = profile.Name, FontSize = 15, FontWeight = FontWeights.SemiBold });
-            sp.Children.Add(new TextBlock { Text = $"{profile.Category} · {profile.Minutes} min · {(string.IsNullOrEmpty(profile.Domains) ? "sin lista web" : profile.Domains)}", Foreground = BrushHex("#94A3B8"), FontSize = 12 });
+            sp.Children.Add(new TextBlock { Text = $"{profile.Category} · {profile.Minutes} min · {(string.IsNullOrEmpty(profile.Domains) ? "sin lista web" : profile.Domains)}", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap });
             dock.Children.Add(sp);
             PageContent.Children.Add(Card(dock));
         }
@@ -456,48 +686,48 @@ public partial class MainWindow : Window
 
     private void BuildBreaksPage()
     {
-        PageContent.Children.Add(Header("Descansos"));
+        PageContent.Children.Add(PageHeader("Descansos", "Descansa la vista y la mente antes de necesitarlo."));
         var s = _engine.Workspace.Settings;
         var sp = new StackPanel();
         var contCheck = new System.Windows.Controls.CheckBox
         {
             Content = $"Descanso continuo de vista ({s.ContinuousWorkMinutes} min de trabajo → {s.ContinuousBreakDurationMinutes} min de descanso)",
-            IsChecked = s.ContinuousBreakEnabled,
-            Foreground = BrushHex("#F2F5FA")
+            IsChecked = s.ContinuousBreakEnabled
         };
         contCheck.Click += (_, _) => { s.ContinuousBreakEnabled = contCheck.IsChecked == true; _engine.Persist(); };
         sp.Children.Add(contCheck);
         if (_engine.ActiveContinuousBreakDeadline != null)
         {
-            sp.Children.Add(new TextBlock
+            _liveBreakText = new TextBlock
             {
                 Text = $"Descanso activo: {FocusRules.Clock(_engine.ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot())} · {_engine.ActiveContinuousBreakMessage}",
                 Foreground = BrushHex("#64E3A1"),
-                Margin = new Thickness(0, 8, 0, 0)
-            });
+                FontSize = 13,
+                Margin = new Thickness(0, 10, 0, 0)
+            };
+            sp.Children.Add(_liveBreakText);
         }
         PageContent.Children.Add(Card(sp));
 
         foreach (var br in s.Breaks)
         {
-            PageContent.Children.Add(Card(new TextBlock { Text = $"{br.Title} · {br.StartHour:D2}:{br.StartMinute:D2} ({br.DurationMinutes} min)" }));
+            PageContent.Children.Add(Card(new TextBlock { Text = $"{br.Title} · {br.StartHour:D2}:{br.StartMinute:D2} ({br.DurationMinutes} min)", FontSize = 14 }));
         }
     }
 
     private void BuildHistoryPage()
     {
-        var top = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
         var switchBtn = new System.Windows.Controls.Button { Content = _auditView ? "Ver sesiones" : "Registro de auditoría" };
         switchBtn.Click += (_, _) => { _auditView = !_auditView; RefreshUI(); };
-        DockPanel.SetDock(switchBtn, Dock.Right);
-        top.Children.Add(switchBtn);
-        top.Children.Add(new TextBlock { Text = _auditView ? "Registro de auditoría" : "Historial de sesiones", FontSize = 22, FontWeight = FontWeights.Bold });
-        PageContent.Children.Add(top);
+        PageContent.Children.Add(PageHeader(
+            _auditView ? "Registro de auditoría" : "Historial de sesiones",
+            "Lo que has hecho cuenta.",
+            switchBtn));
 
         if (_auditView)
         {
             foreach (var item in _engine.Workspace.AuditLog.Take(60))
-                PageContent.Children.Add(Card(new TextBlock { Text = $"{item.At.LocalDateTime:g} · [{item.Category}] {item.Summary}", TextWrapping = TextWrapping.Wrap }));
+                PageContent.Children.Add(Card(new TextBlock { Text = $"{item.At.LocalDateTime:g} · [{item.Category}] {item.Summary}", TextWrapping = TextWrapping.Wrap, FontSize = 13 }));
             if (_engine.Workspace.AuditLog.Count == 0)
                 PageContent.Children.Add(Card(new TextBlock { Text = "Sin eventos registrados todavía.", Foreground = BrushHex("#94A3B8") }));
             return;
@@ -506,8 +736,8 @@ public partial class MainWindow : Window
         foreach (var rec in _engine.Workspace.History.Take(50))
         {
             var sp = new StackPanel();
-            sp.Children.Add(new TextBlock { Text = $"{rec.Session.Task.Title} · {(rec.Completed ? "Completada" : rec.Cancelled ? "Cancelada" : "Pendiente")}", FontWeight = FontWeights.SemiBold });
-            sp.Children.Add(new TextBlock { Text = $"{rec.Session.StartedAt.LocalDateTime:g} · Trabajado: {FocusRules.Clock(rec.Session.Elapsed(rec.Session.EndedAt ?? rec.Session.StartedAt))} · Interrupciones: {rec.Session.InterruptionCount}", Foreground = BrushHex("#94A3B8"), FontSize = 12 });
+            sp.Children.Add(new TextBlock { Text = $"{rec.Session.Task.Title} · {(rec.Completed ? "Completada" : rec.Cancelled ? "Cancelada" : "Pendiente")}", FontSize = 14.5, FontWeight = FontWeights.SemiBold });
+            sp.Children.Add(new TextBlock { Text = $"{rec.Session.StartedAt.LocalDateTime:g} · Trabajado: {FocusRules.Clock(rec.Session.Elapsed(rec.Session.EndedAt ?? rec.Session.StartedAt))} · Interrupciones: {rec.Session.InterruptionCount}", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0) });
             PageContent.Children.Add(Card(sp));
         }
         if (_engine.Workspace.History.Count == 0)
@@ -516,16 +746,14 @@ public partial class MainWindow : Window
 
     private void BuildSettingsPage()
     {
-        PageContent.Children.Add(Header("Ajustes"));
+        PageContent.Children.Add(PageHeader("Ajustes", "A tu manera."));
 
-        // Protection & watcher
         var guardPanel = new StackPanel();
-        guardPanel.Children.Add(new TextBlock { Text = "Protección en Windows", FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 8) });
+        guardPanel.Children.Add(new TextBlock { Text = "PROTECCIÓN EN WINDOWS", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#64E3A1"), Margin = new Thickness(0, 0, 0, 10) });
         var guardCheck = new System.Windows.Controls.CheckBox
         {
-            Content = "Vigilante de relanzado (--watcher al iniciar Windows: vuelve a abrir FocusDesk si se cierra a la fuerza durante una regla/sesión protegida)",
-            IsChecked = _engine.Workspace.Settings.RelaunchGuard,
-            Foreground = BrushHex("#F2F5FA")
+            Content = "Vigilante de relanzado (--watcher al iniciar Windows: vuelve a abrir FocusDesk si se cierra)",
+            IsChecked = _engine.Workspace.Settings.RelaunchGuard
         };
         guardCheck.Click += (_, _) => _engine.SetRelaunchGuard(guardCheck.IsChecked == true);
         guardPanel.Children.Add(guardCheck);
@@ -534,27 +762,26 @@ public partial class MainWindow : Window
         {
             Content = "Proteger portapapeles (limpia comandos taskkill / enlaces bloqueados)",
             IsChecked = _engine.Workspace.Settings.ProtectClipboard,
-            Foreground = BrushHex("#F2F5FA"),
-            Margin = new Thickness(0, 6, 0, 0)
+            Margin = new Thickness(0, 10, 0, 0)
         };
         clipCheck.Click += (_, _) => { _engine.Workspace.Settings.ProtectClipboard = clipCheck.IsChecked == true; _engine.Persist(); };
         guardPanel.Children.Add(clipCheck);
 
-        var quitBtn = new System.Windows.Controls.Button { Content = "Salir de FocusDesk", Margin = new Thickness(0, 12, 0, 0), HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
+        var quitBtn = new System.Windows.Controls.Button { Content = "Salir de FocusDesk", Margin = new Thickness(0, 14, 0, 0), HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
         quitBtn.Click += (_, _) => _onQuitRequested();
         guardPanel.Children.Add(quitBtn);
         PageContent.Children.Add(Card(guardPanel));
 
         // Study sources
         var studyPanel = new StackPanel();
-        studyPanel.Children.Add(new TextBlock { Text = "Qué cuenta como estudio activo", FontSize = 15, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
-        studyPanel.Children.Add(new TextBlock { Text = "Lo que añadas hoy empieza a contar mañana para evitar atajos de último minuto.", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 0, 0, 8) });
+        studyPanel.Children.Add(new TextBlock { Text = "QUÉ CUENTA COMO ESTUDIO ACTIVO", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#64E3A1"), Margin = new Thickness(0, 0, 0, 4) });
+        studyPanel.Children.Add(new TextBlock { Text = "Lo que añadas hoy empieza a contar mañana para evitar atajos de último minuto.", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 0, 0, 12) });
 
-        var addRow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
-        var webInput = new System.Windows.Controls.TextBox { Width = 220, Background = BrushHex("#1F2631"), Foreground = BrushHex("#F2F5FA"), BorderBrush = BrushHex("#283140"), Padding = new Thickness(6), Margin = new Thickness(0, 0, 8, 0) };
-        var addWebBtn = new System.Windows.Controls.Button { Content = "Añadir web", Margin = new Thickness(0, 0, 12, 0) };
+        var addRow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
+        var webInput = new System.Windows.Controls.TextBox { Width = 220, Margin = new Thickness(0, 0, 8, 0) };
+        var addWebBtn = new System.Windows.Controls.Button { Content = "Añadir web", Margin = new Thickness(0, 0, 16, 0) };
         addWebBtn.Click += (_, _) => { _engine.AddStudyWeb(webInput.Text); webInput.Text = ""; };
-        var appInput = new System.Windows.Controls.TextBox { Width = 160, Background = BrushHex("#1F2631"), Foreground = BrushHex("#F2F5FA"), BorderBrush = BrushHex("#283140"), Padding = new Thickness(6), Margin = new Thickness(0, 0, 8, 0) };
+        var appInput = new System.Windows.Controls.TextBox { Width = 170, Margin = new Thickness(0, 0, 8, 0) };
         var addAppBtn = new System.Windows.Controls.Button { Content = "Añadir .exe" };
         addAppBtn.Click += (_, _) => { _engine.AddStudyApp(appInput.Text, appInput.Text); appInput.Text = ""; };
         addRow.Children.Add(webInput);
@@ -566,7 +793,14 @@ public partial class MainWindow : Window
         var wrap = new WrapPanel();
         foreach (var src in _engine.Workspace.Settings.StudySources)
         {
-            var pill = new System.Windows.Controls.Button { Content = $"{src.Name} ({src.Kind}) ×", Margin = new Thickness(0, 0, 6, 6), Padding = new Thickness(8, 4, 8, 4) };
+            var pill = new System.Windows.Controls.Button
+            {
+                Content = $"{src.Name} ({src.Kind}) ×",
+                Margin = new Thickness(0, 0, 6, 6),
+                Padding = new Thickness(10, 4, 10, 4),
+                MinHeight = 28,
+                FontSize = 12
+            };
             pill.Click += (_, _) => _engine.RemoveStudySource(src);
             wrap.Children.Add(pill);
         }
@@ -574,21 +808,28 @@ public partial class MainWindow : Window
         PageContent.Children.Add(Card(studyPanel));
 
         // Backups
+        var backupPanel = new StackPanel();
+        backupPanel.Children.Add(new TextBlock { Text = "COPIAS DE SEGURIDAD (.JSON)", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#64E3A1"), Margin = new Thickness(0, 0, 0, 10) });
         var backupRow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-        var expBtn = new System.Windows.Controls.Button { Content = "Exportar copia (.json)", Margin = new Thickness(0, 0, 8, 0) };
+        var expBtn = new System.Windows.Controls.Button { Content = "Exportar copia (.json)", Margin = new Thickness(0, 0, 10, 0) };
         expBtn.Click += (_, _) =>
         {
             var dlg = new Microsoft.Win32.SaveFileDialog { FileName = "FocusDesk-backup.json", Filter = "JSON (*.json)|*.json" };
-            if (dlg.ShowDialog() == true) _engine.ExportBackup(dlg.FileName);
+            if (dlg.ShowDialog() != true) return;
+            try { _engine.ExportBackup(dlg.FileName); }
+            catch (Exception ex) { _engine.Error = $"No se pudo exportar la copia: {ex.Message}"; UpdateNoticeAndSidebar(); }
         };
         var impBtn = new System.Windows.Controls.Button { Content = "Importar copia (.json)" };
         impBtn.Click += (_, _) =>
         {
             var dlg = new Microsoft.Win32.OpenFileDialog { Filter = "JSON (*.json)|*.json" };
-            if (dlg.ShowDialog() == true) _engine.ImportBackup(dlg.FileName);
+            if (dlg.ShowDialog() != true) return;
+            try { _engine.ImportBackup(dlg.FileName); }
+            catch (Exception ex) { _engine.Error = $"No se pudo importar la copia: {ex.Message}"; UpdateNoticeAndSidebar(); }
         };
         backupRow.Children.Add(expBtn);
         backupRow.Children.Add(impBtn);
-        PageContent.Children.Add(Card(backupRow));
+        backupPanel.Children.Add(backupRow);
+        PageContent.Children.Add(Card(backupPanel));
     }
 }

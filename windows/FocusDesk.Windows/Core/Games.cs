@@ -13,13 +13,12 @@ using System.Threading.Tasks;
 
 namespace FocusDesk.Windows.Core;
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum GameMatchDetection
 {
-    [JsonPropertyName("exactLeague")] ExactLeague,
-    [JsonPropertyName("exactValorant")] ExactValorant,
-    [JsonPropertyName("exactValveGSI")] ExactValveGSI,
-    [JsonPropertyName("timed")] Timed
+    ExactLeague,
+    ExactValorant,
+    ExactValveGSI,
+    Timed
 }
 
 public static class GameMatchDetectionExtensions
@@ -255,6 +254,14 @@ public enum ValorantMatchPhase { Unknown, Menu, InMatch }
 
 public static class ValorantMatchRules
 {
+    private static readonly HttpClient RiotClient = new(new HttpClientHandler
+    {
+        ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+    })
+    {
+        Timeout = TimeSpan.FromMilliseconds(800)
+    };
+
     public static bool IsValorantProcess(string? processName, string? executablePath = null)
     {
         var proc = (processName ?? "").ToLowerInvariant().Replace(".exe", "");
@@ -270,6 +277,16 @@ public static class ValorantMatchRules
         if (proc is "valorant" or "valorant-win64-shipping") return true;
         var path = (executablePath ?? "").ToLowerInvariant().Replace('\\', '/');
         return path.Contains("valorant-win64-shipping.exe");
+    }
+
+    private static string? ExtractLoopState(JsonElement root)
+    {
+        if (root.TryGetProperty("sessionLoopState", out var loopEl) && loopEl.ValueKind == JsonValueKind.String)
+            return loopEl.GetString();
+        if (root.TryGetProperty("matchPresenceData", out var mpd) && mpd.ValueKind == JsonValueKind.Object &&
+            mpd.TryGetProperty("sessionLoopState", out var nestedEl) && nestedEl.ValueKind == JsonValueKind.String)
+            return nestedEl.GetString();
+        return null;
     }
 
     /// <summary>
@@ -294,9 +311,10 @@ public static class ValorantMatchRules
                 if (string.IsNullOrEmpty(b64)) continue;
                 var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(b64));
                 using var privDoc = JsonDocument.Parse(decoded);
-                if (privDoc.RootElement.TryGetProperty("sessionLoopState", out var loopEl))
+                var rawState = ExtractLoopState(privDoc.RootElement);
+                if (!string.IsNullOrEmpty(rawState))
                 {
-                    var state = (loopEl.GetString() ?? "").ToUpperInvariant();
+                    var state = rawState.ToUpperInvariant();
                     if (state is "INGAME" or "PREGAME") return ValorantMatchPhase.InMatch;
                     if (state == "MENUS") return ValorantMatchPhase.Menu;
                 }
@@ -324,15 +342,11 @@ public static class ValorantMatchRules
             var password = parts[3];
             var protocol = parts[4];
 
-            using var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
-            };
-            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(800) };
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"{protocol}://127.0.0.1:{port}/chat/v4/presences");
             var auth = Convert.ToBase64String(Encoding.ASCII.GetBytes($"riot:{password}"));
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", auth);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth);
 
-            var resp = await client.GetAsync($"{protocol}://127.0.0.1:{port}/chat/v4/presences");
+            using var resp = await RiotClient.SendAsync(req);
             if (!resp.IsSuccessStatusCode) return ValorantMatchPhase.Unknown;
             var json = await resp.Content.ReadAsStringAsync();
             return ParsePresenceJson(json);
@@ -434,7 +448,8 @@ public static class ValveGSI
                     if (parts.Length >= 4)
                     {
                         var lib = parts[3].Replace("\\\\", "\\");
-                        roots.Add(Path.Combine(lib, "steamapps"));
+                        var sa = Path.Combine(lib, "steamapps");
+                        if (Directory.Exists(sa)) roots.Add(sa);
                     }
                 }
             }
@@ -489,9 +504,17 @@ public sealed class ValveGsiServer : IDisposable
     {
         while (!ct.IsCancellationRequested && listener.IsListening)
         {
+            HttpListenerContext? ctx = null;
             try
             {
-                var ctx = await listener.GetContextAsync();
+                ctx = await listener.GetContextAsync();
+            }
+            catch (ObjectDisposedException) { break; }
+            catch (HttpListenerException) { break; }
+            catch { continue; }
+
+            try
+            {
                 using var reader = new StreamReader(ctx.Request.InputStream, ctx.Request.ContentEncoding ?? Encoding.UTF8);
                 var body = await reader.ReadToEndAsync(ct);
                 ctx.Response.StatusCode = 200;
@@ -499,7 +522,10 @@ public sealed class ValveGsiServer : IDisposable
                 var ev = ValveGSI.Parse(body);
                 if (ev != null) _onEvent(ev);
             }
-            catch { break; }
+            catch
+            {
+                try { ctx.Response.Abort(); } catch { }
+            }
         }
     }
 
@@ -507,6 +533,8 @@ public sealed class ValveGsiServer : IDisposable
     {
         try { _cts?.Cancel(); } catch { }
         try { _listener?.Stop(); _listener?.Close(); } catch { }
+        try { _cts?.Dispose(); } catch { }
+        _cts = null;
         _listener = null;
     }
 }

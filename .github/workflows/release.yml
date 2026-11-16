@@ -13,6 +13,9 @@ jobs:
   build-macos:
     name: Build macOS (.dmg)
     runs-on: macos-15
+    env:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,10 +24,7 @@ jobs:
         run: swift test
 
       - name: Import Developer ID certificate (optional)
-        if: env.APPLE_CERTIFICATE_P12 != ''
-        env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        if: ${{ env.APPLE_CERTIFICATE_P12 != '' }}
         run: |
           KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
           KEYCHAIN_PASS=focusdesk-ci-keychain
@@ -33,7 +33,7 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
 
       - name: Build, smoke-test, and package .dmg
@@ -62,6 +62,7 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Publish self-contained Windows executable
+        shell: pwsh
         run: |
           dotnet publish windows/FocusDesk.Windows/FocusDesk.Windows.csproj `
             -c Release `
@@ -69,11 +70,13 @@ jobs:
             --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
             -o dist-win
 
       - name: Package Windows executable
         shell: pwsh
         run: |
+          if (!(Test-Path dist-win/FocusDesk.exe)) { throw "FocusDesk.exe was not produced by dotnet publish" }
           Copy-Item dist-win/FocusDesk.exe FocusDesk-Windows-x64.exe
 
       - name: Upload Windows artifact

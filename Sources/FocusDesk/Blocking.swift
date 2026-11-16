@@ -603,33 +603,45 @@ enum BlockPage {
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="color-scheme" content="light dark">
         <title>Ahora no · FocusDesk</title>
         <style>
-          :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --ink:#1c1d22; --muted:#6b6f7a; --mint:#1f9c72; --line:#e3e5ea; }
+          :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --elevated:#f0f2f5; --ink:#1c1d22; --muted:#5c616d; --mint:#137345; --line:#dfe3ea; }
           @media (prefers-color-scheme: dark) {
-            :root { --bg:#131417; --card:#1c1e22; --ink:#f2f3f5; --muted:#9aa0ab; --mint:#4fd0a0; --line:#2b2e34; }
+            :root { --bg:#0B0E14; --card:#131822; --elevated:#1B2230; --ink:#F2F5FA; --muted:#94A3B8; --mint:#64E3A1; --line:#242E40; }
           }
           * { box-sizing: border-box; }
           body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px;
                  background:var(--bg); color:var(--ink);
                  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+          @keyframes cardIn {
+            from { opacity:0; transform: scale(0.96); }
+            to { opacity:1; transform: scale(1); }
+          }
           .card { width:min(560px,100%); background:var(--card); border:1px solid var(--line);
                   border-radius:18px; padding:40px 36px; text-align:center;
-                  box-shadow:0 16px 48px rgba(0,0,0,.08); }
+                  box-shadow:0 20px 56px rgba(0,0,0,.18);
+                  animation: cardIn 180ms cubic-bezier(0.16, 1, 0.3, 1); }
+          @media (prefers-reduced-motion: reduce) {
+            .card { animation: none; }
+          }
           .dot { width:44px; height:44px; margin:0 auto 20px; border-radius:50%;
                  background:color-mix(in srgb, var(--mint) 16%, transparent);
-                 display:grid; place-items:center; font-size:21px; }
+                 border:1px solid color-mix(in srgb, var(--mint) 28%, transparent);
+                 color:var(--mint); display:grid; place-items:center; font-size:21px; }
           h1 { font-size:25px; margin:0 0 10px; letter-spacing:-.02em; }
           p { margin:0 0 8px; color:var(--muted); font-size:14px; line-height:1.55; }
-          .host { font-family: ui-monospace, SFMono-Regular, monospace; color:var(--ink); }
-          .clock { font-family: ui-monospace, SFMono-Regular, monospace; font-size:42px;
-                   color:var(--mint); margin:26px 0 4px; font-variant-numeric: tabular-nums; }
+          .host { font-family: ui-monospace, SFMono-Regular, monospace; color:var(--ink);
+                  background:var(--elevated); border:1px solid var(--line); border-radius:6px; padding:2px 7px; }
+          .clock { font-family: ui-monospace, SFMono-Regular, monospace; font-size:44px; font-weight:700;
+                   color:var(--mint); margin:24px 0 4px; font-variant-numeric: tabular-nums; }
           .label { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
           .motivation { margin:18px 0 0; padding:12px 16px; border-radius:12px;
                         background:color-mix(in srgb, var(--mint) 10%, transparent);
+                        border:1px solid color-mix(in srgb, var(--mint) 22%, transparent);
                         color:var(--ink); font-style:italic; font-size:14px; line-height:1.5; }
-          .steps { margin-top:20px; padding:14px 18px; border-radius:12px; border:1px solid var(--line);
-                   text-align:left; font-size:13px; }
+          .steps { margin-top:20px; padding:14px 18px; border-radius:12px; background:var(--elevated);
+                   border:1px solid var(--line); text-align:left; font-size:13px; }
           .steps-title { font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
                          color:var(--muted); margin-bottom:8px; }
           .steps ul { margin:0; padding-left:18px; color:var(--ink); }

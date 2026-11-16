@@ -7,16 +7,15 @@ using System.Text.RegularExpressions;
 
 namespace FocusDesk.Windows.Core;
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum GeneralRuleKind
 {
-    [JsonPropertyName("dailyLimit")] DailyLimit,
-    [JsonPropertyName("schedule")] Schedule,
-    [JsonPropertyName("workGoal")] WorkGoal,
-    [JsonPropertyName("launchLimit")] LaunchLimit,
-    [JsonPropertyName("pomodoro")] Pomodoro,
-    [JsonPropertyName("countdown")] Countdown,
-    [JsonPropertyName("alwaysOn")] AlwaysOn
+    DailyLimit,
+    Schedule,
+    WorkGoal,
+    LaunchLimit,
+    Pomodoro,
+    Countdown,
+    AlwaysOn
 }
 
 public static class GeneralRuleKindExtensions
@@ -46,12 +45,11 @@ public static class GeneralRuleKindExtensions
     };
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum LimitPeriodUnit
 {
-    [JsonPropertyName("hour")] Hour,
-    [JsonPropertyName("day")] Day,
-    [JsonPropertyName("week")] Week
+    Hour,
+    Day,
+    Week
 }
 
 public static class LimitPeriodUnitExtensions
@@ -65,14 +63,13 @@ public static class LimitPeriodUnitExtensions
     };
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum PomodoroPhase
 {
-    [JsonPropertyName("idle")] Idle,
-    [JsonPropertyName("work")] Work,
-    [JsonPropertyName("shortBreak")] ShortBreak,
-    [JsonPropertyName("longBreak")] LongBreak,
-    [JsonPropertyName("waitingForUser")] WaitingForUser
+    Idle,
+    Work,
+    ShortBreak,
+    LongBreak,
+    WaitingForUser
 }
 
 public static class PomodoroPhaseExtensions
@@ -293,7 +290,7 @@ public sealed class GeneralBlockRule
     public TrustedDeadline? ActivePostMatchGraceDeadline { get; set; }
     public bool VerifyActiveStudy { get; set; }
     public bool OneMatchPerGoalBlock { get; set; }
-    public string? GameId { get; set; }
+    [JsonPropertyName("gameID")] public string? GameId { get; set; }
     public int MatchMinutes { get; set; } = 30;
     public int MatchOvertimeMinutes { get; set; } = 10;
     public TrustedDeadline? ActiveMatchDeadline { get; set; }
@@ -333,6 +330,7 @@ public sealed class GeneralBlockRule
     public string MotivationalMessage { get; set; } = "";
     public string BlockedTitleKeywords { get; set; } = "";
     public bool WholeWordKeywords { get; set; } = true;
+    public SimilarityProtectionLevel SimilarityProtection { get; set; } = SimilarityProtectionLevel.NearDuplicates;
     public List<string> BlockedFolders { get; set; } = new();
     public SessionProtection Protection { get; set; } = SessionProtection.Challenge;
     public int UnlockChars { get; set; } = 24;
@@ -649,6 +647,12 @@ public sealed class GeneralBlockRule
     public AppBlockAction ActiveBlockAction() =>
         PunisherEnabled && Punisher.IsActive() ? BlockAction.Escalated() : BlockAction;
 
+    public GeneralBlockRule Clone()
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(this, WorkspaceStore.JsonOptions);
+        return System.Text.Json.JsonSerializer.Deserialize<GeneralBlockRule>(json, WorkspaceStore.JsonOptions)!;
+    }
+
     public static string? Loosening(GeneralBlockRule current, GeneralBlockRule? proposed, DateTimeOffset? now = null)
     {
         if (proposed == null) return $"borrar la regla «{current.Name}»";
@@ -658,11 +662,17 @@ public sealed class GeneralBlockRule
         if (proposed.StopDelayMinutes < current.StopDelayMinutes) return $"acortar la espera de «{current.Name}»";
         if (proposed.Kind != current.Kind) return $"cambiar el modo de activación de «{current.Name}»";
         if (current.AlwaysProtected && !proposed.AlwaysProtected) return $"quitar la protección 24/7 de «{current.Name}»";
-        if (current.Kind == GeneralRuleKind.DailyLimit && proposed.DailyLimitMinutes > current.DailyLimitMinutes)
-            return $"ampliar el presupuesto de «{current.Name}»";
+
+        if (current.Kind == GeneralRuleKind.DailyLimit)
+        {
+            if (proposed.DailyLimitMinutes > current.DailyLimitMinutes) return $"ampliar el presupuesto de «{current.Name}»";
+            if (proposed.LimitPeriodUnit != current.LimitPeriodUnit) return $"cambiar el periodo del presupuesto de «{current.Name}»";
+        }
         if (current.Kind == GeneralRuleKind.WorkGoal)
         {
             if (proposed.GoalMinutesRequired < current.GoalMinutesRequired) return $"rebajar la meta de «{current.Name}»";
+            if (current.GoalRewardMinutes > 0 && (proposed.GoalRewardMinutes == 0 || proposed.GoalRewardMinutes > current.GoalRewardMinutes))
+                return $"ampliar la recompensa de «{current.Name}»";
             if (current.MaxDailyMatches > 0 && (proposed.MaxDailyMatches == 0 || proposed.MaxDailyMatches > current.MaxDailyMatches))
                 return $"ampliar el límite de partidas de «{current.Name}»";
             if (current.GameId != null && proposed.GameId != current.GameId) return $"cambiar el juego de «{current.Name}»";
@@ -672,16 +682,74 @@ public sealed class GeneralBlockRule
                 return $"dejar de exigir una hora de estudio por partida en «{current.Name}»";
             if (current.VerifyActiveStudy && !proposed.VerifyActiveStudy)
                 return $"desactivar el estudio verificado en «{current.Name}»";
+            if (proposed.PostMatchGraceSeconds > current.PostMatchGraceSeconds)
+                return $"alargar el margen tras partida en «{current.Name}»";
+        }
+        if (current.Kind == GeneralRuleKind.LaunchLimit)
+        {
+            if (proposed.MaxDailyLaunches > current.MaxDailyLaunches) return $"aumentar el límite de aperturas de «{current.Name}»";
+            if (proposed.MaxLaunchDurationMinutes > current.MaxLaunchDurationMinutes) return $"alargar la duración por visita de «{current.Name}»";
+            if (proposed.LaunchCooldownMinutes < current.LaunchCooldownMinutes) return $"acortar el enfriamiento entre visitas de «{current.Name}»";
+        }
+        if (current.Kind == GeneralRuleKind.Pomodoro)
+        {
+            if (proposed.PomodoroWorkMinutes < current.PomodoroWorkMinutes) return $"acortar el bloque de enfoque Pomodoro de «{current.Name}»";
+            if (proposed.PomodoroShortBreakMinutes > current.PomodoroShortBreakMinutes || proposed.PomodoroLongBreakMinutes > current.PomodoroLongBreakMinutes)
+                return $"alargar los descansos Pomodoro de «{current.Name}»";
+            if (current.PomodoroPenaltyReset && !proposed.PomodoroPenaltyReset) return $"quitar la penalización Pomodoro de «{current.Name}»";
+            if (current.ProtectPomodoroBreaks && !proposed.ProtectPomodoroBreaks) return $"quitar la protección en descansos Pomodoro de «{current.Name}»";
+        }
+        if (proposed.DailyMicroPausesAllowed > current.DailyMicroPausesAllowed || proposed.MicroPauseMinutes > current.MicroPauseMinutes)
+            return $"aumentar las micro-pausas de «{current.Name}»";
+        if (current.Kind == GeneralRuleKind.Countdown && current.ActiveDeadline != null)
+        {
+            var curRem = current.ActiveDeadline.RemainingAfterPossibleReboot(now);
+            var propRem = proposed.ActiveDeadline?.RemainingAfterPossibleReboot(now) ?? 0;
+            if (propRem + 5 < curRem) return $"acortar el temporizador activo de «{current.Name}»";
+        }
+        if (current.Kind == GeneralRuleKind.Schedule)
+        {
+            var intervalsEqual = current.ExtraScheduleIntervals.Count == proposed.ExtraScheduleIntervals.Count &&
+                                 current.ExtraScheduleIntervals.Zip(proposed.ExtraScheduleIntervals)
+                                     .All(p => p.First.StartMinutes == p.Second.StartMinutes && p.First.EndMinutes == p.Second.EndMinutes);
+            if (!current.ScheduleDays.SetEquals(proposed.ScheduleDays) ||
+                current.StartMinutes != proposed.StartMinutes ||
+                current.EndMinutes != proposed.EndMinutes ||
+                !intervalsEqual)
+                return $"cambiar el horario de «{current.Name}»";
         }
         if (current.BlockApps && !proposed.BlockApps) return $"quitar el bloqueo de apps en «{current.Name}»";
         if (current.BlockApps && FocusRules.AppListOpens(
                 current.AppListMode, current.Apps.Select(a => a.Id.ToLowerInvariant()).ToHashSet(),
                 proposed.AppListMode, proposed.Apps.Select(a => a.Id.ToLowerInvariant()).ToHashSet()))
             return $"suavizar la lista de apps de «{current.Name}»";
-        if (current.WebBlockAction != WebBlockAction.Warn && FocusRules.WebListOpens(
-                current.WebListMode, FocusRules.ParseDomains(current.Domains).Valid,
-                proposed.WebListMode, FocusRules.ParseDomains(proposed.Domains).Valid))
-            return $"suavizar la lista de webs de «{current.Name}»";
+        if (current.BlockGameLibraries && !proposed.BlockGameLibraries)
+            return $"quitar el bloqueo de bibliotecas de juegos en «{current.Name}»";
+        if (proposed.BlockAction.Strength() < current.BlockAction.Strength())
+            return $"suavizar el cierre de apps en «{current.Name}»";
+        if (proposed.WebBlockAction.Strength() < current.WebBlockAction.Strength())
+            return $"suavizar el bloqueo web en «{current.Name}»";
+        if (current.WebBlockAction != WebBlockAction.Warn)
+        {
+            if (FocusRules.WebListOpens(
+                    current.WebListMode, FocusRules.ParseDomains(current.Domains).Valid,
+                    proposed.WebListMode, FocusRules.ParseDomains(proposed.Domains).Valid))
+                return $"suavizar la lista de webs de «{current.Name}»";
+            if (current.BlockSearchMedia && !proposed.BlockSearchMedia)
+                return $"quitar el bloqueo de imágenes/vídeos en buscadores de «{current.Name}»";
+        }
+        var curKw = FocusRules.ParseTitleKeywords(current.BlockedTitleKeywords).Select(k => k.ToLowerInvariant()).ToHashSet();
+        var nextKw = FocusRules.ParseTitleKeywords(proposed.BlockedTitleKeywords).Select(k => k.ToLowerInvariant()).ToHashSet();
+        if (!curKw.IsSubsetOf(nextKw)) return $"quitar palabras bloqueadas en «{current.Name}»";
+        if (curKw.Count > 0 && !current.WholeWordKeywords && proposed.WholeWordKeywords)
+            return $"suavizar las palabras bloqueadas en «{current.Name}»";
+        var curFolders = current.BlockedFolders.Select(f => f.Trim().TrimEnd('\\', '/').ToLowerInvariant()).ToHashSet();
+        var nextFolders = proposed.BlockedFolders.Select(f => f.Trim().TrimEnd('\\', '/').ToLowerInvariant()).ToHashSet();
+        if (!curFolders.IsSubsetOf(nextFolders)) return $"desbloquear carpetas en «{current.Name}»";
+        if (current.GuardSystemPanes && !proposed.GuardSystemPanes)
+            return $"quitar la protección de ajustes del sistema en «{current.Name}»";
+        if (current.PunisherEnabled && !proposed.PunisherEnabled)
+            return $"quitar el endurecimiento por reincidencia en «{current.Name}»";
         return null;
     }
 
@@ -805,34 +873,151 @@ public static class BlockPageGenerator
         var path = Path.Combine(directory, "bloqueada.html");
         var timeText = FocusRules.Clock(Math.Max(0, remainingSeconds));
         var stepsHtml = string.Join("", pendingSteps.Take(5).Select(s => $"<li>{System.Net.WebUtility.HtmlEncode(s)}</li>"));
-        var stepsSection = string.IsNullOrEmpty(stepsHtml) ? "" : $"<ul>{stepsHtml}</ul>";
-        var msgHtml = string.IsNullOrWhiteSpace(message) ? "" : $"<p class='msg'>{System.Net.WebUtility.HtmlEncode(message)}</p>";
+        var stepsSection = string.IsNullOrEmpty(stepsHtml)
+            ? ""
+            : $"<div class='steps'><div class='steps-title'>Siguientes pasos pendientes</div><ul>{stepsHtml}</ul></div>";
+        var msgHtml = string.IsNullOrWhiteSpace(message)
+            ? ""
+            : $"<blockquote class='msg'>«{System.Net.WebUtility.HtmlEncode(message)}»</blockquote>";
+        var initialLeft = (int)Math.Max(0, remainingSeconds);
         var html = $$"""
             <!doctype html>
             <html lang="es">
             <head>
               <meta charset="utf-8">
-              <title>Bloqueado · FocusDesk</title>
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <meta name="color-scheme" content="dark">
+              <title>Ahora no · FocusDesk</title>
               <style>
-                body { margin:0; font-family: "Segoe UI", system-ui, sans-serif; background:#0F1218; color:#F2F5FA; display:grid; place-items:center; min-height:100vh; }
-                .card { max-width:520px; background:#171C24; border:1px solid #283140; border-radius:16px; padding:32px; box-shadow:0 20px 60px rgba(0,0,0,.45); }
-                .badge { display:inline-block; background:rgba(100,227,161,.15); color:#64E3A1; padding:4px 10px; border-radius:99px; font-size:12px; font-weight:600; }
-                h1 { margin:14px 0 6px; font-size:24px; }
-                .host { color:#94A3B8; font-size:14px; margin:0 0 18px; }
-                .timer { font-size:40px; font-weight:700; color:#64E3A1; font-variant-numeric:tabular-nums; margin:12px 0; }
-                .msg { color:#CBD5E1; line-height:1.5; }
-                ul { color:#94A3B8; padding-left:20px; }
+                :root {
+                  color-scheme: dark;
+                  --bg: #0B0E14;
+                  --card: #131822;
+                  --elevated: #1B2230;
+                  --line: #242E40;
+                  --ink: #F2F5FA;
+                  --muted: #94A3B8;
+                  --mint: #64E3A1;
+                }
+                * { box-sizing: border-box; }
+                body {
+                  margin: 0;
+                  min-height: 100vh;
+                  display: grid;
+                  place-items: center;
+                  padding: 24px;
+                  background: var(--bg);
+                  color: var(--ink);
+                  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+                }
+                @keyframes cardIn {
+                  from { opacity: 0; transform: scale(0.96); }
+                  to { opacity: 1; transform: scale(1); }
+                }
+                .card {
+                  width: min(540px, 100%);
+                  background: var(--card);
+                  border: 1px solid var(--line);
+                  border-radius: 18px;
+                  padding: 36px 34px;
+                  text-align: center;
+                  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+                  animation: cardIn 180ms cubic-bezier(0.16, 1, 0.3, 1);
+                }
+                @media (prefers-reduced-motion: reduce) {
+                  .card { animation: none; }
+                }
+                .badge {
+                  display: inline-flex;
+                  align-items: center;
+                  gap: 6px;
+                  background: rgba(100, 227, 161, 0.14);
+                  color: var(--mint);
+                  border: 1px solid rgba(100, 227, 161, 0.25);
+                  padding: 5px 12px;
+                  border-radius: 999px;
+                  font-size: 11px;
+                  font-weight: 700;
+                  letter-spacing: 0.06em;
+                  text-transform: uppercase;
+                }
+                h1 { margin: 18px 0 8px; font-size: 24px; letter-spacing: -0.02em; }
+                .host { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0 0 18px; }
+                .host-chip {
+                  font-family: "Cascadia Mono", Consolas, monospace;
+                  color: var(--ink);
+                  background: var(--elevated);
+                  padding: 2px 7px;
+                  border-radius: 6px;
+                  border: 1px solid var(--line);
+                }
+                .timer {
+                  font-family: "Cascadia Mono", Consolas, monospace;
+                  font-size: 44px;
+                  font-weight: 700;
+                  color: var(--mint);
+                  font-variant-numeric: tabular-nums;
+                  margin: 18px 0 4px;
+                }
+                .timer-label {
+                  font-size: 10px;
+                  letter-spacing: 0.14em;
+                  text-transform: uppercase;
+                  color: var(--muted);
+                  margin-bottom: 12px;
+                }
+                .msg {
+                  margin: 16px 0 0;
+                  padding: 12px 16px;
+                  border-radius: 12px;
+                  background: rgba(100, 227, 161, 0.08);
+                  border: 1px solid rgba(100, 227, 161, 0.18);
+                  color: var(--ink);
+                  font-style: italic;
+                  font-size: 14px;
+                  line-height: 1.5;
+                }
+                .steps {
+                  margin-top: 20px;
+                  padding: 14px 18px;
+                  border-radius: 12px;
+                  background: var(--elevated);
+                  border: 1px solid var(--line);
+                  text-align: left;
+                }
+                .steps-title {
+                  font-size: 10px;
+                  font-weight: 700;
+                  letter-spacing: 0.12em;
+                  text-transform: uppercase;
+                  color: var(--muted);
+                  margin-bottom: 8px;
+                }
+                .steps ul { margin: 0; padding-left: 18px; color: var(--ink); font-size: 13px; }
+                .steps li { margin: 4px 0; line-height: 1.45; }
               </style>
             </head>
             <body>
-              <div class="card">
+              <main class="card">
                 <span class="badge">FocusDesk</span>
                 <h1>{{System.Net.WebUtility.HtmlEncode(title)}}</h1>
-                <p class="host">{{System.Net.WebUtility.HtmlEncode(host)}} está bloqueado ahora</p>
-                <div class="timer">{{timeText}}</div>
+                <p class="host"><span class="host-chip">{{System.Net.WebUtility.HtmlEncode(host)}}</span> está bloqueado ahora</p>
+                <div class="timer" id="clock">{{timeText}}</div>
+                <div class="timer-label">tiempo restante</div>
                 {{msgHtml}}
                 {{stepsSection}}
-              </div>
+              </main>
+              <script>
+                let left = {{initialLeft}};
+                const node = document.getElementById("clock");
+                setInterval(() => {
+                  if (left <= 0) { node.textContent = "00:00"; return; }
+                  left -= 1;
+                  const h = Math.floor(left / 3600), m = Math.floor(left / 60) % 60, s = left % 60;
+                  const pad = (n) => String(n).padStart(2, "0");
+                  node.textContent = h > 0 ? h + ":" + pad(m) + ":" + pad(s) : pad(m) + ":" + pad(s);
+                }, 1000);
+              </script>
             </body>
             </html>
             """;

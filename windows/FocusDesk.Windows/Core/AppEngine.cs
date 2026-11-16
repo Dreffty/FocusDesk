@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
-using System.Windows;
 using System.Windows.Threading;
 using FocusDesk.Windows.Platform;
 
@@ -26,11 +25,16 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
     private DateTimeOffset? _lastPassiveStudyAt;
     private DateTimeOffset? _lastQuotaAt;
     private DateTimeOffset _lastWebReadAt = DateTimeOffset.MinValue;
+    private bool _webReadBusy;
     private string _lastWebBlockHost = "";
     private DateTimeOffset _lastWebBlockAt = DateTimeOffset.MinValue;
     private int _ticks;
     private bool _valorantPollBusy;
     private string _lastClipboardText = "";
+    private bool _disposed;
+
+    private Guid? _sessionFinishedNotifiedId;
+    private string? _lastTaskPomodoroKey;
 
     private readonly Dictionary<string, (string Host, string Path, DateTimeOffset At)> _lastBrowserPages = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<Guid, DateTimeOffset> _timedMatchLastSeen = new();
@@ -56,6 +60,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public event Action? StateRefreshed;
+    public event Action? TickUpdated;
     public event Action<string, string>? NotificationRequested;
     public event Action<WorkSession>? SessionCompletionRequested;
 
@@ -130,7 +135,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         else if (Workspace.Settings.RelaunchGuard)
             RelaunchGuard.StartWatcherProcessIfMissing();
 
-        StartValveServerIfNeeded();
+        RefreshValveServer();
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => Tick();
@@ -192,14 +197,24 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private void StartValveServerIfNeeded()
+    private void RefreshValveServer()
     {
-        if (!Workspace.GeneralRules.Any(r => r.Enabled && r.UsesExactValveGSI)) return;
+        var needsValve = Workspace.GeneralRules.Any(r => r.Enabled && r.UsesExactValveGSI);
+        if (!needsValve)
+        {
+            _valveServer?.Dispose();
+            _valveServer = null;
+            return;
+        }
         ValveGSI.InstallConfigIfPossible();
         if (_valveServer != null) return;
         _valveServer = new ValveGsiServer(ev =>
         {
-            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => HandleValveEvent(ev));
+            if (_disposed) return;
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+            {
+                if (!_disposed) HandleValveEvent(ev);
+            });
         });
         _valveServer.Start();
     }
@@ -254,6 +269,15 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             Workspace.Settings.RunUpMinutes);
     }
 
+    public bool IsTaskProtected(FocusTask task, DateTimeOffset? at = null)
+    {
+        if (task.Protection == SessionProtection.None) return false;
+        var t = at ?? DateTimeOffset.Now;
+        if (Workspace.Session is { EndedAt: null } s && s.Task.Id == task.Id && s.Remaining(t) > 0)
+            return true;
+        return FocusRules.IsTaskInRunUp(task, Workspace.Settings.RunUpMinutes, t);
+    }
+
     public (string Text, bool Warning, bool CanFinish, double Progress) GameRuleStatus(GeneralBlockRule rule, DateTimeOffset? at = null)
     {
         var t = at ?? DateTimeOffset.Now;
@@ -301,18 +325,20 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     private void Tick()
     {
+        if (_disposed) return;
         var now = DateTimeOffset.Now;
         _ticks++;
 
         if (now.LocalDateTime.Date != _lastPrunedDay)
         {
             _lastPrunedDay = now.LocalDateTime.Date;
-            Store.CreateDailySnapshotIfNeeded(now);
+            try { Store.CreateDailySnapshotIfNeeded(now); } catch { }
             Workspace.Prune(now);
             Persist();
         }
 
         StartDueAutoStartTasks(now);
+        TickSessionEvents(now);
         TickContinuousBreak(now);
         TickPomodoroRules(now);
         TickPassiveStudyTracking(now);
@@ -330,7 +356,35 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         {
             Persist();
         }
-        StateRefreshed?.Invoke();
+        TickUpdated?.Invoke();
+    }
+
+    private void TickSessionEvents(DateTimeOffset now)
+    {
+        if (Workspace.Session is not { Paused: false, EndedAt: null } s) return;
+        var rem = s.Remaining(now);
+        if (rem <= 0 && _sessionFinishedNotifiedId != s.Id)
+        {
+            _sessionFinishedNotifiedId = s.Id;
+            Notice = $"¡Bloque terminado en «{s.Task.Title}»! Ya puedes pulsar «He terminado».";
+            NotificationRequested?.Invoke("Tiempo completado · FocusDesk", Notice);
+        }
+        if (s.Task.PomodoroPhase(s.Elapsed(now)) is { } phase)
+        {
+            var key = $"{s.Id}:{phase.Cycle}:{phase.IsBreak}:{phase.IsLongBreak}";
+            if (_lastTaskPomodoroKey != null && _lastTaskPomodoroKey != key)
+            {
+                Notice = phase.IsBreak
+                    ? $"Descanso Pomodoro ({phase.Label}) en «{s.Task.Title}»."
+                    : $"Vuelta al foco (ciclo {phase.Cycle}) en «{s.Task.Title}».";
+                NotificationRequested?.Invoke("Pomodoro de tarea", Notice);
+            }
+            _lastTaskPomodoroKey = key;
+        }
+        else
+        {
+            _lastTaskPomodoroKey = null;
+        }
     }
 
     private void StartDueAutoStartTasks(DateTimeOffset now)
@@ -353,6 +407,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 ActiveContinuousBreakDeadline = null;
                 ContinuousActiveWorkSeconds = 0;
                 Notice = "Descanso terminado. ¡Seguimos!";
+                NotificationRequested?.Invoke("Descanso terminado", Notice);
             }
             return;
         }
@@ -481,8 +536,21 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         return $"{name} está bloqueado: te faltan {leftMin} min de estudio para la {rule.MatchUnitSingular} {played + 1}/{Math.Max(1, rule.MaxDailyMatches)}.";
     }
 
+    private bool IsRuleBlockingNewMatch(GeneralBlockRule rule, DateTimeOffset now, double cont) =>
+        rule.IsEnforcing(
+            now,
+            Workspace.UsedSecondsToday(rule.Id, now: now),
+            EffectiveWorkedSeconds(rule, now),
+            Workspace.LaunchesToday(rule.Id, now),
+            Workspace.MatchesToday(rule.Id, now),
+            isMatchInProgress: false,
+            continuous: cont);
+
     private void TickLeagueMatches(DateTimeOffset now)
     {
+        var lolRules = Workspace.GeneralRules.Where(r => r.Enabled && LeagueMatchRules.RuleTargetsLeague(r)).ToList();
+        if (lolRules.Count == 0) return;
+
         var cont = TrustedClock.ContinuousSeconds();
         var matchRunning = IsLoLMatchRunning();
 
@@ -490,9 +558,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         {
             if (!_lolMatchStartedCont.HasValue)
             {
-                var blocked = Workspace.GeneralRules.FirstOrDefault(r =>
-                    r.Enabled && LeagueMatchRules.RuleTargetsLeague(r) &&
-                    EffectiveWorkedSeconds(r, now) < r.RequiredWorkSecondsForNextMatch(Workspace.MatchesToday(r.Id, now)));
+                var blocked = lolRules.FirstOrDefault(r => IsRuleBlockingNewMatch(r, now, cont));
                 if (blocked != null)
                 {
                     WindowsActivity.TerminateProcesses(RunningGamePids(blocked));
@@ -534,7 +600,11 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 try
                 {
                     var phase = await ValorantMatchRules.QueryLocalClientPhaseAsync();
-                    System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => ProcessValorantPhase(phase, valExeRunning));
+                    if (_disposed) return;
+                    System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+                    {
+                        if (!_disposed) ProcessValorantPhase(phase, valExeRunning);
+                    });
                 }
                 finally { _valorantPollBusy = false; }
             });
@@ -559,8 +629,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             if (!_valorantInMatch)
             {
                 var blocked = Workspace.GeneralRules.FirstOrDefault(r =>
-                    r.Enabled && r.UsesExactValorant &&
-                    EffectiveWorkedSeconds(r, now) < r.RequiredWorkSecondsForNextMatch(Workspace.MatchesToday(r.Id, now)));
+                    r.Enabled && r.UsesExactValorant && IsRuleBlockingNewMatch(r, now, cont));
                 if (blocked != null)
                 {
                     WindowsActivity.TerminateProcesses(RunningGamePids(blocked));
@@ -601,7 +670,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         {
             if (!_valveMatchActive.GetValueOrDefault(ev.GameId))
             {
-                var blocked = rules.FirstOrDefault(r => IsRuleEnforcing(r, now));
+                var blocked = rules.FirstOrDefault(r => IsRuleBlockingNewMatch(r, now, cont));
                 if (blocked != null)
                 {
                     WindowsActivity.TerminateProcesses(RunningGamePids(blocked));
@@ -836,15 +905,29 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        if (StudyActivityVerifier.IsBrowser(procClean) && (now - _lastWebReadAt).TotalSeconds >= 2.5)
+        // Read browser URL off the UI thread so UIAutomation never freezes the WPF window.
+        if (StudyActivityVerifier.IsBrowser(procClean) && !_webReadBusy && (now - _lastWebReadAt).TotalSeconds >= 2.5)
         {
             _lastWebReadAt = now;
-            var url = BrowserInspector.ReadActiveUrl(fg.Hwnd, procClean);
-            if (url.HasValue)
+            _webReadBusy = true;
+            var hwnd = fg.Hwnd;
+            var capturedFg = fg;
+            _ = Task.Run(() =>
             {
-                _lastBrowserPages[procClean] = (url.Value.Host, url.Value.Path, now);
-                EvaluateWebRules(fg, url.Value.Host, url.Value.Path, now);
-            }
+                try
+                {
+                    var url = BrowserInspector.ReadActiveUrl(hwnd, procClean);
+                    if (_disposed || !url.HasValue) return;
+                    System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+                    {
+                        if (_disposed) return;
+                        var readAt = DateTimeOffset.Now;
+                        _lastBrowserPages[procClean] = (url.Value.Host, url.Value.Path, readAt);
+                        EvaluateWebRules(capturedFg, url.Value.Host, url.Value.Path, readAt);
+                    });
+                }
+                finally { _webReadBusy = false; }
+            });
         }
 
         var cont = TrustedClock.ContinuousSeconds();
@@ -878,6 +961,17 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 rule.EndLaunchVisitAndStartCooldown(now, cont);
                 Persist();
                 Notice = $"Visita agotada en «{rule.Name}». Enfriamiento activo.";
+            }
+
+            if (rule.Kind == GeneralRuleKind.LaunchLimit && !IsRuleEnforcing(rule, now) &&
+                !rule.IsInLaunchVisit(now, cont) && Workspace.LaunchesToday(rule.Id, now) < rule.MaxDailyLaunches &&
+                MatchesRuleAppOrTitle(rule, fg, now))
+            {
+                var n = Workspace.IncrementLaunches(rule.Id, now);
+                rule.BeginLaunchVisit(now, cont);
+                Notice = $"Visita {n}/{rule.MaxDailyLaunches} iniciada en «{rule.Name}» ({rule.MaxLaunchDurationMinutes} min).";
+                Persist();
+                continue;
             }
 
             if (delta > 0 && MatchesRuleAppOrTitle(rule, fg, now))
@@ -961,6 +1055,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
     {
         var cont = TrustedClock.ContinuousSeconds();
         if (Workspace.IsTemporarilyAllowed(host, path, now, cont)) return;
+        var visitKey = $"{host}{path}";
 
         if (Workspace.Session is { Paused: false, EndedAt: null } s && (s.Task.WebBlockAction != WebBlockAction.Warn || s.Task.BlockSearchMedia))
         {
@@ -969,17 +1064,32 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             s.RecordVisit(fg.ProcessName, fg.ProcessName, host, !allowed, now);
             if (!allowed)
             {
-                ActOnBlockedTab(fg.Hwnd, host, s.Task.Title, s.Remaining(now), s.Task.MotivationalMessage, s.Task.WebBlockAction == WebBlockAction.CloseTab, s.Task.CustomRedirectURL);
+                if (_lastWebBlockHost == visitKey && (now - _lastWebBlockAt).TotalSeconds < 2.5) return;
+                _lastWebBlockHost = visitKey;
+                _lastWebBlockAt = now;
+                s.BlocksApplied++;
+                ActOnBlockedTab(fg.Hwnd, visitKey, s.Task.Title, s.Remaining(now), s.Task.MotivationalMessage, s.Task.WebBlockAction == WebBlockAction.CloseTab, s.Task.CustomRedirectURL);
                 return;
             }
         }
 
-        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && IsRuleEnforcing(r, now) && (r.WebBlockAction != WebBlockAction.Warn || r.BlockSearchMedia)))
+        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && !r.IsMicroPaused(now, cont) && (r.WebBlockAction != WebBlockAction.Warn || r.BlockSearchMedia)))
         {
             var searchHit = rule.BlockSearchMedia ? SearchMediaRules.Matches(host, path) : null;
             var allowed = searchHit == null && (rule.WebBlockAction == WebBlockAction.Warn || FocusRules.WebAllowed(host, path, rule.Domains, rule.WebListMode));
             if (allowed) continue;
-            var visitKey = $"{host}{path}";
+
+            if (rule.Kind == GeneralRuleKind.LaunchLimit && !IsRuleEnforcing(rule, now) &&
+                !rule.IsInLaunchVisit(now, cont) && Workspace.LaunchesToday(rule.Id, now) < rule.MaxDailyLaunches)
+            {
+                var n = Workspace.IncrementLaunches(rule.Id, now);
+                rule.BeginLaunchVisit(now, cont);
+                Notice = $"Visita web {n}/{rule.MaxDailyLaunches} iniciada en «{rule.Name}» ({rule.MaxLaunchDurationMinutes} min).";
+                Persist();
+                continue;
+            }
+
+            if (!IsRuleEnforcing(rule, now)) continue;
             if (_lastWebBlockHost == visitKey && (now - _lastWebBlockAt).TotalSeconds < 4) return;
             _lastWebBlockHost = visitKey;
             _lastWebBlockAt = now;
@@ -1032,21 +1142,47 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     // MARK: - Actions for UI
 
-    public void SaveTask(FocusTask task)
+    public void SaveTask(FocusTask task, bool bypassProtection = false)
     {
         task.Title = task.Title.Trim();
         task.Domains = FocusRules.NormalizeDomains(task.Domains);
+        task.BlockedTitleKeywords = FocusRules.NormalizeTitleKeywords(task.BlockedTitleKeywords);
         if (!task.Valid) { Error = "La tarea necesita título y configuración válida."; return; }
+
+        var now = DateTimeOffset.Now;
         var idx = Workspace.Tasks.FindIndex(t => t.Id == task.Id);
+        if (idx >= 0 && !bypassProtection && IsTaskProtected(Workspace.Tasks[idx], now))
+        {
+            var running = Workspace.Session?.Task.Id == task.Id;
+            var reason = FocusRules.TaskLoosening(Workspace.Tasks[idx], task, now, running);
+            if (reason != null) { Error = $"Protegida: no se puede {reason} sin desbloquear."; return; }
+        }
+
         if (idx >= 0) Workspace.Tasks[idx] = task; else Workspace.Tasks.Add(task);
+        if (Workspace.Session is { EndedAt: null } s && s.Task.Id == task.Id)
+        {
+            s.Task = task.Clone();
+            s.Budget = Math.Max(s.Budget, task.Minutes * 60.0);
+        }
         Error = "";
         Persist();
+        Notice = $"Tarea «{task.Title}» guardada.";
     }
 
-    public void DeleteTask(FocusTask task)
+    public void DeleteTask(FocusTask task, bool bypassProtection = false)
     {
-        if (Workspace.Session?.Task.Id == task.Id) return;
+        if (Workspace.Session?.Task.Id == task.Id)
+        {
+            Error = "No puedes borrar una tarea mientras su sesión está en marcha.";
+            return;
+        }
+        if (!bypassProtection && IsTaskProtected(task))
+        {
+            Error = $"«{task.Title}» está dentro de su margen de protección previo al inicio.";
+            return;
+        }
         Workspace.Tasks.RemoveAll(t => t.Id == task.Id);
+        Error = "";
         Persist();
         Notice = $"«{task.Title}» eliminada.";
     }
@@ -1054,7 +1190,10 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
     public void StartSession(FocusTask task)
     {
         if (Workspace.Session != null) { Error = "Ya hay una sesión en marcha."; return; }
+        _sessionFinishedNotifiedId = null;
+        _lastTaskPomodoroKey = null;
         Workspace.Session = new WorkSession(task, DateTimeOffset.Now);
+        Error = "";
         Notice = $"«{task.Title}» en marcha ({task.Minutes} min).";
         Persist();
     }
@@ -1125,6 +1264,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         rule.Name = rule.Name.Trim();
         rule.Domains = FocusRules.NormalizeDomains(rule.Domains);
         rule.BlockedTitleKeywords = FocusRules.NormalizeTitleKeywords(rule.BlockedTitleKeywords);
+        if (rule.Apps.Count > 0 || rule.BlockGameLibraries) rule.BlockApps = true;
         if (!rule.Valid) { Error = "La regla necesita nombre y al menos un objetivo a bloquear."; return; }
 
         var idx = Workspace.GeneralRules.FindIndex(r => r.Id == rule.Id);
@@ -1136,7 +1276,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         if (idx >= 0) Workspace.GeneralRules[idx] = rule; else Workspace.GeneralRules.Add(rule);
         Error = "";
         Persist();
-        StartValveServerIfNeeded();
+        RefreshValveServer();
         Notice = $"Regla «{rule.Name}» guardada.";
     }
 
@@ -1144,6 +1284,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
     {
         Workspace.GeneralRules.RemoveAll(r => r.Id == rule.Id);
         Persist();
+        RefreshValveServer();
         Notice = $"Regla «{rule.Name}» eliminada.";
     }
 
@@ -1165,6 +1306,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         var src = new StudySource { Kind = "web", Value = domain, Name = domain, CountsFrom = tomorrow };
         if (Workspace.Settings.StudySources.Any(s => s.Id == src.Id)) return;
         Workspace.Settings.StudySources.Add(src);
+        Error = "";
         Persist();
         Notice = $"«{domain}» contará como estudio desde mañana.";
     }
@@ -1177,6 +1319,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         var src = new StudySource { Kind = "app", Value = clean, Name = string.IsNullOrWhiteSpace(displayName) ? clean : displayName, CountsFrom = tomorrow };
         if (Workspace.Settings.StudySources.Any(s => s.Id == src.Id)) return;
         Workspace.Settings.StudySources.Add(src);
+        Error = "";
         Persist();
         Notice = $"«{src.Name}» contará como estudio desde mañana.";
     }
@@ -1207,8 +1350,9 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         var imported = Store.ValidateBackup(filePath);
         if (imported.Session != null) { imported.Session.RunningSince = null; imported.Session.RunningUptime = null; }
         Workspace = imported;
+        Error = "";
         Persist();
-        StartValveServerIfNeeded();
+        RefreshValveServer();
         Notice = "Copia importada correctamente.";
     }
 
@@ -1217,6 +1361,8 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         _timer.Stop();
         _valveServer?.Dispose();
     }

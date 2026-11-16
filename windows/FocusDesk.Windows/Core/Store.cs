@@ -26,21 +26,23 @@ public sealed class WorkspaceStore
     private byte[]? _lastHistoryHash;
     private readonly object _sync = new();
 
-    public static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Converters = { new FlexibleDateTimeOffsetConverter() }
-    };
+    public static readonly JsonSerializerOptions JsonOptions = CreateOptions(indented: false);
+    public static readonly JsonSerializerOptions PrettyJsonOptions = CreateOptions(indented: true);
 
-    public static readonly JsonSerializerOptions PrettyJsonOptions = new()
+    private static JsonSerializerOptions CreateOptions(bool indented)
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Converters = { new FlexibleDateTimeOffsetConverter() }
-    };
+        var opts = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true,
+            WriteIndented = indented,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+        opts.Converters.Add(new FlexibleDateTimeOffsetConverter());
+        opts.Converters.Add(new FlexibleSimilarityConverter());
+        opts.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+        return opts;
+    }
 
     public WorkspaceStore(string? customDirectory = null)
     {
@@ -169,6 +171,8 @@ public sealed class WorkspaceStore
             ws.Session.RunningSince = null;
             ws.Session.RunningUptime = null;
         }
+        _lastMainHash = null;
+        _lastHistoryHash = null;
         Save(ws);
         return ws;
     }
@@ -210,4 +214,23 @@ public sealed class FlexibleDateTimeOffsetConverter : JsonConverter<DateTimeOffs
 
     public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
         writer.WriteStringValue(value.ToString("O"));
+}
+
+/// <summary>
+/// Reads SimilarityProtectionLevel as either integer (0/1/2, matching macOS Codable) or string name,
+/// and writes integer for full JSON parity with macOS.
+/// </summary>
+public sealed class FlexibleSimilarityConverter : JsonConverter<SimilarityProtectionLevel>
+{
+    public override SimilarityProtectionLevel Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt32(out var num) && Enum.IsDefined(typeof(SimilarityProtectionLevel), num))
+            return (SimilarityProtectionLevel)num;
+        if (reader.TokenType == JsonTokenType.String && Enum.TryParse<SimilarityProtectionLevel>(reader.GetString(), ignoreCase: true, out var parsed))
+            return parsed;
+        return SimilarityProtectionLevel.Off;
+    }
+
+    public override void Write(Utf8JsonWriter writer, SimilarityProtectionLevel value, JsonSerializerOptions options) =>
+        writer.WriteNumberValue((int)value);
 }

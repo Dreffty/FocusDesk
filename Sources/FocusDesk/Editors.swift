@@ -162,7 +162,7 @@ struct TaskEditor: View {
                 HStack(spacing: 8) {
                     // Return here saves the profile, not the whole task (it used to close the editor).
                     TextField("Nombre del perfil (ej. Estudiar)", text: $saveProfileName)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.focusField)
                         .focused($focusedField, equals: .profileName)
                         .onSubmit { saveDraftAsProfile() }
                     Button("Guardar perfil") { saveDraftAsProfile() }
@@ -177,20 +177,48 @@ struct TaskEditor: View {
         Card(padding: 18) {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("¿QUÉ VAS A HACER?").fieldLabelStyle()
+                    HStack(alignment: .center, spacing: 10) {
+                        Text("¿QUÉ VAS A HACER?").fieldLabelStyle()
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(Palette.category(draft.category, in: model.workspace.settings.categories))
+                                .frame(width: 7, height: 7)
+                            Picker("Área", selection: $draft.category) {
+                                let names = model.workspace.settings.categories.map(\.name)
+                                ForEach(names.contains(draft.category) ? names : names + [draft.category], id: \.self) { Text($0) }
+                            }
+                            .labelsHidden()
+                            .controlSize(.small)
+                            .fixedSize()
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Palette.fill, in: Capsule())
+                    }
                     TextField("Ej. Repasar el tema 4", text: $draft.title)
                         .font(.app(15))
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.focusField)
                         .focused($focusedField, equals: .title)
                 }
 
-                Toggle("Reservar horario en la agenda", isOn: $draft.isScheduled).toggleStyle(.trailingSwitch)
+                Divider().overlay(Palette.stroke)
 
-                HStack(alignment: .top, spacing: 18) {
-                    if draft.isScheduled {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("CUÁNDO EMPIEZA").fieldLabelStyle()
-                            DatePicker("Inicio", selection: $draft.scheduledAt).labelsHidden()
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("CUÁNDO").fieldLabelStyle()
+                            Spacer()
+                            Toggle("En agenda", isOn: $draft.isScheduled)
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                                .font(.app(10, weight: .medium))
+                                .foregroundStyle(Palette.muted)
+                        }
+                        if draft.isScheduled {
+                            DatePicker("Inicio", selection: $draft.scheduledAt)
+                                .labelsHidden()
+                                .frame(minHeight: 28, alignment: .leading)
                             HStack(spacing: 6) {
                                 Button("Ahora +10m") { draft.scheduledAt = Date().addingTimeInterval(600) }
                                     .buttonStyle(.focus(.secondary, compact: true))
@@ -201,15 +229,30 @@ struct TaskEditor: View {
                                     Chip("Coincide con otra tarea", icon: "exclamationmark.triangle", color: Palette.warning)
                                 }
                             }
+                        } else {
+                            HStack(spacing: 6) {
+                                Chip("Bandeja sin hora", icon: "tray", color: Palette.mint)
+                            }
+                            .frame(minHeight: 54, alignment: .leading)
                         }
-                    } else {
-                        Chip("Bandeja de pendientes sin hora", icon: "tray", color: Palette.mint)
                     }
-                    Spacer()
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.stroke, lineWidth: 1))
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text("DURACIÓN").fieldLabelStyle()
-                        // Same range and steps as every other duration control (it went 5 → 1 → 6 → 11 before).
-                        Stepper(FocusRules.durationText(minutes: draft.minutes), value: $draft.minutes, in: FocusRules.minutesRange, step: 5)
+                        HStack(spacing: 8) {
+                            Text(FocusRules.durationText(minutes: draft.minutes))
+                                .font(.app(15, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                            Spacer()
+                            // Same range and steps as every other duration control (it went 5 → 1 → 6 → 11 before).
+                            Stepper(FocusRules.durationText(minutes: draft.minutes), value: $draft.minutes, in: FocusRules.minutesRange, step: 5)
+                                .labelsHidden()
+                        }
+                        .frame(minHeight: 28)
                         HStack(spacing: 6) {
                             ForEach([15, 30, 60, 90], id: \.self) { minutes in
                                 Button("\(minutes)m") { draft.minutes = minutes }
@@ -219,6 +262,10 @@ struct TaskEditor: View {
                         }
                         .fixedSize()
                     }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.stroke, lineWidth: 1))
                 }
             }
         }
@@ -317,11 +364,12 @@ struct TaskEditor: View {
                     return .handled
                 }
                 .font(.app(13))
-                .frame(height: 76)
+                .scrollContentBackground(.hidden)
+                .frame(height: 78)
                 .accessibilityLabel("Checklist, un paso por línea")
-                .padding(6)
-                .background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.stroke))
+                .padding(8)
+                .background(Palette.elevated, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Palette.fieldStroke.opacity(0.45), lineWidth: 1))
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Carpeta de resultados").font(.app(12, weight: .medium))
@@ -460,7 +508,7 @@ struct TaskEditor: View {
                         }
                     }
                     TextField("Shorts, Reels, Netflix, *gameplay*, /partid[ao]/ (separadas por comas)", text: $draft.blockedTitleKeywords)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.focusField)
                     Toggle("Exigir palabra completa (evita que «art» bloquee «article»; admite comodines * y ? o /regex/)", isOn: $draft.wholeWordKeywords)
                         .toggleStyle(.checkbox)
                         .font(.app(11))
@@ -517,7 +565,7 @@ struct TaskEditor: View {
                         : "youtube.com/shorts, instagram.com/reels, *casino*, /reddit\\.com\\/r\\/all/",
                     text: $draft.domains
                 )
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.focusField)
                 if draft.webListMode == .blockListed {
                     DistractionPresetChipsView(domains: $draft.domains, keywords: $draft.blockedTitleKeywords)
                 }
@@ -568,10 +616,10 @@ struct TaskEditor: View {
             if draft.webBlockAction == .redirect {
                 VStack(alignment: .leading, spacing: 5) {
                     TextField("Frase de recordatorio en la página de bloqueo (opcional)", text: $draft.motivationalMessage)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.focusField)
                         .font(.app(11))
                     TextField("URL de redirección personalizada https://… (opcional; vacío = página de bloqueo de FocusDesk)", text: $draft.customRedirectURL)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.focusField)
                         .font(.app(11))
                     if FocusRules.isRedirectDestinationBlocked(
                         redirectURL: draft.customRedirectURL,
@@ -890,7 +938,7 @@ struct CompletionView: View {
 
             TextField("Resultado o próximo paso (opcional)", text: $note, axis: .vertical)
                 .lineLimit(2...4)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.focusField)
 
             // Next Task Transition (Item 13). A task queued by an accepted hand-off is what the user asked for,
             // so it takes the slot and the picker already points at starting it.
@@ -1084,7 +1132,7 @@ struct StudySourcesSettings: View {
                 }
                 HStack(spacing: 8) {
                     TextField("apuntes.ejemplo.com", text: $newWeb)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.focusField)
                         .frame(maxWidth: 260)
                         .onSubmit(addWeb)
                         .accessibilityLabel("Web que cuenta como estudio")
@@ -1484,7 +1532,7 @@ struct SettingsView: View {
                             }
                         }
                         HStack {
-                            TextField("Descanso", text: $newBreakTitle).textFieldStyle(.roundedBorder).frame(width: 150)
+                            TextField("Descanso", text: $newBreakTitle).textFieldStyle(.focusField).frame(width: 150)
                             Stepper("Hora: \(newBreakHour):00", value: $newBreakHour, in: 6...22)
                             Stepper("\(newBreakDuration) min", value: $newBreakDuration, in: 10...180, step: 10)
                             Button("Añadir descanso") {
@@ -1542,7 +1590,7 @@ struct SettingsView: View {
                             }
                         }
                         HStack {
-                            TextField("Nueva categoría", text: $newCategoryName).textFieldStyle(.roundedBorder).frame(width: 180)
+                            TextField("Nueva categoría", text: $newCategoryName).textFieldStyle(.focusField).frame(width: 180)
                             ColorPicker("Color de la categoría", selection: $newCategoryColor, supportsOpacity: false).labelsHidden()
                             Button("Añadir categoría") {
                                 let name = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1837,7 +1885,7 @@ struct ProfileEditorSheet: View {
                     .help("Cerrar sin guardar (Esc)")
                     .accessibilityLabel("Cerrar")
             }
-            TextField("Nombre del perfil", text: $draft.name).textFieldStyle(.roundedBorder)
+            TextField("Nombre del perfil", text: $draft.name).textFieldStyle(.focusField)
             HStack {
                 Picker("Categoría", selection: $draft.category) {
                     ForEach(model.workspace.settings.categories.map(\.name), id: \.self) { Text($0) }
@@ -1881,12 +1929,18 @@ struct ProfileEditorSheet: View {
             }
             .pickerStyle(.segmented)
             if draft.webListMode != .blockAll {
-                TextField("Dominios o rutas (ej. youtube.com/shorts, claude.ai)", text: $draft.domains).textFieldStyle(.roundedBorder)
+                TextField("Dominios o rutas (ej. youtube.com/shorts, claude.ai)", text: $draft.domains).textFieldStyle(.focusField)
             }
-            TextField("Palabras bloqueadas en título (ej. Shorts, Reels, Netflix)", text: $draft.blockedTitleKeywords).textFieldStyle(.roundedBorder)
+            TextField("Palabras bloqueadas en título (ej. Shorts, Reels, Netflix)", text: $draft.blockedTitleKeywords).textFieldStyle(.focusField)
             BlockedFoldersField(folders: $draft.blockedFolders)
-            Text("Checklist (un paso por línea)").font(.app(10)).foregroundStyle(Palette.muted)
-            TextEditor(text: $draft.checklist).frame(height: 70).overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.stroke))
+            Text("CHECKLIST (UN PASO POR LÍNEA)").fieldLabelStyle()
+            TextEditor(text: $draft.checklist)
+                .font(.app(13))
+                .scrollContentBackground(.hidden)
+                .frame(height: 74)
+                .padding(8)
+                .background(Palette.elevated, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Palette.fieldStroke.opacity(0.45), lineWidth: 1))
             HStack {
                 Text(draft.folder ?? "Sin carpeta predeterminada").font(.app(10)).foregroundStyle(Palette.muted).lineLimit(1)
                 Spacer()
@@ -2092,7 +2146,7 @@ struct GeneralRuleEditor: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("NOMBRE Y TIPO DE TEMPORIZADOR").fieldLabelStyle()
                         TextField("Ej. Límite diario de Shorts y redes, Cuenta atrás de estudio…", text: $draft.name)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.focusField)
                             .font(.app(15, weight: .medium))
 
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 185), spacing: 8)], spacing: 8) {
@@ -2160,7 +2214,7 @@ struct GeneralRuleEditor: View {
                                         : "Dominios, rutas, comodines (*) o /regex/: youtube.com/shorts, *casino*, /reddit\\.com\\/r\\/all/",
                                     text: $draft.domains
                                 )
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.focusField)
                                 .font(.app(13))
                                 .onChange(of: draft.domains) { _, val in
                                     if val.contains("://") { draft.domains = FocusRules.normalizeDomains(val) }
@@ -2206,7 +2260,7 @@ struct GeneralRuleEditor: View {
                                 }
                             }
                             TextField("Shorts, Reels, Netflix, *gameplay*, /partid[ao]/…", text: $draft.blockedTitleKeywords)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.focusField)
                                 .font(.app(13))
                             Toggle("Exigir palabra completa (evita que «art» bloquee «article»; admite comodines * y ? o /regex/)", isOn: $draft.wholeWordKeywords)
                                 .toggleStyle(.checkbox)
@@ -2263,10 +2317,10 @@ struct GeneralRuleEditor: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("PÁGINA DE BLOQUEO Y REDIRECCIÓN · OPCIONAL").fieldLabelStyle()
                             TextField("Frase motivadora para mostrar al bloquear (ej. Primero el código, luego YouTube)", text: $draft.motivationalMessage)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.focusField)
                                 .font(.app(12))
                             TextField("URL de redirección personalizada https://… (vacío = página de bloqueo de FocusDesk)", text: $draft.customRedirectURL)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.focusField)
                                 .font(.app(12))
                             if FocusRules.isRedirectDestinationBlocked(
                                 redirectURL: draft.customRedirectURL,
@@ -2708,9 +2762,10 @@ struct GeneralRuleEditor: View {
                 }
             }
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Palette.elevated.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.stroke, lineWidth: 1))
     }
 
     private func pickRuleApplications() {
