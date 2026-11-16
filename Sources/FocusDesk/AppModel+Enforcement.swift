@@ -1152,6 +1152,25 @@ extension AppModel {
         let newStudy = workspace.addVerifiedStudySeconds(delta, at: instant)
 
         for rule in workspace.generalRules where rule.enabled && rule.kind == .workGoal && rule.verifyActiveStudy {
+            if rule.earnsMatchesPerGoalBlock {
+                let before = rule.earnedMatches(workedTodaySeconds: prevStudy)
+                let after = rule.earnedMatches(workedTodaySeconds: newStudy)
+                let unlockKey = "\(day)-\(rule.id.uuidString)-unlocked-\(after)"
+                if after > before && !studyGoalUnlockedNotifiedToday.contains(unlockKey) {
+                    studyGoalUnlockedNotifiedToday.insert(unlockKey)
+                    _ = persist()
+                    refreshWitness()
+                    let played = matchesToday(for: rule, at: instant)
+                    let msg = played < after
+                        ? "¡\(after) h de estudio activo hoy! Tienes desbloqueada la partida \(played + 1)/\(rule.maxDailyMatches) de League of Legends (sin cortes a mitad)."
+                        : "¡\(after) h de estudio activo hoy!"
+                    notice = msg
+                    if !preview {
+                        reminders.notify("Partida desbloqueada · \(rule.name)", body: msg, identifier: "study-ok-" + rule.id.uuidString)
+                    }
+                }
+                continue
+            }
             let unlockKey = "\(day)-\(rule.id.uuidString)-unlocked"
             if prevStudy < rule.goalRequiredSeconds && newStudy >= rule.goalRequiredSeconds && !studyGoalUnlockedNotifiedToday.contains(unlockKey) {
                 studyGoalUnlockedNotifiedToday.insert(unlockKey)
@@ -1181,13 +1200,14 @@ extension AppModel {
                 let blockedBeforeGoal = workspace.generalRules.first { rule in
                     rule.enabled && LeagueMatchRules.ruleTargetsLeague(rule)
                         && rule.kind == .workGoal
-                        && effectiveWorkedSeconds(for: rule, at: instant) < rule.goalRequiredSeconds
+                        && effectiveWorkedSeconds(for: rule, at: instant) < rule.requiredWorkSecondsForNextMatch(matchesToday: matchesToday(for: rule, at: instant))
                 }
                 if let rule = blockedBeforeGoal {
                     let studiedMin = Int(effectiveWorkedSeconds(for: rule, at: instant) / 60)
+                    let neededMin = Int(rule.requiredWorkSecondsForNextMatch(matchesToday: matchesToday(for: rule, at: instant)) / 60)
                     _ = terminateAllLeagueAndRiotProcesses(
                         for: rule,
-                        reasonMessage: "League of Legends está bloqueado hasta completar \(rule.goalMinutesRequired) min de estudio activo hoy (llevas \(studiedMin) min)."
+                        reasonMessage: "League of Legends está bloqueado hasta completar \(neededMin) min de estudio activo hoy (llevas \(studiedMin) min)."
                     )
                 } else {
                     activeLoLMatchStartedAt = instant
@@ -1223,8 +1243,9 @@ extension AppModel {
 
                 let newMatches = workspace.incrementMatches(for: rule.id, at: instant)
                 let matchLimitReached = rule.maxDailyMatches > 0 && newMatches >= rule.maxDailyMatches
+                let needsMoreWork = rule.isWaitingForMoreWork(workedTodaySeconds: worked, matchesToday: newMatches)
 
-                if matchLimitReached || timeBudgetExhausted {
+                if matchLimitReached || timeBudgetExhausted || needsMoreWork {
                     workspace.generalRules[idx].startPostMatchGrace(wall: instant, continuous: continuousNow)
                     postMatchGraceArmedRules.insert(rule.id)
                     let graceSec = workspace.generalRules[idx].postMatchGraceSeconds
@@ -1236,7 +1257,12 @@ extension AppModel {
                     _ = persist()
                     refreshWitness()
                     let graceText = graceSec == 60 ? "1 minuto" : "\(graceSec) segundos"
-                    let msg = "Partida \(newMatches)/\(max(1, rule.maxDailyMatches)) terminada. Tienes \(graceText) de margen para dar honor y ver estadísticas antes de que se cierre League of Legends por hoy."
+                    let closingFor: String = {
+                        guard needsMoreWork && !matchLimitReached && !timeBudgetExhausted else { return "por hoy" }
+                        let leftMin = max(1, Int(ceil((rule.requiredWorkSecondsForNextMatch(matchesToday: newMatches) - worked) / 60)))
+                        return "hasta que estudies \(leftMin) min más (la siguiente partida se gana con estudio)"
+                    }()
+                    let msg = "Partida \(newMatches)/\(max(1, rule.maxDailyMatches)) terminada. Tienes \(graceText) de margen para dar honor y ver estadísticas antes de que se cierre League of Legends \(closingFor)."
                     notice = msg
                     if !preview {
                         reminders.notify(
@@ -1276,11 +1302,14 @@ extension AppModel {
                 workspace.generalRules[idx].activePostMatchGraceDeadline = nil
                 _ = persist()
                 refreshWitness()
-                let msg = "Margen de 1 minuto finalizado tras la partida \(matchesToday(for: rule, at: instant))/\(max(1, rule.maxDailyMatches)). FocusDesk ha cerrado League of Legends por hoy."
+                let played = matchesToday(for: rule, at: instant)
+                let waiting = rule.isWaitingForMoreWork(workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: instant), matchesToday: played)
+                let closedFor = waiting ? "hasta tu siguiente hora de estudio" : "por hoy"
+                let msg = "Margen de 1 minuto finalizado tras la partida \(played)/\(max(1, rule.maxDailyMatches)). FocusDesk ha cerrado League of Legends \(closedFor)."
                 _ = terminateAllLeagueAndRiotProcesses(for: workspace.generalRules[idx], reasonMessage: msg)
                 if !preview {
                     reminders.notify(
-                        "League of Legends cerrado por hoy",
+                        "League of Legends cerrado \(closedFor)",
                         body: msg,
                         identifier: "lol-closed-" + rule.id.uuidString
                     )
@@ -1290,9 +1319,12 @@ extension AppModel {
             if !matchRunning && isRuleEnforcing(rule, at: instant) {
                 let worked = effectiveWorkedSeconds(for: rule, at: instant)
                 let msg: String
-                if rule.kind == .workGoal && worked < rule.goalRequiredSeconds {
-                    let leftMin = max(1, Int(ceil((rule.goalRequiredSeconds - worked) / 60)))
-                    msg = "League of Legends está bloqueado: te faltan \(leftMin) min de estudio activo verificado hoy (con ventana o pestaña abierta)."
+                let played = matchesToday(for: rule, at: instant)
+                let neededSeconds = rule.kind == .workGoal ? rule.requiredWorkSecondsForNextMatch(matchesToday: played) : 0
+                if rule.kind == .workGoal && worked < neededSeconds && (rule.maxDailyMatches == 0 || played < rule.maxDailyMatches) {
+                    let leftMin = max(1, Int(ceil((neededSeconds - worked) / 60)))
+                    let next = rule.earnsMatchesPerGoalBlock ? " para la partida \(played + 1)/\(rule.maxDailyMatches)" : ""
+                    msg = "League of Legends está bloqueado: te faltan \(leftMin) min de estudio activo verificado hoy\(next) (con ventana o pestaña abierta)."
                 } else {
                     msg = "League of Legends está bloqueado por hoy (\(matchesToday(for: rule, at: instant))/\(max(1, rule.maxDailyMatches)) partidas completadas)."
                 }

@@ -1151,6 +1151,8 @@ public enum GameLibraryRules {
 public enum LeagueMatchRules {
     /// Stable UUID of the mandatory passive rule «Primero 60 min de estudio · luego máx. 2 partidas de LoL».
     public static let mandatoryStudyThenLoLRuleID = UUID(uuidString: "22222222-2222-2222-2222-222222222206")!
+    public static let mandatoryRuleName = "1 h de estudio por partida de LoL · máx. 2 al día"
+    public static let mandatoryRuleMessage = "Cada partida de LoL se gana con 60 min de estudio real (con ventana o pestaña de trabajo abierta): 1 h → 1 partida, se bloquea, otra hora → la 2.ª. Sin cortes a mitad y 1 minuto de margen al terminar."
 
     /// Bundle ID of the inner League of Legends match binary (`/Contents/LoL/Game/LeagueofLegends.app`) that only exists while an active match is running.
     public static let gameClientBundleID = "com.riotgames.LeagueofLegends.GameClient"
@@ -1624,6 +1626,9 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     public var activePostMatchGraceDeadline: TrustedDeadline?
     /// When `true` on a `.workGoal` rule, counts both active task sessions and passive verified study (where the user is not idle and has an open study window or productive browser tab).
     public var verifyActiveStudy: Bool
+    /// When `true` on a `.workGoal` rule with `maxDailyMatches > 0`, each match must be earned with its own
+    /// `goalMinutesRequired` block of work: match 1 after 60 min, then it locks again until 120 min, and so on.
+    public var oneMatchPerGoalBlock: Bool
     /// When `true`, the rule is protected 24/7 while `enabled` (requires its challenge code / wait even during study or while playing unlocked reward matches).
     public var alwaysProtected: Bool
     /// Maximum number of launches/visits allowed per day when `kind == .launchLimit` (1...50).
@@ -1719,6 +1724,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         postMatchGraceSeconds: Int = 60,
         activePostMatchGraceDeadline: TrustedDeadline? = nil,
         verifyActiveStudy: Bool = false,
+        oneMatchPerGoalBlock: Bool = false,
         alwaysProtected: Bool = false,
         maxDailyLaunches: Int = 5,
         maxLaunchDurationMinutes: Int = 5,
@@ -1781,6 +1787,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         self.postMatchGraceSeconds = max(15, min(300, postMatchGraceSeconds))
         self.activePostMatchGraceDeadline = activePostMatchGraceDeadline
         self.verifyActiveStudy = verifyActiveStudy
+        self.oneMatchPerGoalBlock = oneMatchPerGoalBlock
         self.alwaysProtected = alwaysProtected
         self.maxDailyLaunches = max(1, min(50, maxDailyLaunches))
         self.maxLaunchDurationMinutes = max(1, min(120, maxLaunchDurationMinutes))
@@ -1835,7 +1842,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         case id, name, enabled, kind, dailyLimitMinutes, limitPeriodUnit, countdownMinutes, activeDeadline
         case goalMinutesRequired, goalRewardMinutes
         case maxDailyMatches, deferBlockUntilMatchEnds, postMatchGraceSeconds, activePostMatchGraceDeadline
-        case verifyActiveStudy, alwaysProtected
+        case verifyActiveStudy, oneMatchPerGoalBlock, alwaysProtected
         case maxDailyLaunches, maxLaunchDurationMinutes, launchCooldownMinutes, activeLaunchDeadline, launchCooldownDeadline
         case pomodoroWorkMinutes, pomodoroShortBreakMinutes, pomodoroLongBreakMinutes, pomodoroLongBreakEvery
         case pomodoroTotalCycles, pomodoroPenaltyReset, protectPomodoroBreaks, pomodoroWaitForUser
@@ -1864,6 +1871,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         postMatchGraceSeconds = max(15, min(300, try c.decodeIfPresent(Int.self, forKey: .postMatchGraceSeconds) ?? 60))
         activePostMatchGraceDeadline = try c.decodeIfPresent(TrustedDeadline.self, forKey: .activePostMatchGraceDeadline)
         verifyActiveStudy = try c.decodeIfPresent(Bool.self, forKey: .verifyActiveStudy) ?? false
+        oneMatchPerGoalBlock = try c.decodeIfPresent(Bool.self, forKey: .oneMatchPerGoalBlock) ?? false
         alwaysProtected = try c.decodeIfPresent(Bool.self, forKey: .alwaysProtected) ?? false
         maxDailyLaunches = max(1, min(50, try c.decodeIfPresent(Int.self, forKey: .maxDailyLaunches) ?? 5))
         maxLaunchDurationMinutes = max(1, min(120, try c.decodeIfPresent(Int.self, forKey: .maxLaunchDurationMinutes) ?? 5))
@@ -2075,6 +2083,31 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         Double(max(5, goalMinutesRequired)) * 60
     }
 
+    /// True when matches are earned one by one (`oneMatchPerGoalBlock`) instead of all at once after the goal.
+    public var earnsMatchesPerGoalBlock: Bool {
+        kind == .workGoal && oneMatchPerGoalBlock && maxDailyMatches > 0
+    }
+
+    /// Matches unlocked so far today by the work done (capped at `maxDailyMatches`).
+    public func earnedMatches(workedTodaySeconds: TimeInterval) -> Int {
+        guard maxDailyMatches > 0 else { return 0 }
+        guard workedTodaySeconds >= goalRequiredSeconds else { return 0 }
+        guard earnsMatchesPerGoalBlock else { return maxDailyMatches }
+        return min(maxDailyMatches, Int(workedTodaySeconds / goalRequiredSeconds))
+    }
+
+    /// Work seconds needed today before the next match can start (`goalRequiredSeconds` × next match number when earned one by one).
+    public func requiredWorkSecondsForNextMatch(matchesToday: Int) -> TimeInterval {
+        guard earnsMatchesPerGoalBlock else { return goalRequiredSeconds }
+        return goalRequiredSeconds * Double(max(1, matchesToday + 1))
+    }
+
+    /// True when the matches played already used up what the work has earned, but more can still be earned today.
+    public func isWaitingForMoreWork(workedTodaySeconds: TimeInterval, matchesToday: Int) -> Bool {
+        guard earnsMatchesPerGoalBlock, matchesToday < maxDailyMatches else { return false }
+        return matchesToday >= earnedMatches(workedTodaySeconds: workedTodaySeconds)
+    }
+
     /// Earned leisure budget today in seconds when `kind == .workGoal`.
     /// Returns `nil` when `goalRewardMinutes == 0` and the work goal is met (meaning unlimited for the rest of today).
     /// Returns `0` while `workedTodaySeconds < goalRequiredSeconds`.
@@ -2193,6 +2226,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             if isInPostMatchGrace(at: now, continuous: continuous) { return true }
             if deferBlockUntilMatchEnds && isMatchInProgress { return true }
             if maxDailyMatches > 0 && matchesToday >= maxDailyMatches { return false }
+            if isWaitingForMoreWork(workedTodaySeconds: workedTodaySeconds, matchesToday: matchesToday) { return false }
             guard let budget = earnedGoalBudgetSeconds(workedTodaySeconds: workedTodaySeconds) else {
                 return maxDailyMatches > 0 && matchesToday < maxDailyMatches
             }
@@ -2240,6 +2274,9 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
                 return false
             }
             if maxDailyMatches > 0 && matchesToday >= maxDailyMatches {
+                return true
+            }
+            if isWaitingForMoreWork(workedTodaySeconds: workedTodaySeconds, matchesToday: matchesToday) {
                 return true
             }
             guard let budget = earnedGoalBudgetSeconds(workedTodaySeconds: workedTodaySeconds) else { return false }
@@ -2432,6 +2469,9 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             if current.maxDailyMatches > 0 && (proposed.maxDailyMatches == 0 || proposed.maxDailyMatches > current.maxDailyMatches) {
                 return "ampliar el límite de partidas diarias de «\(current.name)»"
             }
+            if current.oneMatchPerGoalBlock && !proposed.oneMatchPerGoalBlock {
+                return "dejar de exigir una hora de estudio por cada partida en «\(current.name)»"
+            }
             if current.verifyActiveStudy && !proposed.verifyActiveStudy {
                 return "desactivar la verificación de estudio activo en «\(current.name)»"
             }
@@ -2541,11 +2581,11 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         return nil
     }
 
-    /// Built-in mandatory passive rule: 60 minutes of verified study (passive or active) first, then up to 2 matches of League of Legends (never kicking mid-match, 1-minute post-match grace, protected 24/7 by a 64-character challenge code).
+    /// Built-in mandatory passive rule: each League of Legends match costs 60 minutes of verified study (1 match after 60 min, it locks again, the 2nd after 120 min; max 2 a day) (never kicking mid-match, 1-minute post-match grace, protected 24/7 by a 64-character challenge code).
     public static var mandatoryStudyThenLoLRule: GeneralBlockRule {
         GeneralBlockRule(
             id: LeagueMatchRules.mandatoryStudyThenLoLRuleID,
-            name: "Primero 60 min de estudio · luego máx. 2 partidas de LoL",
+            name: LeagueMatchRules.mandatoryRuleName,
             enabled: true,
             kind: .workGoal,
             goalMinutesRequired: 60,
@@ -2554,6 +2594,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             deferBlockUntilMatchEnds: true,
             postMatchGraceSeconds: 60,
             verifyActiveStudy: true,
+            oneMatchPerGoalBlock: true,
             alwaysProtected: true,
             blockApps: true,
             appListMode: .blockListed,
@@ -2562,7 +2603,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             webListMode: .blockListed,
             domains: "",
             webBlockAction: .warn,
-            motivationalMessage: "Primero completa tus 60 min de estudio real (con ventana o pestaña de trabajo abierta). Después tienes hasta 2 partidas de LoL sin cortes a mitad y 1 minuto de margen al terminar.",
+            motivationalMessage: LeagueMatchRules.mandatoryRuleMessage,
             protection: .challenge,
             unlockChars: 64,
             guardSystemPanes: true,

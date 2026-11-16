@@ -999,7 +999,7 @@ final class EnforcementTests: XCTestCase {
 
         // 2. After 60 minutes (3600s) of verified study and 0/2 matches: LoL is unlocked, but rule remains protected 24/7
         XCTAssertFalse(rule.isEnforcing(at: zero, usedTodaySeconds: 600, workedTodaySeconds: 3600, matchesToday: 0, isMatchInProgress: false, continuous: 100))
-        XCTAssertTrue(rule.isTrackingQuota(at: zero, usedTodaySeconds: 600, workedTodaySeconds: 3600, matchesToday: 1, continuous: 100))
+        XCTAssertTrue(rule.isTrackingQuota(at: zero, usedTodaySeconds: 600, workedTodaySeconds: 7200, matchesToday: 1, continuous: 100))
         XCTAssertTrue(rule.isProtectedNow(at: zero, usedTodaySeconds: 600, workedTodaySeconds: 3600, matchesToday: 1, isMatchInProgress: false, continuous: 100))
 
         // 3. Never kick mid-match: even if 120 min (7200s) budget expires during Match #2, isMatchInProgress keeps isEnforcing == false
@@ -1017,5 +1017,52 @@ final class EnforcementTests: XCTestCase {
         let afterGraceWall = matchEndWall.addingTimeInterval(61)
         XCTAssertFalse(rule.isInPostMatchGrace(at: afterGraceWall, continuous: 5561))
         XCTAssertTrue(rule.isEnforcing(at: afterGraceWall, usedTodaySeconds: 5400, workedTodaySeconds: 3600, matchesToday: 2, isMatchInProgress: false, continuous: 5561))
+    }
+
+    func testMandatoryLoLRuleEarnsOneMatchPerHourOfStudy() {
+        let rule = GeneralBlockRule.mandatoryStudyThenLoLRule
+        XCTAssertTrue(rule.oneMatchPerGoalBlock)
+        XCTAssertTrue(rule.earnsMatchesPerGoalBlock)
+
+        // 0 h → blocked; 1 h → match 1 open
+        XCTAssertTrue(rule.isEnforcing(at: zero, workedTodaySeconds: 3599, matchesToday: 0, continuous: 100))
+        XCTAssertFalse(rule.isEnforcing(at: zero, workedTodaySeconds: 3600, matchesToday: 0, continuous: 100))
+        XCTAssertEqual(rule.earnedMatches(workedTodaySeconds: 3600), 1)
+
+        // After match 1 with only 1 h studied → locked again until 2 h
+        XCTAssertTrue(rule.isWaitingForMoreWork(workedTodaySeconds: 5000, matchesToday: 1))
+        XCTAssertTrue(rule.isEnforcing(at: zero, usedTodaySeconds: 1800, workedTodaySeconds: 5000, matchesToday: 1, continuous: 100))
+        XCTAssertFalse(rule.isTrackingQuota(at: zero, usedTodaySeconds: 1800, workedTodaySeconds: 5000, matchesToday: 1, continuous: 100))
+        XCTAssertEqual(rule.requiredWorkSecondsForNextMatch(matchesToday: 1), 7200)
+
+        // 2 h → match 2 open
+        XCTAssertFalse(rule.isEnforcing(at: zero, usedTodaySeconds: 1800, workedTodaySeconds: 7200, matchesToday: 1, continuous: 100))
+        // Studying 2 h before playing never gives more than one match at a time... but both are earned
+        XCTAssertEqual(rule.earnedMatches(workedTodaySeconds: 7200), 2)
+        // Max 2 a day even with 5 h studied
+        XCTAssertEqual(rule.earnedMatches(workedTodaySeconds: 18000), 2)
+        XCTAssertTrue(rule.isEnforcing(at: zero, usedTodaySeconds: 3600, workedTodaySeconds: 18000, matchesToday: 2, continuous: 100))
+        XCTAssertFalse(rule.isWaitingForMoreWork(workedTodaySeconds: 18000, matchesToday: 2))
+
+        // Never kicked mid-match even while waiting for more work
+        XCTAssertFalse(rule.isEnforcing(at: zero, usedTodaySeconds: 1800, workedTodaySeconds: 5000, matchesToday: 1, isMatchInProgress: true, continuous: 100))
+
+        // Turning it off is a loosening the ratchet refuses
+        var looser = rule
+        looser.oneMatchPerGoalBlock = false
+        XCTAssertNotNil(GeneralBlockRule.loosening(current: rule, proposed: looser, now: zero, continuous: 100))
+    }
+
+    func testSavedOldLoLRuleIsMigratedToOneMatchPerHour() throws {
+        var old = GeneralBlockRule.mandatoryStudyThenLoLRule
+        old.oneMatchPerGoalBlock = false
+        old.name = "Primero 60 min de estudio · luego máx. 2 partidas de LoL"
+        var ws = Workspace()
+        ws.generalRules = [old]
+        let data = try JSONEncoder().encode(ws)
+        let loaded = try JSONDecoder().decode(Workspace.self, from: data)
+        let rule = try XCTUnwrap(loaded.generalRules.first { $0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID })
+        XCTAssertTrue(rule.oneMatchPerGoalBlock)
+        XCTAssertEqual(rule.name, LeagueMatchRules.mandatoryRuleName)
     }
 }

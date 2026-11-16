@@ -1467,7 +1467,15 @@ public struct Workspace: Codable, Equatable, Sendable {
         settings = (try? c.decodeIfPresent(Settings.self, forKey: .settings)) ?? Settings()
         pendingCalendarOps = lossyOps?.elements ?? []
         var decodedRules = lossyRules?.elements ?? GeneralBlockRule.defaults
-        if !decodedRules.contains(where: { $0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID }) {
+        if let idx = decodedRules.firstIndex(where: { $0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID }) {
+            // 16-nov-2026: the mandatory rule moved from «60 min → 2 matches» to «60 min per match».
+            // Only ever tightens it, so it is safe to apply to a saved rule on load.
+            if !decodedRules[idx].oneMatchPerGoalBlock {
+                decodedRules[idx].oneMatchPerGoalBlock = true
+                decodedRules[idx].name = LeagueMatchRules.mandatoryRuleName
+                decodedRules[idx].motivationalMessage = LeagueMatchRules.mandatoryRuleMessage
+            }
+        } else {
             decodedRules.insert(GeneralBlockRule.mandatoryStudyThenLoLRule, at: 0)
         }
         generalRules = decodedRules

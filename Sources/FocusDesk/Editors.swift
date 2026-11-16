@@ -2342,6 +2342,11 @@ struct GeneralRuleEditor: View {
                                 .font(.app(12))
                         }
                     }
+                    if draft.maxDailyMatches > 0 {
+                        Toggle("Cada partida cuesta \(draft.goalMinutesRequired) min de estudio (1 partida, se bloquea, otra hora → la siguiente)", isOn: $draft.oneMatchPerGoalBlock)
+                            .toggleStyle(.checkbox)
+                            .font(.app(11))
+                    }
                     if draft.maxDailyMatches > 0 || LeagueMatchRules.ruleTargetsLeague(draft) {
                         HStack(spacing: 12) {
                             Toggle("No sacar nunca a mitad de partida (esperar a que termine la partida en curso)", isOn: $draft.deferBlockUntilMatchEnds)
