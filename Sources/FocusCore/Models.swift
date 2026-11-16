@@ -155,14 +155,14 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
     public static let defaults: [FocusProfile] = [
         FocusProfile(
             id: UUID(uuidString: "11111111-1111-1111-1111-111111111101")!,
-            name: "Grabar vídeo",
-            category: "Contenido",
+            name: "Programar / Trabajo",
+            category: "Trabajo",
             minutes: 60,
             leadMinutes: 10,
             strict: false,
             apps: [],
-            domains: "chatgpt.com, claude.ai",
-            checklist: "Preparar el guion\nGrabar las tomas\nGuardar el material"
+            domains: "github.com, stackoverflow.com, claude.ai, chatgpt.com",
+            checklist: "Definir el objetivo del bloque\nCompletar la implementación\nVerificar el resultado"
         ),
         FocusProfile(
             id: UUID(uuidString: "11111111-1111-1111-1111-111111111102")!,
@@ -177,14 +177,14 @@ public struct FocusProfile: Codable, Equatable, Identifiable, Sendable {
         ),
         FocusProfile(
             id: UUID(uuidString: "11111111-1111-1111-1111-111111111103")!,
-            name: "Tienda",
-            category: "Tienda",
-            minutes: 30,
+            name: "Lectura y escritura",
+            category: "Proyecto",
+            minutes: 45,
             leadMinutes: 10,
             strict: false,
             apps: [],
             domains: "",
-            checklist: "Revisar pedidos\nResponder mensajes\nActualizar stock"
+            checklist: "Leer y subrayar ideas clave\nRedactar el borrador\nRevisar el texto"
         )
     ]
 }
@@ -202,9 +202,9 @@ public struct CategoryItem: Codable, Equatable, Identifiable, Sendable {
 
     public static let defaults: [CategoryItem] = [
         CategoryItem(name: "Personal", red: 0.70, green: 0.78, blue: 0.87),
-        CategoryItem(name: "Contenido", red: 1.00, green: 0.65, blue: 0.48),
         CategoryItem(name: "Estudio", red: 0.65, green: 0.69, blue: 0.98),
-        CategoryItem(name: "Tienda", red: 0.40, green: 0.78, blue: 0.90)
+        CategoryItem(name: "Trabajo", red: 1.00, green: 0.65, blue: 0.48),
+        CategoryItem(name: "Proyecto", red: 0.40, green: 0.78, blue: 0.90)
     ]
 
     /// The colour "Tienda" had while it matched the app's accent; migrated to the default above.
@@ -1593,8 +1593,6 @@ public struct Workspace: Codable, Equatable, Sendable {
                 decodedRules[idx].name = LeagueMatchRules.mandatoryRuleName
                 decodedRules[idx].motivationalMessage = LeagueMatchRules.mandatoryRuleMessage
             }
-        } else {
-            decodedRules.insert(GeneralBlockRule.mandatoryStudyThenLoLRule, at: 0)
         }
         generalRules = decodedRules
         dailyRuleUsage = (try? c.decodeIfPresent([String: [String: TimeInterval]].self, forKey: .dailyRuleUsage)) ?? [:]
@@ -1774,6 +1772,7 @@ public struct Workspace: Codable, Equatable, Sendable {
 
 public enum FocusRules {
     public static let systemExemptBundleIDs: Set<String> = [
+        "com.articdia.focusdesk",
         "local.focusdesk.app",
         "com.apple.finder",
         "com.apple.systempreferences",
@@ -1805,6 +1804,7 @@ public enum FocusRules {
     /// Apps FocusDesk may hide but must never close or force to quit. A wildcard rule that reached these would
     /// leave the Mac unusable, so — like FocusMe's `isExcludedTargetProcess` — the list is fixed in code.
     public static let neverTerminateBundleIDs: Set<String> = [
+        "com.articdia.focusdesk",
         "local.focusdesk.app",
         "com.apple.finder",
         "com.apple.dock",

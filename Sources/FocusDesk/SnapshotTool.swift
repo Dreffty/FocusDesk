@@ -210,15 +210,15 @@ enum SnapshotTool {
         let currentHour = calendar.component(.hour, from: Date())
         let base = max(8, min(currentHour, 20))
 
-        model.saveTask(FocusTask(title: "Grabar el vídeo del lunes", category: "Contenido", scheduledAt: at(base, 0), minutes: 60, checklist: "Preparar el guion\nGrabar las tomas\nGuardar el material"))
-        model.saveTask(FocusTask(title: "Editar el vídeo", category: "Contenido", scheduledAt: at(base, 30), minutes: 45))
-        model.saveTask(FocusTask(title: "Responder pedidos de la tienda", category: "Tienda", scheduledAt: at(base, 30), minutes: 20))
+        model.saveTask(FocusTask(title: "Preparar presentación del proyecto", category: "Trabajo", scheduledAt: at(base, 0), minutes: 60, checklist: "Definir objetivos\nPreparar diapositivas\nRevisar notas"))
+        model.saveTask(FocusTask(title: "Revisar código del módulo", category: "Trabajo", scheduledAt: at(base, 30), minutes: 45))
+        model.saveTask(FocusTask(title: "Responder mensajes pendientes", category: "Proyecto", scheduledAt: at(base, 30), minutes: 20))
         model.saveTask(FocusTask(title: "Estudiar Álgebra", category: "Estudio", scheduledAt: at(min(base + 2, 22), 0), minutes: 45, repeatRule: .daily))
         model.saveTask(FocusTask(title: "Repasar apuntes de noche", category: "Estudio", scheduledAt: at(23, 30), minutes: 60))
-        model.saveTask(FocusTask(title: "Preparar el guion de la semana", category: "Contenido", scheduledAt: at(9, 0, dayOffset: -2), minutes: 30))
-        model.saveTask(FocusTask(title: "Llamar al proveedor", isScheduled: false, dueDate: at(18, 0, dayOffset: 1), minutes: 15))
-        model.saveTask(FocusTask(title: "Grabar intro para el canal", category: "Contenido", scheduledAt: at(10, 0, dayOffset: 1), minutes: 30))
-        model.saveTask(FocusTask(title: "Inventario de la tienda", category: "Tienda", scheduledAt: at(16, 0, dayOffset: 2), minutes: 60))
+        model.saveTask(FocusTask(title: "Preparar resumen semanal", category: "Trabajo", scheduledAt: at(9, 0, dayOffset: -2), minutes: 30))
+        model.saveTask(FocusTask(title: "Llamar para confirmar cita", isScheduled: false, dueDate: at(18, 0, dayOffset: 1), minutes: 15))
+        model.saveTask(FocusTask(title: "Redactar documentación", category: "Trabajo", scheduledAt: at(10, 0, dayOffset: 1), minutes: 30))
+        model.saveTask(FocusTask(title: "Planificar hitos del proyecto", category: "Proyecto", scheduledAt: at(16, 0, dayOffset: 2), minutes: 60))
         // Five minutes away and protected: already defends itself, and closes a folder of films while it runs.
         model.saveTask(FocusTask(title: "Repasar redes para el examen", category: "Estudio", scheduledAt: Date().addingTimeInterval(300),
                                  minutes: 45, protection: .challenge, unlockChars: 24,

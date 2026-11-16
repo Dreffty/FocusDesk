@@ -72,9 +72,10 @@ final class SmallFixesTests: XCTestCase {
     }
 
     func testCommandsAboutFocusDeskAreStillCaught() {
+        XCTAssertNotNil(clipboard("launchctl bootout gui/$(id -u)/com.articdia.focusdesk.guard"))
+        XCTAssertNotNil(clipboard("launchctl unload ~/Library/LaunchAgents/com.articdia.focusdesk.guard.plist"))
+        XCTAssertNotNil(clipboard("launchctl remove com.articdia.focusdesk.guard"))
         XCTAssertNotNil(clipboard("launchctl bootout gui/$(id -u)/local.focusdesk.guard"))
-        XCTAssertNotNil(clipboard("launchctl unload ~/Library/LaunchAgents/local.focusdesk.guard.plist"))
-        XCTAssertNotNil(clipboard("launchctl remove local.focusdesk.guard"))
         XCTAssertNotNil(clipboard("sudo killall FocusDesk"))
         XCTAssertNotNil(clipboard("pkill -9 focusdesk"))
     }

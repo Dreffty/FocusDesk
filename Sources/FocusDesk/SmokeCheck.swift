@@ -14,8 +14,8 @@ enum SmokeCheck {
 
             // 1. Reusable Profile creation & application (Item 9) and Domain Normalization (Item 15)
             let customProfile = FocusProfile(
-                name: "Grabar vídeo Pro",
-                category: "Contenido",
+                name: "Trabajo profundo",
+                category: "Trabajo",
                 minutes: 45,
                 leadMinutes: 10,
                 strict: false,
@@ -121,7 +121,7 @@ enum SmokeCheck {
 
             // With a session, pause and finish must be registered system-wide (they only reached FocusDesk when it was
             // in front). Only acceptable failure: another FocusDesk instance with its own session holds the keys.
-            let otherInstance = NSRunningApplication.runningApplications(withBundleIdentifier: "local.focusdesk.app")
+            let otherInstance = NSRunningApplication.runningApplications(withBundleIdentifier: "com.articdia.focusdesk")
                 .contains { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
             try? await settle(until: { model.sessionHotKeysActive })
             guard model.sessionHotKeysActive || otherInstance else {

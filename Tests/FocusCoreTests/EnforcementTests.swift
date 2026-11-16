@@ -305,7 +305,7 @@ final class EnforcementTests: XCTestCase {
     func testCriticalSystemAppsAreOnlyEverHidden() {
         XCTAssertEqual(FocusRules.safeAction(.forceQuit, for: "com.apple.finder"), .hide)
         XCTAssertEqual(FocusRules.safeAction(.close, for: "com.apple.dock"), .hide)
-        XCTAssertEqual(FocusRules.safeAction(.forceQuit, for: "local.focusdesk.app"), .hide)
+        XCTAssertEqual(FocusRules.safeAction(.forceQuit, for: "com.articdia.focusdesk"), .hide)
         XCTAssertEqual(FocusRules.safeAction(.forceQuit, for: "com.riotgames.RiotClient"), .forceQuit)
     }
 
@@ -827,7 +827,7 @@ final class EnforcementTests: XCTestCase {
 
         // 3. ClipboardGuardRules detects tamper commands and blocked URLs in clipboard
         XCTAssertNotNil(ClipboardGuardRules.violation(in: "sudo killall focusdesk", domains: "", webListMode: .blockListed, webBlockAction: .warn))
-        XCTAssertNotNil(ClipboardGuardRules.violation(in: "launchctl unload ~/Library/LaunchAgents/local.focusdesk.plist", domains: "", webListMode: .blockListed, webBlockAction: .warn))
+        XCTAssertNotNil(ClipboardGuardRules.violation(in: "launchctl unload ~/Library/LaunchAgents/com.articdia.focusdesk.guard.plist", domains: "", webListMode: .blockListed, webBlockAction: .warn))
         XCTAssertNotNil(ClipboardGuardRules.violation(in: "https://www.youtube.com/shorts/abc123", domains: "youtube.com/shorts", webListMode: .blockListed, webBlockAction: .redirect))
         XCTAssertNil(ClipboardGuardRules.violation(in: "struct ContentView: View {}", domains: "youtube.com", webListMode: .blockListed, webBlockAction: .redirect))
     }

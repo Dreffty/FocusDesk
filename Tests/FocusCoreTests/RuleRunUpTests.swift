@@ -74,10 +74,11 @@ final class RuleRunUpTests: XCTestCase {
     }
 }
 
-/// FD-11: the built-in LoL rule comes back on every launch, so offering to delete it was a lie.
+/// Public version: every rule can be deleted (subject to active protection/ratchet).
 final class BuiltInRuleTests: XCTestCase {
-    func testTheLoLRuleCannotBeDeleted() {
-        XCTAssertFalse(GeneralBlockRule.mandatoryStudyThenLoLRule.canBeDeleted)
+    func testAnyRuleCanBeDeleted() {
+        XCTAssertTrue(GeneralBlockRule.mandatoryStudyThenLoLRule.canBeDeleted)
         XCTAssertTrue(GeneralBlockRule(name: "Otra", domains: "x.com").canBeDeleted)
+        XCTAssertFalse(GeneralBlockRule.defaults.contains(where: { $0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID }))
     }
 }

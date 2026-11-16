@@ -1,9 +1,10 @@
 import AppKit
 import FocusCore
+import Network
 
-/// Game rules measured by time (every game except League of Legends, which has its own exact detector in
-/// `tickLeagueMatchAndPostMatchGrace`). What to do each second is decided by `TimedMatchPlanner`; this file only looks
-/// at what is running, counts matches and closes the game.
+/// Game rules measured by time (every game except League of Legends and Valve GSI exact games).
+/// What to do each second is decided by `TimedMatchPlanner`; this file looks at what is running,
+/// receives Valve Game State Integration events, counts matches and closes the game.
 extension AppModel {
     /// Whether the app says it is a game in its Info.plist («Juegos» category). Cached: it never changes for a bundle.
     func appIsGameCategory(_ app: NSRunningApplication) -> Bool {
@@ -85,33 +86,43 @@ extension AppModel {
         guard writable, !screenIsLocked else { return }
         let continuousNow = TrustedClock.continuousSeconds()
         for rule in workspace.generalRules where rule.enabled && rule.usesTimedMatches {
-            let apps = runningGameApps(for: rule)
-            let running = !apps.isEmpty || isPlayingGameOnWeb(rule, at: instant)
-            if running { timedMatchLastSeen[rule.id] = instant }
-            let since = timedMatchLastSeen[rule.id].map { instant.timeIntervalSince($0) } ?? .infinity
-            let step = TimedMatchPlanner.step(
-                rule: rule,
-                gameRunning: running,
-                secondsSinceGameSeen: since,
-                workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: instant),
-                matchesToday: matchesToday(for: rule, at: instant),
-                now: instant,
-                continuous: continuousNow
-            )
-            switch step {
-            case .idle:
-                if !apps.isEmpty && isRuleEnforcing(rule, at: instant) {
-                    terminateGameApps(for: rule, reasonMessage: gameLockMessage(rule, at: instant))
-                }
-            case .start:
-                startTimedMatch(ruleID: rule.id, at: instant, continuous: continuousNow)
-            case .playing:
-                break
-            case .overtime:
-                warnTimedMatchOvertime(rule, at: instant)
-            case .finish(let reason):
-                finishTimedMatch(ruleID: rule.id, reason: reason, at: instant)
+            stepTimedMatch(for: rule, allowTimedFallback: false, at: instant, continuousNow: continuousNow)
+        }
+    }
+
+    private func stepTimedMatch(
+        for rule: GeneralBlockRule,
+        allowTimedFallback: Bool,
+        at instant: Date,
+        continuousNow: Double
+    ) {
+        let apps = runningGameApps(for: rule)
+        let running = !apps.isEmpty || isPlayingGameOnWeb(rule, at: instant)
+        if running { timedMatchLastSeen[rule.id] = instant }
+        let since = timedMatchLastSeen[rule.id].map { instant.timeIntervalSince($0) } ?? .infinity
+        let step = TimedMatchPlanner.step(
+            rule: rule,
+            gameRunning: running,
+            secondsSinceGameSeen: since,
+            workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: instant),
+            matchesToday: matchesToday(for: rule, at: instant),
+            allowTimedFallback: allowTimedFallback,
+            now: instant,
+            continuous: continuousNow
+        )
+        switch step {
+        case .idle:
+            if !apps.isEmpty && isRuleEnforcing(rule, at: instant) {
+                terminateGameApps(for: rule, reasonMessage: gameLockMessage(rule, at: instant))
             }
+        case .start:
+            startTimedMatch(ruleID: rule.id, at: instant, continuous: continuousNow)
+        case .playing:
+            break
+        case .overtime:
+            warnTimedMatchOvertime(rule, at: instant)
+        case .finish(let reason):
+            finishTimedMatch(ruleID: rule.id, reason: reason, at: instant)
         }
     }
 
@@ -187,5 +198,306 @@ extension AppModel {
                 reminders.notify("\(unit.capitalized) \(played)/\(rule.maxDailyMatches) terminada", body: msg, identifier: "game-end-" + rule.id.uuidString)
             }
         }
+    }
+
+    // MARK: - Valve Game State Integration (CS2 & Dota 2)
+
+    func startValveGSIServerIfNeeded() {
+        guard !preview, workspace.generalRules.contains(where: { $0.enabled && $0.usesExactValveGSI }) else { return }
+        ValveGSIConfig.installIfPossible()
+        guard valveGSIServer == nil else { return }
+        let server = ValveGSIServer(port: ValveGSI.port) { [weak self] data in
+            Task { @MainActor [weak self] in
+                self?.handleValveGSIPayload(data)
+            }
+        }
+        server.start()
+        valveGSIServer = server
+    }
+
+    func handleValveGSIPayload(_ data: Data, at instant: Date = Date()) {
+        guard writable, !screenIsLocked, let event = ValveGSI.parse(jsonData: data) else { return }
+        let continuousNow = TrustedClock.continuousSeconds()
+        valveLastEventAt[event.gameID] = instant
+        for idx in workspace.generalRules.indices where workspace.generalRules[idx].enabled && workspace.generalRules[idx].gameID == event.gameID {
+            if workspace.generalRules[idx].activeMatchDeadline != nil {
+                workspace.generalRules[idx].endTimedMatch()
+            }
+            valveUnconnectedSince.removeValue(forKey: workspace.generalRules[idx].id)
+        }
+
+        let matchingRules = workspace.generalRules.filter { $0.enabled && $0.usesExactValveGSI && $0.gameID == event.gameID }
+        guard !matchingRules.isEmpty else { return }
+        let gameName = GameCatalog.game(id: event.gameID)?.name ?? event.gameID
+
+        switch event.phase {
+        case .live, .intermission:
+            if valveMatchActive[event.gameID] != true {
+                for rule in matchingRules {
+                    let played = matchesToday(for: rule, at: instant)
+                    let worked = effectiveWorkedSeconds(for: rule, at: instant)
+                    let needed = rule.requiredWorkSecondsForNextMatch(matchesToday: played)
+                    let blocked = (rule.maxDailyMatches > 0 && played >= rule.maxDailyMatches) || worked < needed
+                    if blocked {
+                        terminateGameApps(for: rule, reasonMessage: gameLockMessage(rule, at: instant))
+                        return
+                    }
+                }
+                valveMatchActive[event.gameID] = true
+                valveMatchStartedContinuous[event.gameID] = continuousNow
+                if let first = matchingRules.first {
+                    let currentMatchNum = min(max(1, first.maxDailyMatches), matchesToday(for: first, at: instant) + 1)
+                    notice = "Partida \(currentMatchNum)/\(max(1, first.maxDailyMatches)) de \(gameName) en curso · FocusDesk no te sacará a mitad."
+                }
+            }
+        case .gameover:
+            if valveMatchActive[event.gameID] == true {
+                finishExactValveMatch(gameID: event.gameID, at: instant, continuousNow: continuousNow)
+            }
+        case .menu:
+            if valveMatchActive[event.gameID] == true,
+               let started = valveMatchStartedContinuous[event.gameID],
+               continuousNow - started >= LeagueMatchRules.minCountedMatchDurationSeconds {
+                finishExactValveMatch(gameID: event.gameID, at: instant, continuousNow: continuousNow)
+            } else {
+                valveMatchActive[event.gameID] = false
+                valveMatchStartedContinuous.removeValue(forKey: event.gameID)
+            }
+        }
+    }
+
+    private func finishExactValveMatch(gameID: String, at instant: Date, continuousNow: Double) {
+        valveMatchActive[gameID] = false
+        valveMatchStartedContinuous.removeValue(forKey: gameID)
+        let gameName = GameCatalog.game(id: gameID)?.name ?? gameID
+
+        for idx in workspace.generalRules.indices {
+            let rule = workspace.generalRules[idx]
+            guard rule.enabled, rule.usesExactValveGSI, rule.gameID == gameID else { continue }
+            let newMatches = workspace.incrementMatches(for: rule.id, at: instant)
+            let worked = effectiveWorkedSeconds(for: rule, at: instant)
+            let matchLimitReached = rule.maxDailyMatches > 0 && newMatches >= rule.maxDailyMatches
+            let needsMoreWork = rule.isWaitingForMoreWork(workedTodaySeconds: worked, matchesToday: newMatches)
+
+            if matchLimitReached || needsMoreWork {
+                workspace.generalRules[idx].startPostMatchGrace(wall: instant, continuous: continuousNow)
+                postMatchGraceArmedRules.insert(rule.id)
+                let graceSec = workspace.generalRules[idx].postMatchGraceSeconds
+                workspace.recordAudit(
+                    category: "Partida terminada (Valve)",
+                    summary: "«\(rule.name)» · Partida \(newMatches)/\(max(1, rule.maxDailyMatches)) terminada · Margen de \(graceSec)s iniciado",
+                    at: instant
+                )
+                _ = persist()
+                refreshWitness()
+                let tail = needsMoreWork && !matchLimitReached
+                    ? "hasta que estudies más"
+                    : "por hoy"
+                let msg = "Partida \(newMatches)/\(max(1, rule.maxDailyMatches)) de \(gameName) terminada. Tienes \(graceSec)s de margen antes de cerrarlo \(tail)."
+                notice = msg
+                if !preview {
+                    reminders.notify("Partida terminada · \(gameName)", body: msg, identifier: "valve-grace-" + rule.id.uuidString)
+                }
+            } else {
+                _ = persist()
+                let left = max(0, rule.maxDailyMatches - newMatches)
+                let msg = "Partida \(newMatches)/\(rule.maxDailyMatches) de \(gameName) completada. Te \(left == 1 ? "queda 1 disponible" : "quedan \(left) disponibles")."
+                notice = msg
+                if !preview {
+                    reminders.notify("Partida \(newMatches)/\(rule.maxDailyMatches) terminada", body: msg, identifier: "valve-match-" + rule.id.uuidString)
+                }
+            }
+        }
+    }
+
+    /// Enforces Valve GSI rules and falls back to timed counting if Steam's `.cfg` has not sent events after 60s of running.
+    func tickValveGSIGames(at instant: Date) {
+        guard writable, !screenIsLocked else { return }
+        let continuousNow = TrustedClock.continuousSeconds()
+        for idx in workspace.generalRules.indices {
+            let rule = workspace.generalRules[idx]
+            guard rule.enabled, rule.usesExactValveGSI, let gameID = rule.gameID else { continue }
+
+            if rule.isInPostMatchGrace(at: instant, continuous: continuousNow) {
+                postMatchGraceArmedRules.insert(rule.id)
+                continue
+            }
+            if postMatchGraceArmedRules.contains(rule.id) {
+                postMatchGraceArmedRules.remove(rule.id)
+                workspace.generalRules[idx].activePostMatchGraceDeadline = nil
+                _ = persist()
+                refreshWitness()
+                let gameName = rule.game?.name ?? rule.name
+                let msg = "Margen finalizado: FocusDesk ha cerrado \(gameName)."
+                _ = terminateGameApps(for: workspace.generalRules[idx], reasonMessage: msg)
+                if !preview {
+                    reminders.notify("\(gameName) cerrado", body: msg, identifier: "valve-closed-" + rule.id.uuidString)
+                }
+                continue
+            }
+
+            let apps = runningGameApps(for: rule)
+            let gsiConnected = valveLastEventAt[gameID].map { instant.timeIntervalSince($0) <= 600 } ?? false
+            if gsiConnected {
+                valveUnconnectedSince.removeValue(forKey: rule.id)
+                if valveMatchActive[gameID] != true && !apps.isEmpty && isRuleEnforcing(rule, at: instant) {
+                    terminateGameApps(for: rule, reasonMessage: gameLockMessage(rule, at: instant))
+                }
+                continue
+            }
+
+            if apps.isEmpty && rule.activeMatchDeadline == nil {
+                valveUnconnectedSince.removeValue(forKey: rule.id)
+                continue
+            }
+            if !apps.isEmpty && rule.activeMatchDeadline == nil && isRuleEnforcing(rule, at: instant) {
+                terminateGameApps(for: rule, reasonMessage: gameLockMessage(rule, at: instant))
+                continue
+            }
+            if rule.activeMatchDeadline == nil {
+                let firstSeen = valveUnconnectedSince[rule.id] ?? instant
+                valveUnconnectedSince[rule.id] = firstSeen
+                guard instant.timeIntervalSince(firstSeen) >= 60 else { continue }
+            }
+            stepTimedMatch(for: rule, allowTimedFallback: true, at: instant, continuousNow: continuousNow)
+        }
+    }
+}
+
+/// Writes `gamestate_integration_focusdesk.cfg` into installed macOS Steam libraries for CS2 and Dota 2.
+enum ValveGSIConfig {
+    static func installIfPossible() {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let defaultSteamApps = home.appendingPathComponent("Library/Application Support/Steam/steamapps")
+        var libraryRoots: [URL] = [defaultSteamApps]
+
+        let vdfURL = defaultSteamApps.appendingPathComponent("libraryfolders.vdf")
+        if let vdf = try? String(contentsOf: vdfURL, encoding: .utf8) {
+            for line in vdf.components(separatedBy: .newlines) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("\"path\"") {
+                    let parts = trimmed.split(separator: "\"")
+                    if parts.count >= 4 {
+                        let libPath = String(parts[3]).replacingOccurrences(of: "\\\\", with: "\\")
+                        libraryRoots.append(URL(fileURLWithPath: libPath).appendingPathComponent("steamapps"))
+                    }
+                }
+            }
+        }
+
+        let relativeCfgDirs = [
+            "common/Counter-Strike Global Offensive/game/csgo/cfg",
+            "common/Counter-Strike Global Offensive/csgo/cfg",
+            "common/dota 2 beta/game/dota/cfg"
+        ]
+        for root in libraryRoots {
+            for rel in relativeCfgDirs {
+                let cfgDir = root.appendingPathComponent(rel)
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: cfgDir.path, isDirectory: &isDir), isDir.boolValue {
+                    let fileURL = cfgDir.appendingPathComponent(ValveGSI.configFilename)
+                    let current = try? String(contentsOf: fileURL, encoding: .utf8)
+                    if current != ValveGSI.configContents {
+                        try? ValveGSI.configContents.write(to: fileURL, atomically: true, encoding: .utf8)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Minimal HTTP localhost listener receiving POST JSON updates from Valve Game State Integration.
+final class ValveGSIServer {
+    private let port: UInt16
+    private let queue = DispatchQueue(label: "com.articdia.focusdesk.valvegsi")
+    private let onPayload: @Sendable (Data) -> Void
+    private var listener: NWListener?
+
+    init(port: UInt16, onPayload: @escaping @Sendable (Data) -> Void) {
+        self.port = port
+        self.onPayload = onPayload
+    }
+
+    func start() {
+        guard listener == nil, let nwPort = NWEndpoint.Port(rawValue: port) else { return }
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort)
+        guard let listener = try? NWListener(using: params) else { return }
+        let callback = onPayload
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let queue = self?.queue else { connection.cancel(); return }
+            let handler = ValveHTTPConnection(connection: connection, queue: queue, onPayload: callback)
+            handler.start()
+        }
+        listener.start(queue: queue)
+        self.listener = listener
+    }
+
+    func stop() {
+        listener?.cancel()
+        listener = nil
+    }
+}
+
+private final class ValveHTTPConnection: @unchecked Sendable {
+    private let connection: NWConnection
+    private let queue: DispatchQueue
+    private let onPayload: @Sendable (Data) -> Void
+    private var buffer = Data()
+
+    init(connection: NWConnection, queue: DispatchQueue, onPayload: @escaping @Sendable (Data) -> Void) {
+        self.connection = connection
+        self.queue = queue
+        self.onPayload = onPayload
+    }
+
+    func start() {
+        connection.start(queue: queue)
+        receiveNext()
+    }
+
+    private func receiveNext() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            if let data, !data.isEmpty {
+                self.buffer.append(data)
+            }
+            if let body = self.extractCompletedBody() {
+                let response = Data("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8)
+                self.connection.send(content: response, completion: .contentProcessed { _ in
+                    self.connection.cancel()
+                })
+                self.onPayload(body)
+                return
+            }
+            if isComplete || error != nil {
+                self.connection.cancel()
+                return
+            }
+            self.receiveNext()
+        }
+    }
+
+    private func extractCompletedBody() -> Data? {
+        let separator = Data("\r\n\r\n".utf8)
+        guard let headerEnd = buffer.range(of: separator) else { return nil }
+        let headerText = String(decoding: buffer[..<headerEnd.lowerBound], as: UTF8.self)
+        var contentLength: Int?
+        for line in headerText.components(separatedBy: "\r\n") {
+            let parts = line.split(separator: ":", maxSplits: 1)
+            if parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces).lowercased() == "content-length" {
+                contentLength = Int(parts[1].trimmingCharacters(in: .whitespaces))
+                break
+            }
+        }
+        let bodyStart = headerEnd.upperBound
+        let available = buffer.count - bodyStart
+        if let expected = contentLength {
+            guard available >= expected else { return nil }
+            return buffer.subdata(in: bodyStart..<(bodyStart + expected))
+        }
+        return buffer.subdata(in: bodyStart..<buffer.count)
     }
 }

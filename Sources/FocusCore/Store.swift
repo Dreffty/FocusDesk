@@ -294,7 +294,7 @@ final class WriteMemory: @unchecked Sendable {
 /// save the app has to know the result of waits its turn, so it can never be overwritten by an older one in the queue.
 public final class WorkspaceSaver: @unchecked Sendable {
     public let store: WorkspaceStore
-    private let queue = DispatchQueue(label: "local.focusdesk.saver", qos: .utility)
+    private let queue = DispatchQueue(label: "com.articdia.focusdesk.saver", qos: .utility)
 
     public init(store: WorkspaceStore) { self.store = store }
 

@@ -12,6 +12,9 @@ final class GameTests: XCTestCase {
         XCTAssertTrue(game("minecraft").matches(bundleID: "net.java.openjdk.java", localizedName: "Minecraft 1.20.1"))
         XCTAssertTrue(game("roblox").matches(bundleID: "com.roblox.RobloxPlayer"))
         XCTAssertTrue(game("lol").matches(bundleID: "com.riotgames.LeagueofLegends.GameClient"))
+        XCTAssertTrue(game("cs2").matches(bundleID: "com.valvesoftware.cs2", localizedName: "Counter-Strike 2"))
+        XCTAssertTrue(game("dota2").matches(bundleID: "com.valvesoftware.dota2"))
+        XCTAssertTrue(game("warzone").matches(bundleID: nil, localizedName: "Call of Duty"))
         XCTAssertTrue(game("fortnite").matchesWeb(host: "play.geforcenow.com", path: "/mall"))
         XCTAssertTrue(game("fortnite").matchesWeb(host: "www.xbox.com", path: "/es-ES/play/games/fortnite"))
         XCTAssertFalse(game("fortnite").matchesWeb(host: "www.xbox.com", path: "/es-ES/games"))
@@ -85,7 +88,7 @@ final class GameTests: XCTestCase {
     }
 
     func testClosingTheGameEndsTheMatchOnlyAfterPlayingAndATolerance() {
-        var rule = GeneralBlockRule.gameTemplate(game("dota2"))
+        var rule = GeneralBlockRule.gameTemplate(game("fortnite"))
         let c0: Double = 5000
         rule.startTimedMatch(wall: zero, continuous: c0)
 
@@ -98,6 +101,35 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(TimedMatchPlanner.step(rule: rule, gameRunning: false, secondsSinceGameSeen: 30, workedTodaySeconds: 3600, matchesToday: 0, now: t20, continuous: c0 + 1200), .playing)
         // Closed for 2 min after 20 min: the match is over.
         XCTAssertEqual(TimedMatchPlanner.step(rule: rule, gameRunning: false, secondsSinceGameSeen: 120, workedTodaySeconds: 3600, matchesToday: 0, now: t20, continuous: c0 + 1200), .finish(.gameClosed))
+    }
+
+    func testValveGSIParsesCS2AndDota2AndFallsBackToTimedWhenUnconnected() {
+        let cs2Live = Data(#"{"provider":{"name":"Counter-Strike 2","appid":730},"map":{"phase":"live"}}"#.utf8)
+        XCTAssertEqual(ValveGSI.parse(jsonData: cs2Live), ValveGSI.Event(gameID: "cs2", phase: .live))
+
+        let cs2Over = Data(#"{"provider":{"appid":730},"map":{"phase":"gameover"}}"#.utf8)
+        XCTAssertEqual(ValveGSI.parse(jsonData: cs2Over), ValveGSI.Event(gameID: "cs2", phase: .gameover))
+
+        let dotaLive = Data(#"{"provider":{"name":"Dota 2","appid":570},"map":{"game_state":"DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"}}"#.utf8)
+        XCTAssertEqual(ValveGSI.parse(jsonData: dotaLive), ValveGSI.Event(gameID: "dota2", phase: .live))
+
+        let dotaOver = Data(#"{"provider":{"appid":570},"map":{"game_state":"DOTA_GAMERULES_STATE_POST_GAME"}}"#.utf8)
+        XCTAssertEqual(ValveGSI.parse(jsonData: dotaOver), ValveGSI.Event(gameID: "dota2", phase: .gameover))
+
+        XCTAssertNil(ValveGSI.parse(jsonData: Data("{}".utf8)))
+
+        let dotaRule = GeneralBlockRule.gameTemplate(game("dota2"))
+        XCTAssertTrue(dotaRule.usesExactValveGSI)
+        XCTAssertFalse(dotaRule.usesTimedMatches)
+        XCTAssertEqual(TimedMatchPlanner.step(rule: dotaRule, gameRunning: true, secondsSinceGameSeen: 0, workedTodaySeconds: 3600, matchesToday: 0, allowTimedFallback: false, now: zero, continuous: 100), .idle)
+        XCTAssertEqual(TimedMatchPlanner.step(rule: dotaRule, gameRunning: true, secondsSinceGameSeen: 0, workedTodaySeconds: 3600, matchesToday: 0, allowTimedFallback: true, now: zero, continuous: 100), .start)
+    }
+
+    func testCleanWorkspaceDoesNotInjectMandatoryLoLRule() throws {
+        let fresh = Workspace()
+        XCTAssertFalse(fresh.generalRules.contains { $0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID })
+        let emptyDecoded = try JSONDecoder().decode(Workspace.self, from: Data("{}".utf8))
+        XCTAssertFalse(emptyDecoded.generalRules.contains { $0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID })
     }
 
     func testTimedMatchSurvivesRestartAndCannotBeStretched() throws {

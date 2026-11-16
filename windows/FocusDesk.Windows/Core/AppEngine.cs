@@ -1,0 +1,1223 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Threading;
+using FocusDesk.Windows.Platform;
+
+namespace FocusDesk.Windows.Core;
+
+public sealed class AppEngine : INotifyPropertyChanged, IDisposable
+{
+    public WorkspaceStore Store { get; }
+    public Workspace Workspace { get; private set; }
+
+    private string _notice = "";
+    private string _error = "";
+    private DateTimeOffset _selectedDate = DateTimeOffset.Now;
+    private string _activePage = "Hoy";
+    private bool _hourlyLayout = true;
+    private readonly DispatcherTimer _timer;
+    private DateTime _lastPrunedDay = DateTime.Now.Date;
+    private DateTimeOffset? _lastPassiveStudyAt;
+    private DateTimeOffset? _lastQuotaAt;
+    private DateTimeOffset _lastWebReadAt = DateTimeOffset.MinValue;
+    private string _lastWebBlockHost = "";
+    private DateTimeOffset _lastWebBlockAt = DateTimeOffset.MinValue;
+    private int _ticks;
+    private bool _valorantPollBusy;
+    private string _lastClipboardText = "";
+
+    private readonly Dictionary<string, (string Host, string Path, DateTimeOffset At)> _lastBrowserPages = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<Guid, DateTimeOffset> _timedMatchLastSeen = new();
+    private readonly HashSet<Guid> _timedMatchOvertimeWarned = new();
+    private readonly HashSet<Guid> _postMatchGraceArmed = new();
+    private readonly HashSet<string> _studyUnlockedNotified = new();
+    private readonly HashSet<string> _autoStartHandled = new();
+
+    private double? _lolMatchStartedCont;
+    private bool _valorantInMatch;
+    private double? _valorantMatchStartedCont;
+    public ValorantMatchPhase LastValorantPhase { get; private set; } = ValorantMatchPhase.Unknown;
+
+    private ValveGsiServer? _valveServer;
+    private readonly Dictionary<string, DateTimeOffset> _valveLastEventAt = new();
+    private readonly Dictionary<string, bool> _valveMatchActive = new();
+    private readonly Dictionary<string, double> _valveMatchStartedCont = new();
+    private readonly Dictionary<Guid, DateTimeOffset> _valveUnconnectedSince = new();
+
+    public double ContinuousActiveWorkSeconds { get; private set; }
+    public TrustedDeadline? ActiveContinuousBreakDeadline { get; private set; }
+    public string ActiveContinuousBreakMessage { get; private set; } = "";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    public event Action? StateRefreshed;
+    public event Action<string, string>? NotificationRequested;
+    public event Action<WorkSession>? SessionCompletionRequested;
+
+    public string Notice
+    {
+        get => _notice;
+        set { _notice = value; OnPropertyChanged(); }
+    }
+
+    public string Error
+    {
+        get => _error;
+        set { _error = value; OnPropertyChanged(); }
+    }
+
+    public DateTimeOffset SelectedDate
+    {
+        get => _selectedDate;
+        set { _selectedDate = value; OnPropertyChanged(); StateRefreshed?.Invoke(); }
+    }
+
+    public string ActivePage
+    {
+        get => _activePage;
+        set { _activePage = value; OnPropertyChanged(); StateRefreshed?.Invoke(); }
+    }
+
+    public bool HourlyLayout
+    {
+        get => _hourlyLayout;
+        set { _hourlyLayout = value; OnPropertyChanged(); StateRefreshed?.Invoke(); }
+    }
+
+    public AppEngine(string? customDir = null)
+    {
+        Store = new WorkspaceStore(customDir);
+        try
+        {
+            Workspace = Store.Load();
+            Workspace.Prune(DateTimeOffset.Now);
+            Workspace.ClosedBySystemAt = null;
+            if (Workspace.Session != null)
+            {
+                var shouldResume = Workspace.Session.ShouldResumeAfterRelaunch(DateTimeOffset.Now);
+                Workspace.Session.RunningSince = null;
+                Workspace.Session.RunningUptime = null;
+                if (shouldResume)
+                {
+                    Workspace.Session.Resume(DateTimeOffset.Now);
+                    Notice = $"«{Workspace.Session.Task.Title}» está protegida y continúa donde estaba.";
+                }
+                else
+                {
+                    Notice = $"«{Workspace.Session.Task.Title}» quedó en pausa al cerrarse FocusDesk. Puedes reanudarla cuando quieras.";
+                }
+            }
+            Store.CreateDailySnapshotIfNeeded();
+            CheckWitnessTamper();
+            Persist();
+        }
+        catch (Exception ex)
+        {
+            Workspace = new Workspace();
+            Error = $"No se pudieron leer tus datos ({ex.Message}).";
+        }
+
+        if (Workspace.GeneralRules.Any(r => r.Enabled && r.AlwaysProtected && r.Protection != SessionProtection.None))
+            Workspace.Settings.RelaunchGuard = true;
+
+        if (Workspace.Settings.RelaunchGuard && !RelaunchGuard.IsInstalled())
+            RelaunchGuard.Install();
+        else if (Workspace.Settings.RelaunchGuard)
+            RelaunchGuard.StartWatcherProcessIfMissing();
+
+        StartValveServerIfNeeded();
+
+        _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _timer.Tick += (_, _) => Tick();
+        _timer.Start();
+    }
+
+    private void OnPropertyChanged([CallerMemberName] string? name = null) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    private void CheckWitnessTamper()
+    {
+        var w = DpapiWitness.Load();
+        if (w == null) return;
+        if (w.ActiveSessionId.HasValue && w.SessionProtection != SessionProtection.None &&
+            w.SessionDeadline != null && w.SessionDeadline.RemainingAfterPossibleReboot() > 15 &&
+            Workspace.Session == null)
+        {
+            Workspace.RecordAudit("Testigo", "El archivo de datos perdió una sesión protegida activa.");
+            Notice = "Se detectó un cambio externo mientras había una sesión protegida.";
+        }
+        var currentFp = DpapiWitness.Fingerprint(Workspace.GeneralRules);
+        if (w.ProtectedRuleCount > 0 && currentFp != w.RulesFingerprint)
+        {
+            Workspace.RecordAudit("Testigo", "Cambio externo detectado en reglas protegidas.");
+        }
+    }
+
+    public void RefreshWitness()
+    {
+        var s = Workspace.Session;
+        var payload = new DpapiWitness.WitnessPayload
+        {
+            ActiveSessionId = s?.Id,
+            ActiveTaskTitle = s?.Task.Title,
+            SessionProtection = s?.Task.Protection ?? SessionProtection.None,
+            SessionDeadline = s != null && !s.Paused && s.EndedAt == null
+                ? new TrustedDeadline(Math.Max(0, s.Remaining(DateTimeOffset.Now)))
+                : null,
+            ProtectedRuleCount = Workspace.GeneralRules.Count(r => r.Enabled && r.Protection != SessionProtection.None),
+            RulesFingerprint = DpapiWitness.Fingerprint(Workspace.GeneralRules),
+            SavedAt = DateTimeOffset.UtcNow
+        };
+        DpapiWitness.Save(payload);
+    }
+
+    public bool Persist()
+    {
+        try
+        {
+            Store.Save(Workspace);
+            RefreshWitness();
+            StateRefreshed?.Invoke();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Error = $"No se pudo guardar: {ex.Message}";
+            return false;
+        }
+    }
+
+    private void StartValveServerIfNeeded()
+    {
+        if (!Workspace.GeneralRules.Any(r => r.Enabled && r.UsesExactValveGSI)) return;
+        ValveGSI.InstallConfigIfPossible();
+        if (_valveServer != null) return;
+        _valveServer = new ValveGsiServer(ev =>
+        {
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => HandleValveEvent(ev));
+        });
+        _valveServer.Start();
+    }
+
+    public double EffectiveWorkedSeconds(GeneralBlockRule rule, DateTimeOffset? at = null)
+    {
+        var t = at ?? DateTimeOffset.Now;
+        if (rule.VerifyActiveStudy) return Workspace.VerifiedStudySecondsToday(t);
+        var day = FocusRules.DayKey(t, Workspace.Settings.DayRolloverHour);
+        var histSec = Workspace.History
+            .Where(h => FocusRules.DayKey(h.Session.StartedAt, Workspace.Settings.DayRolloverHour) == day)
+            .Sum(h => h.Session.Elapsed(h.Session.EndedAt ?? t));
+        var curSec = Workspace.Session != null && FocusRules.DayKey(Workspace.Session.StartedAt, Workspace.Settings.DayRolloverHour) == day
+            ? Workspace.Session.Elapsed(t)
+            : 0;
+        return histSec + curSec;
+    }
+
+    public bool IsMatchInProgress(GeneralBlockRule rule, DateTimeOffset? at = null)
+    {
+        var t = at ?? DateTimeOffset.Now;
+        if (rule.IsInTimedMatch(t)) return true;
+        if (!rule.DeferBlockUntilMatchEnds) return false;
+        if (LeagueMatchRules.RuleTargetsLeague(rule)) return IsLoLMatchRunning();
+        if (rule.UsesExactValorant) return _valorantInMatch;
+        if (rule.UsesExactValveGSI && rule.GameId != null) return _valveMatchActive.GetValueOrDefault(rule.GameId);
+        return false;
+    }
+
+    public bool IsRuleEnforcing(GeneralBlockRule rule, DateTimeOffset? at = null)
+    {
+        var t = at ?? DateTimeOffset.Now;
+        return rule.IsEnforcing(
+            t,
+            Workspace.UsedSecondsToday(rule.Id, now: t),
+            EffectiveWorkedSeconds(rule, t),
+            Workspace.LaunchesToday(rule.Id, t),
+            Workspace.MatchesToday(rule.Id, t),
+            IsMatchInProgress(rule, t));
+    }
+
+    public bool IsRuleProtected(GeneralBlockRule rule, DateTimeOffset? at = null)
+    {
+        var t = at ?? DateTimeOffset.Now;
+        return rule.IsProtectedNow(
+            t,
+            Workspace.UsedSecondsToday(rule.Id, now: t),
+            EffectiveWorkedSeconds(rule, t),
+            Workspace.LaunchesToday(rule.Id, t),
+            Workspace.MatchesToday(rule.Id, t),
+            IsMatchInProgress(rule, t),
+            Workspace.Settings.RunUpMinutes);
+    }
+
+    public (string Text, bool Warning, bool CanFinish, double Progress) GameRuleStatus(GeneralBlockRule rule, DateTimeOffset? at = null)
+    {
+        var t = at ?? DateTimeOffset.Now;
+        var unit = rule.MatchUnitSingular;
+        var plural = rule.MatchUnitPlural;
+        var maxM = Math.Max(1, rule.MaxDailyMatches);
+        var played = Workspace.MatchesToday(rule.Id, t);
+        var next = Math.Min(maxM, played + 1);
+        var worked = EffectiveWorkedSeconds(rule, t);
+        var needed = rule.RequiredWorkSecondsForNextMatch(played);
+
+        var grace = rule.PostMatchGraceRemainingSeconds(t);
+        if (grace > 0)
+            return ($"{Capitalize(unit)} terminada · se cierra en {(int)Math.Ceiling(grace)} s", true, false, 1);
+
+        if (rule.IsInTimedMatch(t))
+        {
+            var left = rule.TimedMatchRemainingSeconds(t);
+            if (rule.IsInTimedMatchOvertime(t))
+                return ($"Prórroga {next}/{maxM} · se cierra en {FocusRules.Clock(left)}", true, true, 1);
+            var beforeOvertime = left - rule.MatchOvertimeMinutes * 60.0;
+            var extra = rule.MatchOvertimeMinutes > 0 ? $" + {rule.MatchOvertimeMinutes} min de prórroga" : "";
+            return ($"{Capitalize(unit)} {next}/{maxM} en curso · {FocusRules.Clock(beforeOvertime)}{extra}", false, true, 1);
+        }
+
+        if (IsMatchInProgress(rule, t))
+            return ($"{Capitalize(unit)} {next}/{maxM} en curso · sin cortes hasta que acabe", false, false, 1);
+
+        if (played >= maxM)
+            return ($"{played}/{maxM} {plural} · bloqueado hasta mañana", true, false, 1);
+
+        if (worked < needed)
+        {
+            var what = rule.VerifyActiveStudy ? "estudio" : "trabajo";
+            return ($"Faltan {FocusRules.Clock(needed - worked)} de {what} para la {unit} {next}/{maxM}", false, false,
+                Math.Clamp(worked / Math.Max(1, needed), 0, 1));
+        }
+
+        var available = rule.EarnsMatchesPerGoalBlock ? Math.Max(1, rule.EarnedMatches(worked) - played) : maxM - played;
+        var text = available == 1
+            ? $"{Capitalize(unit)} {next}/{maxM} disponible"
+            : $"{available} {plural} disponibles ({played}/{maxM} jugadas)";
+        return (text, false, false, 1);
+    }
+
+    private void Tick()
+    {
+        var now = DateTimeOffset.Now;
+        _ticks++;
+
+        if (now.LocalDateTime.Date != _lastPrunedDay)
+        {
+            _lastPrunedDay = now.LocalDateTime.Date;
+            Store.CreateDailySnapshotIfNeeded(now);
+            Workspace.Prune(now);
+            Persist();
+        }
+
+        StartDueAutoStartTasks(now);
+        TickContinuousBreak(now);
+        TickPomodoroRules(now);
+        TickPassiveStudyTracking(now);
+        TickLeagueMatches(now);
+        TickValorantMatches(now);
+        TickValveGSIMatches(now);
+        TickTimedGameMatches(now);
+
+        if (_ticks % 3 == 0)
+        {
+            ObserveForeground(now);
+            CheckClipboardGuard();
+        }
+        if (_ticks % 60 == 0)
+        {
+            Persist();
+        }
+        StateRefreshed?.Invoke();
+    }
+
+    private void StartDueAutoStartTasks(DateTimeOffset now)
+    {
+        if (Workspace.Session != null) return;
+        var due = Workspace.Tasks.FirstOrDefault(t =>
+            t.AutoStart && !t.Completed && t.IsScheduled &&
+            t.ScheduledAt <= now && now < t.End &&
+            _autoStartHandled.Add($"{t.Id}@{t.ScheduledAt.ToUnixTimeSeconds()}"));
+        if (due != null) StartSession(due);
+    }
+
+    private void TickContinuousBreak(DateTimeOffset now)
+    {
+        if (!Workspace.Settings.ContinuousBreakEnabled) return;
+        if (ActiveContinuousBreakDeadline != null)
+        {
+            if (ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot(now) <= 0)
+            {
+                ActiveContinuousBreakDeadline = null;
+                ContinuousActiveWorkSeconds = 0;
+                Notice = "Descanso terminado. ¡Seguimos!";
+            }
+            return;
+        }
+        var idle = WindowsActivity.IdleSeconds();
+        if (idle < 120)
+        {
+            ContinuousActiveWorkSeconds++;
+            if (ContinuousActiveWorkSeconds >= Workspace.Settings.ContinuousWorkMinutes * 60.0)
+            {
+                ActiveContinuousBreakDeadline = new TrustedDeadline(Workspace.Settings.ContinuousBreakDurationMinutes * 60.0, now);
+                var msgs = Workspace.Settings.BreakMessages;
+                ActiveContinuousBreakMessage = msgs.Count > 0 ? msgs[Random.Shared.Next(msgs.Count)] : "Descansa un momento.";
+                NotificationRequested?.Invoke("Hora de descansar la vista", ActiveContinuousBreakMessage);
+            }
+        }
+        else if (idle >= 180)
+        {
+            ContinuousActiveWorkSeconds = 0;
+        }
+    }
+
+    private void TickPomodoroRules(DateTimeOffset now)
+    {
+        var idle = WindowsActivity.IdleSeconds() >= 60;
+        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && r.Kind == GeneralRuleKind.Pomodoro))
+        {
+            if (rule.PomodoroPhase == PomodoroPhase.WaitingForUser && !idle)
+            {
+                Notice = rule.AdvancePomodoroPhase(false, now);
+                Persist();
+            }
+            else if (rule.ActivePomodoroDeadline != null && rule.ActivePomodoroDeadline.RemainingAfterPossibleReboot(now) <= 0)
+            {
+                var msg = rule.AdvancePomodoroPhase(idle, now);
+                Notice = msg;
+                NotificationRequested?.Invoke($"Pomodoro · {rule.Name}", msg);
+                Persist();
+            }
+        }
+    }
+
+    private void TickPassiveStudyTracking(DateTimeOffset now)
+    {
+        if (!Workspace.GeneralRules.Any(r => r.Enabled && r.Kind == GeneralRuleKind.WorkGoal && r.VerifyActiveStudy))
+        {
+            _lastPassiveStudyAt = null;
+            return;
+        }
+        var delta = _lastPassiveStudyAt.HasValue ? Math.Clamp((now - _lastPassiveStudyAt.Value).TotalSeconds, 0, 3) : 1.0;
+        _lastPassiveStudyAt = now;
+        if (delta <= 0) return;
+
+        var fg = WindowsActivity.GetForegroundApp();
+        if (fg == null) return;
+        var idle = WindowsActivity.IdleSeconds();
+        var visible = WindowsActivity.HasVisibleWindow(fg.ProcessId);
+        _lastBrowserPages.TryGetValue(fg.ProcessName.ToLowerInvariant(), out var recentPage);
+        var validPage = (now - recentPage.At).TotalSeconds <= 25 ? recentPage : default;
+
+        var day = FocusRules.DayKey(now, Workspace.Settings.DayRolloverHour);
+        var (apps, webs) = StudySources.Active(Workspace.Settings.StudySources, day);
+
+        if (!StudyActivityVerifier.IsVerifiedStudyActivity(
+                idle, fg.ProcessName, fg.ExecutablePath, visible, fg.WindowTitle,
+                validPage.Host, validPage.Path, apps, webs))
+            return;
+
+        var prev = Workspace.VerifiedStudySecondsToday(now);
+        var updated = Workspace.AddVerifiedStudySeconds(delta, now);
+
+        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && r.Kind == GeneralRuleKind.WorkGoal && r.VerifyActiveStudy))
+        {
+            if (rule.EarnsMatchesPerGoalBlock)
+            {
+                var before = rule.EarnedMatches(prev);
+                var after = rule.EarnedMatches(updated);
+                var key = $"{day}-{rule.Id}-u-{after}";
+                if (after > before && _studyUnlockedNotified.Add(key))
+                {
+                    Persist();
+                    var played = Workspace.MatchesToday(rule.Id, now);
+                    var msg = played < after
+                        ? $"¡{after} h de estudio activo! Tienes disponible la {rule.MatchUnitSingular} {played + 1}/{rule.MaxDailyMatches} de {rule.Game?.Name ?? rule.Name}."
+                        : $"¡{after} h de estudio activo hoy!";
+                    Notice = msg;
+                    NotificationRequested?.Invoke($"Desbloqueado · {rule.Name}", msg);
+                }
+            }
+            else if (prev < rule.GoalRequiredSeconds && updated >= rule.GoalRequiredSeconds && _studyUnlockedNotified.Add($"{day}-{rule.Id}-u"))
+            {
+                Persist();
+                Notice = $"¡Meta de {rule.GoalMinutesRequired} min completada! «{rule.Name}» desbloqueada.";
+                NotificationRequested?.Invoke($"Estudio completado · {rule.Name}", Notice);
+            }
+        }
+    }
+
+    private static bool IsLoLMatchRunning() =>
+        WindowsActivity.RunningProcesses().Any(p => LeagueMatchRules.IsMatchGameProcess(p.Name, p.ExePath));
+
+    private static List<int> RunningGamePids(GeneralBlockRule rule)
+    {
+        var game = rule.Game;
+        var pids = new List<int>();
+        foreach (var p in WindowsActivity.RunningProcesses())
+        {
+            var clean = p.Name.ToLowerInvariant().Replace(".exe", "");
+            if (FocusRules.SystemExemptProcesses.Contains(clean)) continue;
+            var matchAppList = rule.BlockApps && rule.Apps.Any(a =>
+                string.Equals(a.Id.Replace(".exe", "", StringComparison.OrdinalIgnoreCase), clean, StringComparison.OrdinalIgnoreCase));
+            var matchCatalog = game != null && game.Id != GameCatalog.CustomId && game.Matches(p.Name, p.ExePath, p.Title);
+            if (matchAppList || matchCatalog) pids.Add(p.Pid);
+        }
+        return pids;
+    }
+
+    private string GameLockMessage(GeneralBlockRule rule, DateTimeOffset now)
+    {
+        var name = rule.Game?.Name ?? rule.Name;
+        var played = Workspace.MatchesToday(rule.Id, now);
+        if (rule.MaxDailyMatches > 0 && played >= rule.MaxDailyMatches)
+            return $"{name} está bloqueado por hoy ({played}/{rule.MaxDailyMatches} {rule.MatchUnitPlural}).";
+        var needed = rule.RequiredWorkSecondsForNextMatch(played);
+        var worked = EffectiveWorkedSeconds(rule, now);
+        var leftMin = Math.Max(1, (int)Math.Ceiling((needed - worked) / 60.0));
+        return $"{name} está bloqueado: te faltan {leftMin} min de estudio para la {rule.MatchUnitSingular} {played + 1}/{Math.Max(1, rule.MaxDailyMatches)}.";
+    }
+
+    private void TickLeagueMatches(DateTimeOffset now)
+    {
+        var cont = TrustedClock.ContinuousSeconds();
+        var matchRunning = IsLoLMatchRunning();
+
+        if (matchRunning)
+        {
+            if (!_lolMatchStartedCont.HasValue)
+            {
+                var blocked = Workspace.GeneralRules.FirstOrDefault(r =>
+                    r.Enabled && LeagueMatchRules.RuleTargetsLeague(r) &&
+                    EffectiveWorkedSeconds(r, now) < r.RequiredWorkSecondsForNextMatch(Workspace.MatchesToday(r.Id, now)));
+                if (blocked != null)
+                {
+                    WindowsActivity.TerminateProcesses(RunningGamePids(blocked));
+                    Notice = GameLockMessage(blocked, now);
+                }
+                else
+                {
+                    _lolMatchStartedCont = cont;
+                    Notice = "Partida de League of Legends en curso · FocusDesk no te sacará a mitad.";
+                }
+            }
+        }
+        else if (_lolMatchStartedCont.HasValue)
+        {
+            var dur = Math.Max(0, cont - _lolMatchStartedCont.Value);
+            _lolMatchStartedCont = null;
+            if (dur >= LeagueMatchRules.MinCountedMatchDurationSeconds)
+                FinishExactMatch(r => LeagueMatchRules.RuleTargetsLeague(r), "League of Legends", now, cont);
+        }
+
+        HandleExactPostMatchGraceAndBlocks(r => LeagueMatchRules.RuleTargetsLeague(r), () => matchRunning, "League of Legends", now, cont);
+    }
+
+    private void TickValorantMatches(DateTimeOffset now)
+    {
+        var valRules = Workspace.GeneralRules.Where(r => r.Enabled && r.UsesExactValorant).ToList();
+        if (valRules.Count == 0) return;
+
+        var cont = TrustedClock.ContinuousSeconds();
+        var procs = WindowsActivity.RunningProcesses();
+        var valAnyRunning = procs.Any(p => ValorantMatchRules.IsValorantProcess(p.Name, p.ExePath));
+        var valExeRunning = procs.Any(p => ValorantMatchRules.IsValorantGameExeRunning(p.Name, p.ExePath));
+
+        if (valAnyRunning && _ticks % 3 == 0 && !_valorantPollBusy)
+        {
+            _valorantPollBusy = true;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var phase = await ValorantMatchRules.QueryLocalClientPhaseAsync();
+                    System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => ProcessValorantPhase(phase, valExeRunning));
+                }
+                finally { _valorantPollBusy = false; }
+            });
+        }
+        else if (!valAnyRunning && _valorantInMatch)
+        {
+            ProcessValorantPhase(ValorantMatchPhase.Menu, false);
+        }
+
+        HandleExactPostMatchGraceAndBlocks(r => r.UsesExactValorant, () => _valorantInMatch, "Valorant", now, cont);
+    }
+
+    private void ProcessValorantPhase(ValorantMatchPhase phase, bool valExeRunning)
+    {
+        LastValorantPhase = phase;
+        var now = DateTimeOffset.Now;
+        var cont = TrustedClock.ContinuousSeconds();
+        var active = phase == ValorantMatchPhase.InMatch;
+
+        if (active)
+        {
+            if (!_valorantInMatch)
+            {
+                var blocked = Workspace.GeneralRules.FirstOrDefault(r =>
+                    r.Enabled && r.UsesExactValorant &&
+                    EffectiveWorkedSeconds(r, now) < r.RequiredWorkSecondsForNextMatch(Workspace.MatchesToday(r.Id, now)));
+                if (blocked != null)
+                {
+                    WindowsActivity.TerminateProcesses(RunningGamePids(blocked));
+                    Notice = GameLockMessage(blocked, now);
+                    return;
+                }
+                _valorantInMatch = true;
+                _valorantMatchStartedCont = cont;
+                Notice = "Partida de Valorant en curso · FocusDesk no te sacará a mitad.";
+            }
+        }
+        else if (_valorantInMatch && (phase == ValorantMatchPhase.Menu || !valExeRunning))
+        {
+            var dur = _valorantMatchStartedCont.HasValue ? cont - _valorantMatchStartedCont.Value : 0;
+            _valorantInMatch = false;
+            _valorantMatchStartedCont = null;
+            if (dur >= LeagueMatchRules.MinCountedMatchDurationSeconds)
+                FinishExactMatch(r => r.UsesExactValorant, "Valorant", now, cont);
+        }
+    }
+
+    private void HandleValveEvent(ValveGSI.Event ev)
+    {
+        var now = DateTimeOffset.Now;
+        var cont = TrustedClock.ContinuousSeconds();
+        _valveLastEventAt[ev.GameId] = now;
+        foreach (var r in Workspace.GeneralRules.Where(r => r.Enabled && r.GameId == ev.GameId))
+        {
+            if (r.ActiveMatchDeadline != null) r.EndTimedMatch();
+            _valveUnconnectedSince.Remove(r.Id);
+        }
+
+        var rules = Workspace.GeneralRules.Where(r => r.Enabled && r.UsesExactValveGSI && r.GameId == ev.GameId).ToList();
+        if (rules.Count == 0) return;
+        var gameName = GameCatalog.Find(ev.GameId)?.Name ?? ev.GameId;
+
+        if (ev.Phase is ValveGSI.MatchPhase.Live or ValveGSI.MatchPhase.Intermission)
+        {
+            if (!_valveMatchActive.GetValueOrDefault(ev.GameId))
+            {
+                var blocked = rules.FirstOrDefault(r => IsRuleEnforcing(r, now));
+                if (blocked != null)
+                {
+                    WindowsActivity.TerminateProcesses(RunningGamePids(blocked));
+                    Notice = GameLockMessage(blocked, now);
+                    return;
+                }
+                _valveMatchActive[ev.GameId] = true;
+                _valveMatchStartedCont[ev.GameId] = cont;
+                Notice = $"Partida de {gameName} en curso · FocusDesk no te sacará a mitad.";
+            }
+        }
+        else if (ev.Phase == ValveGSI.MatchPhase.GameOver ||
+                 (ev.Phase == ValveGSI.MatchPhase.Menu && _valveMatchActive.GetValueOrDefault(ev.GameId) &&
+                  _valveMatchStartedCont.TryGetValue(ev.GameId, out var st) && cont - st >= 120))
+        {
+            _valveMatchActive[ev.GameId] = false;
+            _valveMatchStartedCont.Remove(ev.GameId);
+            FinishExactMatch(r => r.UsesExactValveGSI && r.GameId == ev.GameId, gameName, now, cont);
+        }
+    }
+
+    private void TickValveGSIMatches(DateTimeOffset now)
+    {
+        var cont = TrustedClock.ContinuousSeconds();
+        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && r.UsesExactValveGSI && r.GameId != null).ToList())
+        {
+            var gameId = rule.GameId!;
+            var name = rule.Game?.Name ?? rule.Name;
+            if (rule.IsInPostMatchGrace(now, cont))
+            {
+                _postMatchGraceArmed.Add(rule.Id);
+                continue;
+            }
+            if (_postMatchGraceArmed.Remove(rule.Id))
+            {
+                rule.ActivePostMatchGraceDeadline = null;
+                Persist();
+                WindowsActivity.TerminateProcesses(RunningGamePids(rule));
+                Notice = $"Margen finalizado: FocusDesk ha cerrado {name}.";
+                continue;
+            }
+
+            var pids = RunningGamePids(rule);
+            var gsiConnected = _valveLastEventAt.TryGetValue(gameId, out var lastEv) && (now - lastEv).TotalSeconds <= 600;
+            if (gsiConnected)
+            {
+                _valveUnconnectedSince.Remove(rule.Id);
+                if (!_valveMatchActive.GetValueOrDefault(gameId) && pids.Count > 0 && IsRuleEnforcing(rule, now))
+                {
+                    WindowsActivity.TerminateProcesses(pids);
+                    Notice = GameLockMessage(rule, now);
+                }
+                continue;
+            }
+
+            if (pids.Count == 0 && rule.ActiveMatchDeadline == null)
+            {
+                _valveUnconnectedSince.Remove(rule.Id);
+                continue;
+            }
+            if (pids.Count > 0 && rule.ActiveMatchDeadline == null && IsRuleEnforcing(rule, now))
+            {
+                WindowsActivity.TerminateProcesses(pids);
+                Notice = GameLockMessage(rule, now);
+                continue;
+            }
+            if (rule.ActiveMatchDeadline == null)
+            {
+                if (!_valveUnconnectedSince.TryGetValue(rule.Id, out var first))
+                {
+                    _valveUnconnectedSince[rule.Id] = now;
+                    continue;
+                }
+                if ((now - first).TotalSeconds < 60) continue;
+            }
+            StepTimedMatch(rule, allowTimedFallback: true, now, cont);
+        }
+    }
+
+    private void FinishExactMatch(Func<GeneralBlockRule, bool> selector, string gameName, DateTimeOffset now, double cont)
+    {
+        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && selector(r)))
+        {
+            var newMatches = Workspace.IncrementMatches(rule.Id, now);
+            var worked = EffectiveWorkedSeconds(rule, now);
+            var limitHit = rule.MaxDailyMatches > 0 && newMatches >= rule.MaxDailyMatches;
+            var needsWork = rule.IsWaitingForMoreWork(worked, newMatches);
+
+            if (limitHit || needsWork)
+            {
+                rule.StartPostMatchGrace(now, cont);
+                _postMatchGraceArmed.Add(rule.Id);
+                Workspace.RecordAudit("Partida terminada", $"«{rule.Name}» · Partida {newMatches}/{Math.Max(1, rule.MaxDailyMatches)} · Margen de {rule.PostMatchGraceSeconds}s", now);
+                Notice = $"Partida {newMatches}/{Math.Max(1, rule.MaxDailyMatches)} de {gameName} terminada. Tienes {rule.PostMatchGraceSeconds}s de margen antes de cerrarlo.";
+                NotificationRequested?.Invoke($"Último minuto · {gameName}", Notice);
+            }
+            else
+            {
+                Notice = $"Partida {newMatches}/{rule.MaxDailyMatches} de {gameName} completada.";
+            }
+        }
+        Persist();
+    }
+
+    private void HandleExactPostMatchGraceAndBlocks(Func<GeneralBlockRule, bool> selector, Func<bool> matchRunning, string gameName, DateTimeOffset now, double cont)
+    {
+        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && selector(r)))
+        {
+            if (rule.IsInPostMatchGrace(now, cont))
+            {
+                _postMatchGraceArmed.Add(rule.Id);
+                continue;
+            }
+            if (_postMatchGraceArmed.Remove(rule.Id))
+            {
+                rule.ActivePostMatchGraceDeadline = null;
+                Persist();
+                WindowsActivity.TerminateProcesses(RunningGamePids(rule));
+                Notice = $"Margen finalizado: FocusDesk ha cerrado {gameName}.";
+                NotificationRequested?.Invoke($"{gameName} cerrado", Notice);
+                continue;
+            }
+            if (!matchRunning() && IsRuleEnforcing(rule, now))
+            {
+                var pids = RunningGamePids(rule);
+                if (pids.Count > 0)
+                {
+                    WindowsActivity.TerminateProcesses(pids);
+                    Notice = GameLockMessage(rule, now);
+                }
+            }
+        }
+    }
+
+    private void TickTimedGameMatches(DateTimeOffset now)
+    {
+        var cont = TrustedClock.ContinuousSeconds();
+        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && r.UsesTimedMatches).ToList())
+            StepTimedMatch(rule, allowTimedFallback: false, now, cont);
+    }
+
+    private void StepTimedMatch(GeneralBlockRule rule, bool allowTimedFallback, DateTimeOffset now, double cont)
+    {
+        var pids = RunningGamePids(rule);
+        var webPlaying = IsPlayingGameOnWeb(rule, now);
+        var running = pids.Count > 0 || webPlaying;
+        if (running) _timedMatchLastSeen[rule.Id] = now;
+        var since = _timedMatchLastSeen.TryGetValue(rule.Id, out var seen) ? (now - seen).TotalSeconds : double.PositiveInfinity;
+
+        var step = TimedMatchPlanner.Evaluate(rule, running, since, EffectiveWorkedSeconds(rule, now), Workspace.MatchesToday(rule.Id, now), allowTimedFallback, now, cont);
+        switch (step.Kind)
+        {
+            case TimedMatchPlanner.StepKind.Idle:
+                if (pids.Count > 0 && IsRuleEnforcing(rule, now))
+                {
+                    WindowsActivity.TerminateProcesses(pids);
+                    Notice = GameLockMessage(rule, now);
+                }
+                break;
+            case TimedMatchPlanner.StepKind.Start:
+                rule.StartTimedMatch(now, cont);
+                _timedMatchOvertimeWarned.Remove(rule.Id);
+                var num = Math.Min(Math.Max(1, rule.MaxDailyMatches), Workspace.MatchesToday(rule.Id, now) + 1);
+                Workspace.RecordAudit("Partida empezada", $"«{rule.Name}» · {Capitalize(rule.MatchUnitSingular)} {num}/{rule.MaxDailyMatches}", now);
+                Notice = $"{Capitalize(rule.MatchUnitSingular)} {num}/{rule.MaxDailyMatches} de {rule.Game?.Name ?? rule.Name} en marcha: {rule.MatchMinutes} min + {rule.MatchOvertimeMinutes} min de prórroga.";
+                NotificationRequested?.Invoke($"{Capitalize(rule.MatchUnitSingular)} en marcha", Notice);
+                Persist();
+                break;
+            case TimedMatchPlanner.StepKind.Overtime:
+                if (_timedMatchOvertimeWarned.Add(rule.Id))
+                {
+                    var left = Math.Max(1, (int)Math.Ceiling(rule.TimedMatchRemainingSeconds(now, cont) / 60.0));
+                    Notice = $"Se acabó el tiempo de esta {rule.MatchUnitSingular}: tienes {left} min de prórroga para acabar.";
+                    NotificationRequested?.Invoke($"Prórroga · {rule.Game?.Name ?? rule.Name}", Notice);
+                }
+                break;
+            case TimedMatchPlanner.StepKind.Finish:
+                FinishTimedMatch(rule, step.Reason ?? TimedMatchPlanner.FinishReason.TimeUp, now);
+                break;
+        }
+    }
+
+    public void FinishTimedMatch(GeneralBlockRule rule, TimedMatchPlanner.FinishReason reason, DateTimeOffset? now = null)
+    {
+        if (rule.ActiveMatchDeadline == null) return;
+        var t = now ?? DateTimeOffset.Now;
+        rule.EndTimedMatch();
+        _timedMatchOvertimeWarned.Remove(rule.Id);
+        var played = Workspace.IncrementMatches(rule.Id, t);
+        Workspace.RecordAudit("Partida terminada", $"«{rule.Name}» · {Capitalize(rule.MatchUnitSingular)} {played}/{rule.MaxDailyMatches}", t);
+        Persist();
+
+        var locked = IsRuleEnforcing(rule, t);
+        if (locked || reason == TimedMatchPlanner.FinishReason.UserFinished)
+        {
+            WindowsActivity.TerminateProcesses(RunningGamePids(rule));
+            Notice = $"{Capitalize(rule.MatchUnitSingular)} {played}/{rule.MaxDailyMatches} terminada. {(locked ? GameLockMessage(rule, t) : "Te queda otra disponible cuando quieras.")}";
+        }
+        else
+        {
+            Notice = $"{Capitalize(rule.MatchUnitSingular)} {played}/{rule.MaxDailyMatches} terminada. Te queda otra disponible.";
+        }
+        NotificationRequested?.Invoke($"Partida {played}/{rule.MaxDailyMatches} terminada", Notice);
+    }
+
+    private bool IsPlayingGameOnWeb(GeneralBlockRule rule, DateTimeOffset now)
+    {
+        if (rule.Game == null || rule.Game.WebEntries.Length == 0) return false;
+        var fg = WindowsActivity.GetForegroundApp();
+        if (fg == null || !StudyActivityVerifier.IsBrowser(fg.ProcessName)) return false;
+        if (!_lastBrowserPages.TryGetValue(fg.ProcessName.ToLowerInvariant(), out var page) || (now - page.At).TotalSeconds > 25)
+            return false;
+        return rule.Game.MatchesWeb(page.Host, page.Path);
+    }
+
+    private void ObserveForeground(DateTimeOffset now)
+    {
+        var delta = _lastQuotaAt.HasValue ? Math.Clamp((now - _lastQuotaAt.Value).TotalSeconds, 0, 8) : 0;
+        _lastQuotaAt = now;
+
+        var fg = WindowsActivity.GetForegroundApp();
+        if (fg == null) return;
+
+        var procClean = fg.ProcessName.ToLowerInvariant().Replace(".exe", "");
+        if (FocusRules.SystemExemptProcesses.Contains(procClean))
+        {
+            if (Workspace.Session is { Paused: false, EndedAt: null } sess && sess.Task.GuardSystemPanes && sess.Task.Protection != SessionProtection.None)
+            {
+                var hit = SystemSettingsGuard.CheckGuardedPane(fg);
+                if (hit != null) { WindowsActivity.CloseWindow(fg.Hwnd); Notice = $"Bloqueado {hit} durante la sesión protegida."; }
+            }
+            return;
+        }
+
+        if (StudyActivityVerifier.IsBrowser(procClean) && (now - _lastWebReadAt).TotalSeconds >= 2.5)
+        {
+            _lastWebReadAt = now;
+            var url = BrowserInspector.ReadActiveUrl(fg.Hwnd, procClean);
+            if (url.HasValue)
+            {
+                _lastBrowserPages[procClean] = (url.Value.Host, url.Value.Path, now);
+                EvaluateWebRules(fg, url.Value.Host, url.Value.Path, now);
+            }
+        }
+
+        var cont = TrustedClock.ContinuousSeconds();
+        if (Workspace.Session is { Paused: false, EndedAt: null } s)
+        {
+            var gameHit = s.Task.BlockGameLibraries ? GameLibraryRules.MatchesGameApp(procClean, fg.ExecutablePath) : null;
+            var allowed = Workspace.IsTemporarilyAllowedApp(procClean, now, cont) ||
+                          (gameHit == null && (s.Task.Apps.Count == 0 || FocusRules.AppAllowed(procClean, s.Task.Apps, s.Task.AppListMode)));
+            if (FocusRules.MatchesTitleKeyword(fg.WindowTitle, s.Task.BlockedTitleKeywords, s.Task.WholeWordKeywords) != null)
+                allowed = false;
+
+            s.ObserveForeground(procClean, fg.ProcessName, fg.WindowTitle, allowed, now);
+            if (!allowed && s.Task.Strict)
+            {
+                var verb = WindowsActivity.ApplyBlockAction(fg, s.Punisher.IsActive(cont) ? s.Task.BlockAction.Escalated() : s.Task.BlockAction);
+                s.BlocksApplied++;
+                if (s.Task.PunisherEnabled) s.Punisher.Register(cont);
+                Notice = $"{fg.ProcessName} bloqueada en «{s.Task.Title}»: {verb}.";
+            }
+            if (s.Task.BlockedFolders.Count > 0)
+            {
+                var hits = FolderGuard.EnforceBlockedExplorerFolders(s.Task.BlockedFolders);
+                if (hits.Count > 0) Notice = $"Carpeta bloqueada cerrada: {string.Join(", ", hits)}.";
+            }
+        }
+
+        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && !r.IsMicroPaused(now, cont)))
+        {
+            if (rule.Kind == GeneralRuleKind.LaunchLimit && rule.LaunchVisitRemainingSeconds(now, cont) <= 0 && rule.ActiveLaunchDeadline != null)
+            {
+                rule.EndLaunchVisitAndStartCooldown(now, cont);
+                Persist();
+                Notice = $"Visita agotada en «{rule.Name}». Enfriamiento activo.";
+            }
+
+            if (delta > 0 && MatchesRuleAppOrTitle(rule, fg, now))
+            {
+                if (rule.Kind == GeneralRuleKind.DailyLimit)
+                {
+                    Workspace.AddUsedSeconds(delta, rule.Id, rule.LimitPeriodUnit, now);
+                }
+                else if (rule.Kind == GeneralRuleKind.WorkGoal && rule.GoalRewardMinutes > 0 && rule.IsTrackingQuota(now, Workspace.UsedSecondsToday(rule.Id, now: now), EffectiveWorkedSeconds(rule, now)))
+                {
+                    Workspace.AddUsedSeconds(delta, rule.Id, now: now);
+                }
+            }
+
+            if (!IsRuleEnforcing(rule, now)) continue;
+
+            if (rule.GuardSystemPanes && rule.Protection != SessionProtection.None)
+            {
+                var sys = SystemSettingsGuard.CheckGuardedPane(fg);
+                if (sys != null) { WindowsActivity.CloseWindow(fg.Hwnd); Notice = $"Cerrado {sys} mientras «{rule.Name}» está activa."; return; }
+            }
+
+            if (rule.BlockedFolders.Count > 0)
+            {
+                var hits = FolderGuard.EnforceBlockedExplorerFolders(rule.BlockedFolders);
+                if (hits.Count > 0) Notice = $"Carpeta bloqueada por «{rule.Name}»: {string.Join(", ", hits)}.";
+            }
+
+            if (FocusRules.MatchesTitleKeyword(fg.WindowTitle, rule.BlockedTitleKeywords, rule.WholeWordKeywords) is string kw)
+            {
+                rule.ApplyPomodoroPenaltyIfNeeded(now);
+                rule.RegisterBlock();
+                var verb = WindowsActivity.ApplyBlockAction(fg, rule.ActiveBlockAction());
+                Notice = $"«{kw}» bloqueado por «{rule.Name}»: {verb}.";
+                return;
+            }
+
+            if (rule.BlockGameLibraries && GameLibraryRules.MatchesGameApp(procClean, fg.ExecutablePath) is string gl)
+            {
+                rule.ApplyPomodoroPenaltyIfNeeded(now);
+                rule.RegisterBlock();
+                var verb = WindowsActivity.ApplyBlockAction(fg, rule.ActiveBlockAction());
+                Notice = $"{fg.ProcessName} ({gl}) bloqueado por «{rule.Name}»: {verb}.";
+                return;
+            }
+
+            if (rule.Game != null && rule.Game.Matches(procClean, fg.ExecutablePath, fg.WindowTitle))
+            {
+                rule.RegisterBlock();
+                WindowsActivity.TerminateProcesses(new[] { fg.ProcessId });
+                Notice = GameLockMessage(rule, now);
+                return;
+            }
+
+            if (rule.BlockApps && rule.Apps.Count > 0 && !FocusRules.AppAllowed(procClean, rule.Apps, rule.AppListMode))
+            {
+                rule.ApplyPomodoroPenaltyIfNeeded(now);
+                rule.RegisterBlock();
+                var verb = WindowsActivity.ApplyBlockAction(fg, rule.ActiveBlockAction());
+                Notice = $"{fg.ProcessName} bloqueada por «{rule.Name}»: {verb}.";
+                return;
+            }
+        }
+    }
+
+    private bool MatchesRuleAppOrTitle(GeneralBlockRule rule, ForegroundAppInfo fg, DateTimeOffset now)
+    {
+        var proc = fg.ProcessName.ToLowerInvariant().Replace(".exe", "");
+        if (rule.BlockGameLibraries && GameLibraryRules.MatchesGameApp(proc, fg.ExecutablePath) != null) return true;
+        if (rule.BlockApps && rule.Apps.Count > 0 && !FocusRules.AppAllowed(proc, rule.Apps, rule.AppListMode)) return true;
+        if (FocusRules.MatchesTitleKeyword(fg.WindowTitle, rule.BlockedTitleKeywords, rule.WholeWordKeywords) != null) return true;
+        if (StudyActivityVerifier.IsBrowser(proc) && _lastBrowserPages.TryGetValue(proc, out var page) && (now - page.At).TotalSeconds <= 25)
+        {
+            if (rule.BlockSearchMedia && SearchMediaRules.Matches(page.Host, page.Path) != null) return true;
+            if (rule.WebBlockAction != WebBlockAction.Warn && !FocusRules.WebAllowed(page.Host, page.Path, rule.Domains, rule.WebListMode)) return true;
+        }
+        return false;
+    }
+
+    private void EvaluateWebRules(ForegroundAppInfo fg, string host, string path, DateTimeOffset now)
+    {
+        var cont = TrustedClock.ContinuousSeconds();
+        if (Workspace.IsTemporarilyAllowed(host, path, now, cont)) return;
+
+        if (Workspace.Session is { Paused: false, EndedAt: null } s && (s.Task.WebBlockAction != WebBlockAction.Warn || s.Task.BlockSearchMedia))
+        {
+            var searchHit = s.Task.BlockSearchMedia ? SearchMediaRules.Matches(host, path) : null;
+            var allowed = searchHit == null && (s.Task.WebBlockAction == WebBlockAction.Warn || FocusRules.WebAllowed(host, path, s.Task.Domains, s.Task.WebListMode));
+            s.RecordVisit(fg.ProcessName, fg.ProcessName, host, !allowed, now);
+            if (!allowed)
+            {
+                ActOnBlockedTab(fg.Hwnd, host, s.Task.Title, s.Remaining(now), s.Task.MotivationalMessage, s.Task.WebBlockAction == WebBlockAction.CloseTab, s.Task.CustomRedirectURL);
+                return;
+            }
+        }
+
+        foreach (var rule in Workspace.GeneralRules.Where(r => r.Enabled && IsRuleEnforcing(r, now) && (r.WebBlockAction != WebBlockAction.Warn || r.BlockSearchMedia)))
+        {
+            var searchHit = rule.BlockSearchMedia ? SearchMediaRules.Matches(host, path) : null;
+            var allowed = searchHit == null && (rule.WebBlockAction == WebBlockAction.Warn || FocusRules.WebAllowed(host, path, rule.Domains, rule.WebListMode));
+            if (allowed) continue;
+            var visitKey = $"{host}{path}";
+            if (_lastWebBlockHost == visitKey && (now - _lastWebBlockAt).TotalSeconds < 4) return;
+            _lastWebBlockHost = visitKey;
+            _lastWebBlockAt = now;
+            rule.ApplyPomodoroPenaltyIfNeeded(now);
+            var hardened = rule.RegisterBlock() || rule.Punisher.IsActive(cont);
+            var closeTab = rule.WebBlockAction == WebBlockAction.CloseTab || (hardened && rule.WebBlockAction == WebBlockAction.Redirect);
+            var rem = rule.RemainingLockSeconds(now, Workspace.UsedSecondsToday(rule.Id, now: now), EffectiveWorkedSeconds(rule, now), Workspace.LaunchesToday(rule.Id, now), Workspace.MatchesToday(rule.Id, now), IsMatchInProgress(rule, now), cont);
+            ActOnBlockedTab(fg.Hwnd, visitKey, rule.Name, rem, rule.MotivationalMessage, closeTab, rule.CustomRedirectURL);
+            return;
+        }
+    }
+
+    private void ActOnBlockedTab(IntPtr hwnd, string host, string title, double remSeconds, string msg, bool closeTab, string customRedirect)
+    {
+        string? redirect = null;
+        if (!closeTab)
+        {
+            redirect = !string.IsNullOrWhiteSpace(customRedirect) && Uri.TryCreate(customRedirect, UriKind.Absolute, out _)
+                ? customRedirect
+                : BlockPageGenerator.Write(title, host, remSeconds, msg, Array.Empty<string>(), Store.DirectoryPath);
+        }
+        if (BrowserInspector.RedirectOrCloseTab(hwnd, closeTab, redirect))
+            Notice = closeTab ? $"{host} bloqueada: pestaña cerrada." : $"{host} bloqueada: redirigida.";
+    }
+
+    private void CheckClipboardGuard()
+    {
+        if (!Workspace.Settings.ProtectClipboard) return;
+        try
+        {
+            if (!System.Windows.Clipboard.ContainsText()) return;
+            var text = System.Windows.Clipboard.GetText();
+            if (text == _lastClipboardText || string.IsNullOrWhiteSpace(text)) return;
+            _lastClipboardText = text;
+            var now = DateTimeOffset.Now;
+            foreach (var rule in Workspace.GeneralRules.Where(r => IsRuleEnforcing(r, now)))
+            {
+                var hit = ClipboardGuardRules.Violation(text, rule.Domains, rule.WebListMode, rule.WebBlockAction);
+                if (hit != null)
+                {
+                    System.Windows.Clipboard.Clear();
+                    _lastClipboardText = "";
+                    Notice = $"Portapapeles limpiado ({hit}).";
+                    return;
+                }
+            }
+        }
+        catch { }
+    }
+
+    // MARK: - Actions for UI
+
+    public void SaveTask(FocusTask task)
+    {
+        task.Title = task.Title.Trim();
+        task.Domains = FocusRules.NormalizeDomains(task.Domains);
+        if (!task.Valid) { Error = "La tarea necesita título y configuración válida."; return; }
+        var idx = Workspace.Tasks.FindIndex(t => t.Id == task.Id);
+        if (idx >= 0) Workspace.Tasks[idx] = task; else Workspace.Tasks.Add(task);
+        Error = "";
+        Persist();
+    }
+
+    public void DeleteTask(FocusTask task)
+    {
+        if (Workspace.Session?.Task.Id == task.Id) return;
+        Workspace.Tasks.RemoveAll(t => t.Id == task.Id);
+        Persist();
+        Notice = $"«{task.Title}» eliminada.";
+    }
+
+    public void StartSession(FocusTask task)
+    {
+        if (Workspace.Session != null) { Error = "Ya hay una sesión en marcha."; return; }
+        Workspace.Session = new WorkSession(task, DateTimeOffset.Now);
+        Notice = $"«{task.Title}» en marcha ({task.Minutes} min).";
+        Persist();
+    }
+
+    public void PauseSession()
+    {
+        if (Workspace.Session == null || Workspace.Session.Paused) return;
+        Workspace.Session.Pause(DateTimeOffset.Now);
+        Persist();
+        Notice = "Sesión en pausa.";
+    }
+
+    public void ResumeSession()
+    {
+        if (Workspace.Session == null || !Workspace.Session.Paused) return;
+        Workspace.Session.Resume(DateTimeOffset.Now);
+        Persist();
+        Notice = "Sesión reanudada.";
+    }
+
+    public void AddSessionMinutes(int min = 10)
+    {
+        if (Workspace.Session == null) return;
+        Workspace.Session.AddMinutes(min);
+        Persist();
+        Notice = $"+{min} min añadidos.";
+    }
+
+    public void FinishSession()
+    {
+        if (Workspace.Session == null) return;
+        Workspace.Session.Finish(DateTimeOffset.Now);
+        Persist();
+        SessionCompletionRequested?.Invoke(Workspace.Session);
+    }
+
+    public void ConfirmSession(bool completed, string note)
+    {
+        var s = Workspace.Session;
+        if (s == null) return;
+        if (s.EndedAt == null) s.Finish(DateTimeOffset.Now);
+        Workspace.History.Insert(0, new SessionRecord { Id = s.Id, Session = s, Completed = completed, Note = note });
+        var idx = Workspace.Tasks.FindIndex(t => t.Id == s.Task.Id);
+        if (idx >= 0)
+        {
+            Workspace.Tasks[idx].Completed = completed;
+            if (completed && Workspace.Tasks[idx].NextOccurrence(DateTimeOffset.Now, Workspace.Settings.Workdays) is FocusTask next)
+                Workspace.Tasks.Add(next);
+        }
+        Workspace.Session = null;
+        Persist();
+        Notice = completed ? "Tarea completada y guardada en historial." : "Sesión guardada.";
+    }
+
+    public void CancelSession()
+    {
+        var s = Workspace.Session;
+        if (s == null) return;
+        s.Finish(DateTimeOffset.Now);
+        Workspace.History.Insert(0, new SessionRecord { Id = s.Id, Session = s, Completed = false, Cancelled = true, Note = "Sesión cancelada" });
+        Workspace.Session = null;
+        Persist();
+        Notice = "Sesión cancelada.";
+    }
+
+    public void SaveGeneralRule(GeneralBlockRule rule, bool bypassProtection = false)
+    {
+        rule.Name = rule.Name.Trim();
+        rule.Domains = FocusRules.NormalizeDomains(rule.Domains);
+        rule.BlockedTitleKeywords = FocusRules.NormalizeTitleKeywords(rule.BlockedTitleKeywords);
+        if (!rule.Valid) { Error = "La regla necesita nombre y al menos un objetivo a bloquear."; return; }
+
+        var idx = Workspace.GeneralRules.FindIndex(r => r.Id == rule.Id);
+        if (idx >= 0 && !bypassProtection && IsRuleProtected(Workspace.GeneralRules[idx]))
+        {
+            var reason = GeneralBlockRule.Loosening(Workspace.GeneralRules[idx], rule);
+            if (reason != null) { Error = $"Protegida: no se puede {reason} sin desbloquear."; return; }
+        }
+        if (idx >= 0) Workspace.GeneralRules[idx] = rule; else Workspace.GeneralRules.Add(rule);
+        Error = "";
+        Persist();
+        StartValveServerIfNeeded();
+        Notice = $"Regla «{rule.Name}» guardada.";
+    }
+
+    public void DeleteGeneralRule(GeneralBlockRule rule)
+    {
+        Workspace.GeneralRules.RemoveAll(r => r.Id == rule.Id);
+        Persist();
+        Notice = $"Regla «{rule.Name}» eliminada.";
+    }
+
+    public void SaveProfile(FocusProfile profile)
+    {
+        profile.Domains = FocusRules.NormalizeDomains(profile.Domains);
+        var idx = Workspace.Profiles.FindIndex(p => p.Id == profile.Id);
+        if (idx >= 0) Workspace.Profiles[idx] = profile; else Workspace.Profiles.Add(profile);
+        Persist();
+        Notice = $"Perfil «{profile.Name}» guardado.";
+    }
+
+    public void AddStudyWeb(string domainText)
+    {
+        var parsed = FocusRules.ParseDomains(domainText);
+        if (parsed.Valid.Count == 0) { Error = "Escribe un dominio válido (ej. apuntes.ejemplo.com)."; return; }
+        var domain = parsed.Valid[0];
+        var tomorrow = FocusRules.DayKey(DateTimeOffset.Now.AddDays(1), Workspace.Settings.DayRolloverHour);
+        var src = new StudySource { Kind = "web", Value = domain, Name = domain, CountsFrom = tomorrow };
+        if (Workspace.Settings.StudySources.Any(s => s.Id == src.Id)) return;
+        Workspace.Settings.StudySources.Add(src);
+        Persist();
+        Notice = $"«{domain}» contará como estudio desde mañana.";
+    }
+
+    public void AddStudyApp(string exeName, string displayName)
+    {
+        var clean = exeName.Trim().Replace(".exe", "", StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(clean)) return;
+        var tomorrow = FocusRules.DayKey(DateTimeOffset.Now.AddDays(1), Workspace.Settings.DayRolloverHour);
+        var src = new StudySource { Kind = "app", Value = clean, Name = string.IsNullOrWhiteSpace(displayName) ? clean : displayName, CountsFrom = tomorrow };
+        if (Workspace.Settings.StudySources.Any(s => s.Id == src.Id)) return;
+        Workspace.Settings.StudySources.Add(src);
+        Persist();
+        Notice = $"«{src.Name}» contará como estudio desde mañana.";
+    }
+
+    public void RemoveStudySource(StudySource src)
+    {
+        Workspace.Settings.StudySources.RemoveAll(s => s.Id == src.Id);
+        Persist();
+    }
+
+    public void SetRelaunchGuard(bool enabled)
+    {
+        Workspace.Settings.RelaunchGuard = enabled;
+        if (enabled) RelaunchGuard.Install(); else RelaunchGuard.Remove();
+        Persist();
+        Notice = enabled ? "Vigilante de relanzado activado en Windows." : "Vigilante desactivado.";
+    }
+
+    public void ExportBackup(string filePath)
+    {
+        var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(Workspace, WorkspaceStore.PrettyJsonOptions);
+        File.WriteAllBytes(filePath, bytes);
+        Notice = $"Copia exportada en {Path.GetFileName(filePath)}.";
+    }
+
+    public void ImportBackup(string filePath)
+    {
+        var imported = Store.ValidateBackup(filePath);
+        if (imported.Session != null) { imported.Session.RunningSince = null; imported.Session.RunningUptime = null; }
+        Workspace = imported;
+        Persist();
+        StartValveServerIfNeeded();
+        Notice = "Copia importada correctamente.";
+    }
+
+    private static string Capitalize(string s) =>
+        string.IsNullOrEmpty(s) ? s : char.ToUpperInvariant(s[0]) + s[1..];
+
+    public void Dispose()
+    {
+        _timer.Stop();
+        _valveServer?.Dispose();
+    }
+}

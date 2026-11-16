@@ -147,7 +147,7 @@ struct GameRuleEditorSection: View {
             }
             if let game = draft.game {
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: game.detection == .exactLeague ? "scope" : "hourglass")
+                    Image(systemName: game.detection.isExact ? "scope" : "hourglass")
                         .foregroundStyle(Palette.mint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(game.detection.label).font(.app(12, weight: .semibold))
@@ -215,7 +215,7 @@ struct GameRuleGallery: View {
                                 .background(Palette.mint.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(game.name).font(.app(13, weight: .semibold)).foregroundStyle(Palette.text)
-                                Text(game.detection == .exactLeague
+                                Text(game.detection.isExact
                                      ? "Detección exacta de cada partida"
                                      : "\(game.typicalMatchMinutes) min por \(game.unitSingular) + prórroga")
                                     .font(.app(10))

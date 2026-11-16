@@ -13,7 +13,7 @@ fi
 echo "Verificando firma, plist y prueba integrada del nuevo bundle…"
 plutil -lint dist.noindex/FocusDesk.app/Contents/Info.plist >/dev/null
 codesign --verify --deep --strict dist.noindex/FocusDesk.app
-if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' dist.noindex/FocusDesk.app/Contents/Info.plist)" != 'local.focusdesk.app' ]]; then
+if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' dist.noindex/FocusDesk.app/Contents/Info.plist)" != 'com.articdia.focusdesk' ]]; then
   echo "Error: CFBundleIdentifier inesperado en dist.noindex/FocusDesk.app."
   exit 1
 fi
@@ -55,12 +55,12 @@ for other in "/Applications/FocusDesk.app" "$HOME/Applications/FocusDesk.app"; d
 done
 
 if [[ -d "$target" ]]; then
-  if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$target/Contents/Info.plist" 2>/dev/null || true)" != 'local.focusdesk.app' ]]; then
+  if [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$target/Contents/Info.plist" 2>/dev/null || true)" != 'com.articdia.focusdesk' ]]; then
     echo 'La aplicación existente no es FocusDesk; no se ha modificado.'
     exit 1
   fi
   if codesign -dvvv "$target" 2>&1 | grep -q "Signature=adhoc"; then
-    tccutil reset Calendar local.focusdesk.app 2>/dev/null || true
+    tccutil reset Calendar com.articdia.focusdesk 2>/dev/null || true
   fi
   mkdir -p "$PWD/.build/installed-backups"
   backup="$PWD/.build/installed-backups/FocusDesk-previous-$(date +%Y%m%d-%H%M%S).app"

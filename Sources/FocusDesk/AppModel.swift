@@ -180,6 +180,12 @@ final class AppModel: ObservableObject {
     var timedMatchLastSeen: [UUID: Date] = [:]
     /// Timed game rules whose overtime warning was already shown for the match in progress.
     var timedMatchOvertimeWarned: Set<UUID> = []
+    /// Valve Game State Integration local HTTP listener and active match state for CS2 / Dota 2.
+    var valveGSIServer: ValveGSIServer?
+    var valveLastEventAt: [String: Date] = [:]
+    var valveMatchActive: [String: Bool] = [:]
+    var valveMatchStartedContinuous: [String: Double] = [:]
+    var valveUnconnectedSince: [UUID: Date] = [:]
     /// Last timestamp when 1-second passive study tracking ticked.
     var lastPassiveStudyTickAt: Date?
     /// Continuous active screen-work seconds accumulated before triggering a rest break (`tickAsScreenBreak`).
@@ -401,6 +407,7 @@ final class AppModel: ObservableObject {
                 : relaunchGuard.message
             notice = [notice, outcome].compactMap { $0 }.joined(separator: " ")
         }
+        startValveGSIServerIfNeeded()
     }
 
     /// A session read from disk (at launch, or in a restored or recovered copy) never runs on its own. The design
@@ -555,9 +562,9 @@ final class AppModel: ObservableObject {
             return (custom.red, custom.green, custom.blue)
         }
         switch name {
-        case "Contenido": return (1.0, 0.65, 0.48)
+        case "Trabajo", "Contenido": return (1.0, 0.65, 0.48)
         case "Estudio": return (0.65, 0.69, 0.98)
-        case "Tienda": return (0.64, 0.89, 0.73)
+        case "Proyecto", "Tienda": return (0.40, 0.78, 0.90)
         default: return (0.7, 0.78, 0.87)
         }
     }
@@ -2010,6 +2017,7 @@ final class AppModel: ObservableObject {
         tickPassiveStudyTracking(at: instant)
         tickLeagueMatchAndPostMatchGrace(at: instant)
         tickTimedGameMatches(at: instant)
+        tickValveGSIGames(at: instant)
         tickTaskPomodoro(at: instant)
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility

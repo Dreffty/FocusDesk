@@ -7,15 +7,17 @@ Una regla de juego es una regla de tipo «Primero el trabajo» con un juego eleg
 
 | Detección | Juegos | Cómo funciona |
 |---|---|---|
-| Exacta | League of Legends | Riot abre un programa aparte (`GameClient`) solo mientras dura la partida. Al cerrarse, la partida cuenta y se da 1 minuto de margen. |
-| Por tiempo con prórroga | El resto | El juego usa el mismo programa en el menú y en partida. La partida empieza al abrir el juego, dura su tiempo típico y luego hay una prórroga (10 min por defecto). Al acabar la prórroga se cierra el juego. «He terminado», o cerrar el juego durante 2 minutos tras jugar al menos 5, la acaban antes. |
+| Exacta (Riot) | League of Legends | Riot abre un programa aparte (`GameClient` / `League of Legends.exe`) solo mientras dura la partida. Al cerrarse, la partida cuenta y se da 1 minuto de margen. |
+| Exacta (Valorant, Windows) | Valorant | El cliente local de Riot (`lockfile` + `/chat/v4/presences`) indica si estás en `MENUS` o `INGAME`/`PREGAME`. |
+| Exacta (Valve GSI) | Counter-Strike 2, Dota 2 | Game State Integration: FocusDesk instala `gamestate_integration_focusdesk.cfg` en Steam y recibe los estados del mapa en `127.0.0.1:47923` (con respaldo por tiempo si no hay eventos). |
+| Por tiempo con prórroga | Fortnite, Warzone, Minecraft, Roblox, WoW, Cualquier juego, Otro juego | La partida empieza al abrir el juego, dura su tiempo típico y luego hay una prórroga (10 min por defecto). Al acabar la prórroga se cierra el juego. «He terminado», o cerrar el juego durante 2 minutos tras jugar al menos 5, la acaban antes. |
 
 El código está en `Sources/FocusCore/Games.swift` (catálogo y decisiones, con tests en
-`Tests/FocusCoreTests/GameTests.swift`) y `Sources/FocusDesk/AppModel+Games.swift` (lo que pasa en el Mac).
+`Tests/FocusCoreTests/GameTests.swift`), `Sources/FocusDesk/AppModel+Games.swift` (macOS) y `windows/FocusDesk.Windows/Core/Games.cs` (Windows).
 
 ## Añadir un juego
 
-Añade una ficha a `GameCatalog.all` en `Sources/FocusCore/Games.swift`:
+Añade una ficha a `GameCatalog.all` en `Sources/FocusCore/Games.swift` (y su equivalente en `windows/FocusDesk.Windows/Core/Games.cs`):
 
 ```swift
 GameDefinition(
@@ -31,7 +33,7 @@ GameDefinition(
 )
 ```
 
-Para saber el identificador de una app instalada:
+Para saber el identificador de una app instalada en Mac:
 
 ```bash
 defaults read "/Applications/Nombre.app/Contents/Info" CFBundleIdentifier
@@ -39,11 +41,3 @@ defaults read "/Applications/Nombre.app/Contents/Info" CFBundleIdentifier
 
 Después añade una línea al test `testCatalogRecognisesEachGame` comprobando que el juego se reconoce y ejecuta
 `swift test`. La plantilla aparece sola en «Reglas › Juegos».
-
-## Detector exacto para otro juego
-
-Solo merece la pena si el juego dice desde fuera cuándo está en partida. Candidatos conocidos:
-
-- **Dota 2 y Counter-Strike 2**: Game State Integration de Valve, un fichero en la carpeta `cfg` del juego hace que
-  este mande su estado a un servidor local. Pendiente.
-- **Valorant** (solo Windows): el cliente de Riot publica en local si estás en el menú o en partida.

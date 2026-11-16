@@ -12,7 +12,7 @@ import Security
 /// `workspace.json` is a file in your home folder: closing FocusDesk and deleting it used to end any block.
 /// The witness lives in the login Keychain instead, so the running session survives losing — or editing — that file.
 enum KeychainWitness {
-    private static let service = "local.focusdesk.app.witness"
+    private static let service = "com.articdia.focusdesk.witness"
     private static let account = "active-session"
     private static let rulesAccount = "protected-rules"
 
@@ -221,7 +221,7 @@ enum SystemSettingsGuard {
 /// `FocusDesk --watcher`, a separate process with no window that looks for the planner and reopens it.
 @MainActor
 final class RelaunchGuard: ObservableObject {
-    static let label = "local.focusdesk.guard"
+    static let label = "com.articdia.focusdesk.guard"
     static let watcherArgument = "--watcher"
 
     @Published private(set) var installed = false
@@ -400,7 +400,7 @@ enum RelaunchWatcher {
     static func interfaceRunning() -> Bool {
         let own = ProcessInfo.processInfo.processIdentifier
         let bundlePath = Bundle.main.bundleURL.standardizedFileURL.path
-        return NSRunningApplication.runningApplications(withBundleIdentifier: "local.focusdesk.app").contains { app in
+        return NSRunningApplication.runningApplications(withBundleIdentifier: "com.articdia.focusdesk").contains { app in
             app.processIdentifier != own && !app.isTerminated && app.activationPolicy == .regular &&
             app.bundleURL?.standardizedFileURL.path == bundlePath
         }

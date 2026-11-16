@@ -1059,8 +1059,12 @@ extension AppModel {
 
     func isMatchInProgress(for rule: GeneralBlockRule) -> Bool {
         if rule.isInTimedMatch(at: now) { return true }
-        guard rule.deferBlockUntilMatchEnds, LeagueMatchRules.ruleTargetsLeague(rule) else { return false }
-        return isLoLMatchCurrentlyInProgress
+        guard rule.deferBlockUntilMatchEnds else { return false }
+        if LeagueMatchRules.ruleTargetsLeague(rule) { return isLoLMatchCurrentlyInProgress }
+        if rule.usesExactValveGSI, let gameID = rule.gameID {
+            return valveMatchActive[gameID] == true
+        }
+        return false
     }
 
     func remainingRuleLockSeconds(_ rule: GeneralBlockRule, at instant: Date? = nil) -> TimeInterval {
@@ -1781,6 +1785,7 @@ extension AppModel {
         error = nil
         _ = persist()
         refreshWitness()
+        startValveGSIServerIfNeeded()
         observe()
         notice = "Regla «\(rule.name)» guardada."
     }
@@ -2249,7 +2254,7 @@ extension AppModel {
                 return
             }
 
-            if rule.usesTimedMatches, appBelongsToGame(fg.app, rule: rule) {
+            if (rule.usesTimedMatches || rule.usesExactValveGSI), appBelongsToGame(fg.app, rule: rule) {
                 _ = mutateRuleBlock(ruleID: rule.id)
                 let verb = applyBlockAction(to: fg.app, bundleID: id, action: rule.activeBlockAction())
                 activateFallbackApp(excluding: id)

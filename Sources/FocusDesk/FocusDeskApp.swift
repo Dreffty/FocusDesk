@@ -16,7 +16,7 @@ struct FocusDeskApplication {
         let isIsolatedCheck = CommandLine.arguments.contains("--preview")
         // Only another planner counts: the watcher has no Dock icon and must not make FocusDesk refuse to open.
         if !isIsolatedCheck,
-           let other = NSRunningApplication.runningApplications(withBundleIdentifier: "local.focusdesk.app")
+           let other = NSRunningApplication.runningApplications(withBundleIdentifier: "com.articdia.focusdesk")
                .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && $0.activationPolicy == .regular }) {
             // The checks read and write the real data: with FocusDesk open they used to just bring it forward and
             // exit 0, as if they had passed.
@@ -24,7 +24,7 @@ struct FocusDeskApplication {
                 print("FAIL: FocusDesk ya está abierta (pid \(other.processIdentifier)). Ciérrala antes de comprobar: dos copias escribirían el mismo archivo de datos.")
                 exit(2)
             }
-            DistributedNotificationCenter.default().postNotificationName(Notification.Name("local.focusdesk.showWindow"), object: nil)
+            DistributedNotificationCenter.default().postNotificationName(Notification.Name("com.articdia.focusdesk.showWindow"), object: nil)
             other.activate(options: [])
             return
         }
@@ -96,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .receive(on: RunLoop.main)
             .sink { [weak self] hasSession in self?.applySessionHotKeys(active: hasSession) }
             .store(in: &subscriptions)
-        DistributedNotificationCenter.default().addObserver(self, selector: #selector(show), name: Notification.Name("local.focusdesk.showWindow"), object: nil)
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(show), name: Notification.Name("com.articdia.focusdesk.showWindow"), object: nil)
         updateStatus()
         show()
 

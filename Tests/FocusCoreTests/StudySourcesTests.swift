@@ -36,7 +36,7 @@ final class StudySourcesTests: XCTestCase {
     func testTheStartingListCounts() {
         XCTAssertTrue(counts("com.brave.Browser", host: "claude.ai", path: "/chat/1"))
         XCTAssertTrue(counts("com.brave.Browser", host: "chatgpt.com", path: "/"))
-        XCTAssertTrue(counts("com.brave.Browser", host: "studium26.usal.es", path: "/course/view.php"))
+        XCTAssertTrue(counts("com.brave.Browser", host: "www.coursera.org", path: "/learn/algorithms"))
         XCTAssertTrue(counts("com.anthropic.claudefordesktop"))
         XCTAssertTrue(counts("com.apple.Preview"))
         XCTAssertTrue(counts("com.apple.dt.Xcode"))

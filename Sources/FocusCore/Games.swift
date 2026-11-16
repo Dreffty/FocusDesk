@@ -7,6 +7,8 @@ import Foundation
 //
 //  • `.exactLeague`: League of Legends abre un programa aparte solo mientras dura la partida (`GameClient`), así que
 //    FocusDesk ve exactamente cuándo empieza y cuándo acaba (ver `LeagueMatchRules`).
+//  • `.exactValveGSI`: Counter-Strike 2 y Dota 2 envían el estado del mapa por Game State Integration de Valve a
+//    un servidor local (`127.0.0.1:47923`), con respaldo por tiempo si el archivo `.cfg` aún no está conectado.
 //  • `.timed`: el resto de juegos usan el mismo programa en el menú y en partida, así que no se puede saber desde
 //    fuera. La partida empieza cuando abres el juego y dura su tiempo típico; al acabar hay una prórroga para terminar
 //    la partida en curso, y solo al final de la prórroga se cierra el juego. «He terminado» o cerrar el juego la
@@ -18,12 +20,19 @@ import Foundation
 public enum GameMatchDetection: String, Codable, Sendable {
     /// Exact: a separate in-match process exists (League of Legends).
     case exactLeague
+    /// Exact: Valve Game State Integration reports map phase / game state over localhost HTTP (CS2, Dota 2).
+    case exactValveGSI
     /// By time: typical match length + overtime, finished early by «He terminado» or by closing the game.
     case timed
+
+    public var isExact: Bool {
+        self == .exactLeague || self == .exactValveGSI
+    }
 
     public var label: String {
         switch self {
         case .exactLeague: return "Detección exacta"
+        case .exactValveGSI: return "Detección exacta (Valve)"
         case .timed: return "Por tiempo con prórroga"
         }
     }
@@ -32,6 +41,8 @@ public enum GameMatchDetection: String, Codable, Sendable {
         switch self {
         case .exactLeague:
             return "FocusDesk ve cuándo empieza y cuándo acaba cada partida: nunca te saca a mitad y cierra el juego al terminar."
+        case .exactValveGSI:
+            return "El juego avisa a FocusDesk al empezar y acabar el mapa (Game State Integration): nunca te saca a mitad y cierra el juego al terminar. Si aún no hay conexión con Steam, cuenta por tiempo como respaldo."
         case .timed:
             return "Este juego no avisa de cuándo acaba la partida. Empieza a contar al abrirlo; al llegar a la duración típica te avisa, te da la prórroga para acabar y solo entonces lo cierra. Si terminas antes, pulsa «He terminado» o cierra el juego."
         }
@@ -179,14 +190,37 @@ public enum GameCatalog {
             note: "Cuenta sesiones de juego, sea cual sea la experiencia."
         ),
         GameDefinition(
+            id: "cs2",
+            name: "Counter-Strike 2",
+            icon: "scope",
+            detection: .exactValveGSI,
+            typicalMatchMinutes: 40,
+            bundleIDPrefixes: ["com.valvesoftware.cs2"],
+            nameKeywords: ["counter-strike", "cs2"],
+            pathFragments: ["/counter-strike global offensive/", "/cs2.app", "cs2.exe"],
+            note: "Detecta inicio y fin de partida automáticamente con Game State Integration de Steam."
+        ),
+        GameDefinition(
             id: "dota2",
             name: "Dota 2",
             icon: "flame.fill",
-            detection: .timed,
+            detection: .exactValveGSI,
             typicalMatchMinutes: 45,
             bundleIDPrefixes: ["com.valvesoftware.dota2"],
             nameKeywords: ["dota 2", "dota2"],
-            pathFragments: ["/dota 2 beta/", "/dota2.app"]
+            pathFragments: ["/dota 2 beta/", "/dota2.app"],
+            note: "Detecta inicio y fin de partida automáticamente con Game State Integration de Steam."
+        ),
+        GameDefinition(
+            id: "warzone",
+            name: "Call of Duty / Warzone",
+            icon: "target",
+            detection: .timed,
+            typicalMatchMinutes: 30,
+            nameKeywords: ["call of duty", "warzone"],
+            pathFragments: ["/call of duty/"],
+            webEntries: ["xbox.com/play", "xbox.com/*/play", "play.geforcenow.com"],
+            note: "En Mac funciona por la nube; en Windows detecta el juego directamente."
         ),
         GameDefinition(
             id: "wow",
@@ -235,10 +269,16 @@ extension GeneralBlockRule {
         return GameCatalog.game(id: gameID)
     }
 
-    /// True for game rules whose matches are measured by time (every game except League of Legends).
+    /// True for game rules whose matches are measured by time (every game except exact-detector games).
     public var usesTimedMatches: Bool {
         guard let game, maxDailyMatches > 0 else { return false }
         return game.detection == .timed
+    }
+
+    /// True for CS2 and Dota 2 rules backed by Valve Game State Integration.
+    public var usesExactValveGSI: Bool {
+        guard let game, maxDailyMatches > 0 else { return false }
+        return game.detection == .exactValveGSI
     }
 
     public var matchUnitSingular: String { game?.unitSingular ?? "partida" }
@@ -253,9 +293,9 @@ extension GeneralBlockRule {
         activeMatchDeadline?.remainingAfterPossibleReboot(wall: now, continuous: continuous) ?? 0
     }
 
-    /// True while a timed match is being played (its window, overtime included, has not run out).
+    /// True while a timed match (or a Valve timed fallback match) is being played.
     public func isInTimedMatch(at now: Date = Date(), continuous: Double = TrustedClock.continuousSeconds()) -> Bool {
-        usesTimedMatches && timedMatchRemainingSeconds(at: now, continuous: continuous) > 0
+        (usesTimedMatches || usesExactValveGSI) && timedMatchRemainingSeconds(at: now, continuous: continuous) > 0
     }
 
     /// True once the typical match length is over and only the overtime is left.
@@ -354,10 +394,11 @@ public enum TimedMatchPlanner {
         secondsSinceGameSeen: TimeInterval,
         workedTodaySeconds: TimeInterval,
         matchesToday: Int,
+        allowTimedFallback: Bool = false,
         now: Date = Date(),
         continuous: Double = TrustedClock.continuousSeconds()
     ) -> Step {
-        guard rule.enabled, rule.usesTimedMatches else { return .idle }
+        guard rule.enabled, (rule.usesTimedMatches || (allowTimedFallback && rule.usesExactValveGSI)) else { return .idle }
         if rule.activeMatchDeadline != nil {
             let remaining = rule.timedMatchRemainingSeconds(at: now, continuous: continuous)
             if remaining <= 0 { return .finish(.timeUp) }
@@ -376,5 +417,87 @@ public enum TimedMatchPlanner {
             continuous: continuous
         )
         return locked ? .idle : .start
+    }
+}
+
+/// Pure parser and config generator for Valve Game State Integration (CS2 & Dota 2).
+public enum ValveGSI {
+    public static let port: UInt16 = 47923
+
+    public enum MatchPhase: Equatable, Sendable {
+        case menu
+        case live
+        case intermission
+        case gameover
+    }
+
+    public struct Event: Equatable, Sendable {
+        public let gameID: String
+        public let phase: MatchPhase
+
+        public init(gameID: String, phase: MatchPhase) {
+            self.gameID = gameID
+            self.phase = phase
+        }
+    }
+
+    /// Parses a JSON payload sent by CS2 or Dota 2 Game State Integration.
+    public static func parse(jsonData: Data) -> Event? {
+        guard let root = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { return nil }
+        let provider = root["provider"] as? [String: Any]
+        let appID = (provider?["appid"] as? NSNumber)?.intValue
+        let providerName = (provider?["name"] as? String ?? "").lowercased()
+
+        let gameID: String?
+        if appID == 730 || providerName.contains("counter-strike") || providerName.contains("cs2") || providerName.contains("csgo") {
+            gameID = "cs2"
+        } else if appID == 570 || providerName.contains("dota") {
+            gameID = "dota2"
+        } else {
+            gameID = nil
+        }
+        guard let resolvedGameID = gameID else { return nil }
+
+        guard let map = root["map"] as? [String: Any] else {
+            return Event(gameID: resolvedGameID, phase: .menu)
+        }
+        let rawPhase = ((map["phase"] as? String) ?? (map["game_state"] as? String) ?? "").lowercased()
+        let phase: MatchPhase
+        if rawPhase.contains("gameover") || rawPhase.contains("post_game") {
+            phase = .gameover
+        } else if rawPhase.contains("intermission") {
+            phase = .intermission
+        } else if rawPhase.contains("live")
+            || rawPhase.contains("warmup")
+            || rawPhase.contains("game_in_progress")
+            || rawPhase.contains("pre_game")
+            || rawPhase.contains("hero_selection")
+            || rawPhase.contains("strategy_time") {
+            phase = .live
+        } else {
+            phase = .menu
+        }
+        return Event(gameID: resolvedGameID, phase: phase)
+    }
+
+    public static var configFilename: String { "gamestate_integration_focusdesk.cfg" }
+
+    /// Contents of `gamestate_integration_focusdesk.cfg` for CS2 / Dota 2.
+    public static var configContents: String {
+        """
+        "FocusDesk Game State Integration"
+        {
+            "uri" "http://127.0.0.1:\(port)"
+            "timeout" "5.0"
+            "buffer" "0.1"
+            "throttle" "0.5"
+            "heartbeat" "5.0"
+            "data"
+            {
+                "provider" "1"
+                "map" "1"
+            }
+        }
+        """
     }
 }

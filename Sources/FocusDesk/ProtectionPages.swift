@@ -1125,7 +1125,7 @@ private struct GeneralRuleCard: View {
                 HStack {
                     if postGraceLeft > 0 {
                         Label(
-                            "Partida terminada · cerrando League of Legends en \(Int(ceil(postGraceLeft))) s",
+                            "Partida terminada · cerrando \(rule.game?.name ?? "el juego") en \(Int(ceil(postGraceLeft))) s",
                             systemImage: "timer"
                         )
                         .font(.app(13, weight: .semibold))

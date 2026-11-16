@@ -11,7 +11,7 @@ Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma 
 ## Primer uso
 
 1. Pulsa **Nueva tarea** (`⌘N`). Pon un objetivo, elige si tiene horario reservado o va a la **bandeja de pendientes sin hora**, añade opcionalmente una **fecha límite** independiente y define su duración.
-2. Aplica uno de los **perfiles reutilizables** (*Grabar vídeo*, *Estudiar*, *Tienda*) o guarda tus propios perfiles con aplicaciones, dominios, modo estricto, duración habitual, checklist y carpeta de resultados.
+2. Aplica uno de los **perfiles reutilizables** (*Programar / Trabajo*, *Estudiar*, *Lectura y escritura*) o guarda tus propios perfiles con aplicaciones, dominios, modo estricto, duración habitual, checklist y carpeta de resultados.
 3. Activa «Bloquear las apps que distraen» si quieres que FocusDesk oculte cualquier app que no esté en la lista y te devuelva a una permitida (si no hay ninguna abierta, la abre). Esas tareas pueden poner además **No molestar** mientras dura la sesión: en **Ajustes → General → No molestar al bloquear apps**, pulsa «Crear los atajos…» y añade en Atajos los dos que te propone (solo la primera vez). Puedes pausar o cancelar en cualquier momento desde la barra o la ventana. Mientras hay una sesión, **⌃⌥⌘P** (pausar o reanudar) y **⌃⌥⌘T** (He terminado) funcionan desde cualquier app, sin traer FocusDesk delante; sin sesión quedan libres para las demás apps.
 
 **Un solo temporizador, siempre.** Si empiezas otra tarea mientras hay una en marcha, FocusDesk pregunta: «Tienes «A» en marcha. ¿La terminas y empiezas «B»?». Al aceptar, detiene la actual, te pide su resultado y arranca la nueva al confirmarlo, así nunca pierdes el tiempo ya trabajado. Empezar la tarea que ya está en marcha simplemente la reanuda si estaba en pausa.
@@ -47,14 +47,14 @@ Mientras una sesión protegida corre, **también cuesta lo mismo salir de FocusD
 
 **Protegida antes de empezar.** A las 8:55, una tarea de las 9:00 aún no ha empezado y borrarla sería gratis: justo el momento en que gana el impulso. Por eso una tarea protegida se defiende **desde unos minutos antes de su hora** (10 por defecto, en Ajustes → General; «No protegerla antes» lo apaga) **hasta su hora de fin**, aunque no la hayas empezado. En ese margen, borrarla, retrasarla, pasarla a la bandeja o ablandarla (bajar su protección, acortarla, quitarle el inicio automático…) cuesta **lo mismo que pararla**: su código, su espera o la salida de emergencia. Adelantarla a una hora que aún tienes por delante, alargarla o endurecerla sigue libre (moverla más de 5 minutos al pasado es sacarla de su hora y también se cobra), y las tareas que «Se pueden parar» no cambian. En Hoy llevan el chip **«Ya protegida»**. Si la empiezas y la paras por su salida, después no se cobra otra vez; y el margen no se puede acortar mientras una tarea está dentro de él (sería la salida gratis: ponerlo a «No» y borrarla). Es el `activeProtectionRunUp` de FocusMe.
 
-Las **reglas** con protección usan el mismo margen: un horario queda protegido desde esos minutos antes de empezar, y un presupuesto o una recompensa de «Primero el trabajo» cuando le quedan esos minutos. Así no se puede subir un presupuesto de 20 min a 720 en el minuto 19, ni apagar un horario a las 8:59. La regla de LoL viene con la app y vuelve sola al abrirla, así que no ofrece borrarse: su salida es desactivarla con su código.
+Las **reglas** con protección usan el mismo margen: un horario queda protegido desde esos minutos antes de empezar, y un presupuesto o una recompensa de «Primero el trabajo» cuando le quedan esos minutos. Así no se puede subir un presupuesto de 20 min a 720 en el minuto 19, ni apagar un horario a las 8:59. En **Reglas y límites › Juegos** tienes plantillas listas para *League of Legends*, *Valorant* (Windows), *Counter-Strike 2*, *Dota 2*, *Fortnite*, *Warzone*, *Minecraft*, *Roblox*, *World of Warcraft* o cualquier otra app; todas las reglas son opcionales y se pueden editar o borrar (si están protegidas, piden su código o espera).
 
 **Las salidas que existen siempre.** Un bloqueo del que no se puede salir es una trampa, no un bloqueo:
 
 - **Apagar, reiniciar o cerrar sesión funciona siempre**, también en «Hasta el final». FocusDesk deja pasar a macOS y guarda la sesión; al volver a abrirse sigue sola si aún le quedaba tiempo (si ya habría terminado, solo te la ofrece).
 - **Cuando se acaba el tiempo**, la protección desaparece: Terminar ya no pide nada.
 - **El código, la espera o «Emergencia»** (60 caracteres, solo en «Hasta el final»). Cada vez que FocusDesk dice que no, dice también dónde está la salida.
-- **Último recurso, sin reiniciar nada:** Forzar salida (⌘⌥Esc, o ⌥+clic derecho en el icono del Dock). Ni el Dock ni esa ventana se bloquean nunca. Con el vigilante encendido, FocusDesk vuelve a abrirse y la sesión sigue; para apagarlo a mano: `launchctl bootout gui/$(id -u)/local.focusdesk.guard`. Si el vigilante está activado en Ajustes (una regla obligatoria 24/7 lo activa) y falta, FocusDesk lo instala al abrirse y te lo dice; apagarlo así sigue funcionando hasta el siguiente reinicio, y borrar además `~/Library/LaunchAgents/local.focusdesk.guard.plist` hasta la próxima vez que abras FocusDesk.
+- **Último recurso, sin reiniciar nada:** Forzar salida (⌘⌥Esc, o ⌥+clic derecho en el icono del Dock). Ni el Dock ni esa ventana se bloquean nunca. Con el vigilante encendido, FocusDesk vuelve a abrirse y la sesión sigue; para apagarlo a mano: `launchctl bootout gui/$(id -u)/com.articdia.focusdesk.guard`. Si el vigilante está activado en Ajustes (una regla obligatoria 24/7 lo activa) y falta, FocusDesk lo instala al abrirse y te lo dice; apagarlo así sigue funcionando hasta el siguiente reinicio, y borrar además `~/Library/LaunchAgents/com.articdia.focusdesk.guard.plist` hasta la próxima vez que abras FocusDesk.
 
 **La ley del trinquete.** Una sesión en marcha se puede endurecer, nunca aflojar: alargarla sí, acortarla no; subir la protección sí, bajarla no; quitar apps permitidas sí, añadirlas no; bloquear más carpetas sí, desbloquearlas no. Si intentas lo segundo, FocusDesk te dice exactamente qué campo lo impide en vez de descartar el cambio en silencio. Lo mismo vale para lo que rodea a la sesión: con una protegida en marcha no se apagan el vigilante, la vigilancia de ventanas ni la de webs dentro de apps, ni se restaura o recupera una copia (traería la sesión en pausa).
 
@@ -133,6 +133,21 @@ En Vorssaint, activa su integración Calendar de Dynamic Island, las cuentas atr
 Se guardan en `~/Library/Application Support/FocusDesk/`: `workspace.json` con lo del día a día y `workspace.history.json` con el historial, cada uno con su copia automática (`*.backup.json`) y escritura atómica. Si nada cambió, no se escribe nada.
 
 En `backups/` hay además **una copia con fecha por cada día de uso** (`daily-AAAA-MM-DD.json`, se conservan las 14 últimas), más los respaldos previos a cada restauración. La copia automática refleja lo que se está guardando, así que te protege de un archivo dañado; las copias diarias son a las que puedes volver si un día guardas algo que no querías. Se restauran desde **Ajustes → Restaurar copia**.
+
+## Windows
+
+FocusDesk también incluye una aplicación nativa para Windows (.NET 8 WPF) en `windows/FocusDesk.Windows/`. Consulta [windows/README.md](windows/README.md) para compilarla o usar el ejecutable publicado en GitHub Releases.
+
+## Publicar y empaquetar
+
+```sh
+swift test
+./build.command
+# Genera dist.noindex/FocusDesk-macOS.dmg (firma con Developer ID y notariza si hay credenciales)
+./scripts/make-dmg.command
+```
+
+Consulta [docs/PUBLICAR.md](docs/PUBLICAR.md) para conectar tu certificado Developer ID Application de Apple, notarizar y publicar en GitHub Releases y Homebrew.
 
 ## Desarrollo y comprobación
 

@@ -1460,8 +1460,8 @@ public enum StudySources {
         web("notebooklm.google.com"),
         web("docs.google.com"),
         web("drive.google.com"),
-        web("usal.es"),
-        web("educa.jcyl.es"),
+        web("coursera.org"),
+        web("edx.org"),
         web("office.com"),
         web("overleaf.com"),
         web("notion.so"),
@@ -1556,7 +1556,7 @@ public enum ClipboardGuardRules {
         for cmd in dangerousCommandTokens where lower.contains(cmd) {
             return "comando de terminal protegido («\(cmd)»)"
         }
-        if lower.contains("local.focusdesk") {
+        if lower.contains("com.articdia.focusdesk") || lower.contains("local.focusdesk") {
             for cmd in launchctlTokens where lower.contains(cmd) {
                 return "comando de terminal protegido («\(cmd)»)"
             }
@@ -2828,11 +2828,10 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         return nil
     }
 
-    /// The built-in LoL rule is put back on every launch, so it is never offered for deletion: switching it off
-    /// (through its code) is its way out.
-    public var canBeDeleted: Bool { id != LeagueMatchRules.mandatoryStudyThenLoLRuleID }
+    /// Every rule in the public version can be deleted (subject to protection/ratchet when active).
+    public var canBeDeleted: Bool { true }
 
-    /// Built-in mandatory passive rule: each League of Legends match costs 60 minutes of verified study (1 match after 60 min, it locks again, the 2nd after 120 min; max 2 a day) (never kicking mid-match, 1-minute post-match grace, protected 24/7 by a 64-character challenge code).
+    /// Built-in passive LoL rule template (kept for backwards compatibility/tests; no longer forced into new workspaces).
     public static var mandatoryStudyThenLoLRule: GeneralBlockRule {
         GeneralBlockRule(
             id: LeagueMatchRules.mandatoryStudyThenLoLRuleID,
@@ -2866,7 +2865,6 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     }
 
     public static let defaults: [GeneralBlockRule] = [
-        mandatoryStudyThenLoLRule,
         GeneralBlockRule(
             id: UUID(uuidString: "22222222-2222-2222-2222-222222222201")!,
             name: "Redes y vídeos cortos · 20 min al día",

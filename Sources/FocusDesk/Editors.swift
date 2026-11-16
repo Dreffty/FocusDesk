@@ -161,7 +161,7 @@ struct TaskEditor: View {
             if showSaveProfile {
                 HStack(spacing: 8) {
                     // Return here saves the profile, not the whole task (it used to close the editor).
-                    TextField("Nombre del perfil (ej. Grabar vídeo)", text: $saveProfileName)
+                    TextField("Nombre del perfil (ej. Estudiar)", text: $saveProfileName)
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedField, equals: .profileName)
                         .onSubmit { saveDraftAsProfile() }
@@ -178,7 +178,7 @@ struct TaskEditor: View {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("¿QUÉ VAS A HACER?").fieldLabelStyle()
-                    TextField("Ej. Grabar el vídeo de mañana", text: $draft.title)
+                    TextField("Ej. Repasar el tema 4", text: $draft.title)
                         .font(.app(15))
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedField, equals: .title)
@@ -1530,7 +1530,7 @@ struct SettingsView: View {
                                     Circle().fill(Color(red: cat.red, green: cat.green, blue: cat.blue)).frame(width: 12, height: 12)
                                     Text(cat.name).font(.app(10, weight: .medium))
                                     Spacer()
-                                    if !["Personal", "Contenido", "Estudio", "Tienda"].contains(cat.name) {
+                                    if !CategoryItem.defaults.map(\.name).contains(cat.name) {
                                         Button {
                                             model.updateSettings { $0.categories.removeAll { $0.name == cat.name } }
                                         } label: { Image(systemName: "xmark") }
@@ -2481,7 +2481,7 @@ struct GeneralRuleEditor: View {
                     }
                 }
                 }
-                if draft.game == nil || draft.game?.detection == .exactLeague {
+                if draft.game == nil || draft.game?.detection.isExact == true {
                 VStack(alignment: .leading, spacing: 6) {
                     if draft.game == nil {
                     HStack(spacing: 12) {
