@@ -128,6 +128,7 @@ extension AppModel {
             let phase = rule.pomodoroPhase.isBreak ? (rule.pomodoroPhase == .longBreak ? "Descanso largo" : "Descanso") : "Foco"
             return "\(phase) · ciclo \(rule.pomodoroCurrentCycle) de \(rule.pomodoroTotalCycles) · \(FocusRules.clock(left))"
         case .workGoal:
+            if rule.maxDailyMatches > 0 { return gameRuleStatus(rule, at: ref).text }
             let worked = effectiveWorkedSeconds(for: rule, at: ref)
             let required = Double(max(5, rule.goalMinutesRequired)) * 60
             let graceLeft = rule.postMatchGraceRemainingSeconds(at: ref)
@@ -489,6 +490,7 @@ struct RulesPage: View {
 
         VStack(alignment: .leading, spacing: 22) {
             RuleGallery(model: model)
+            GameRuleGallery(model: model)
 
             if !all.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
@@ -1104,6 +1106,9 @@ private struct GeneralRuleCard: View {
             }
             .padding(10)
             .background(Palette.elevated.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+        case .workGoal where rule.maxDailyMatches > 0:
+            GameRuleProgress(model: model, rule: rule)
 
         case .workGoal:
             let worked = model.effectiveWorkedSeconds(for: rule, at: model.now)

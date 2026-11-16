@@ -1387,6 +1387,7 @@ public enum LeagueMatchRules {
     /// True when `rule` targets League of Legends / Riot Client.
     public static func ruleTargetsLeague(_ rule: GeneralBlockRule) -> Bool {
         if rule.id == mandatoryStudyThenLoLRuleID { return true }
+        if rule.kind == .workGoal && rule.gameID == GameCatalog.leagueID { return true }
         return rule.apps.contains { isLeagueOrRiotProcess(bundleID: $0.id, appPath: $0.path, localizedName: $0.name) }
     }
 }
@@ -1808,6 +1809,14 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     /// When `true` on a `.workGoal` rule with `maxDailyMatches > 0`, each match must be earned with its own
     /// `goalMinutesRequired` block of work: match 1 after 60 min, then it locks again until 120 min, and so on.
     public var oneMatchPerGoalBlock: Bool
+    /// Game of a «primero estudio, luego partida» rule (`GameCatalog`), or `nil` for any other rule.
+    public var gameID: String?
+    /// Typical length in minutes of one match of `gameID` when matches are measured by time (5...180).
+    public var matchMinutes: Int
+    /// Extra minutes after `matchMinutes` to finish the match in progress before the game is closed (0...30).
+    public var matchOvertimeMinutes: Int
+    /// End of the timed match being played right now (typical length + overtime).
+    public var activeMatchDeadline: TrustedDeadline?
     /// When `true`, the rule is protected 24/7 while `enabled` (requires its challenge code / wait even during study or while playing unlocked reward matches).
     public var alwaysProtected: Bool
     /// Maximum number of launches/visits allowed per day when `kind == .launchLimit` (1...50).
@@ -1904,6 +1913,10 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         activePostMatchGraceDeadline: TrustedDeadline? = nil,
         verifyActiveStudy: Bool = false,
         oneMatchPerGoalBlock: Bool = false,
+        gameID: String? = nil,
+        matchMinutes: Int = 30,
+        matchOvertimeMinutes: Int = 10,
+        activeMatchDeadline: TrustedDeadline? = nil,
         alwaysProtected: Bool = false,
         maxDailyLaunches: Int = 5,
         maxLaunchDurationMinutes: Int = 5,
@@ -1967,6 +1980,10 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         self.activePostMatchGraceDeadline = activePostMatchGraceDeadline
         self.verifyActiveStudy = verifyActiveStudy
         self.oneMatchPerGoalBlock = oneMatchPerGoalBlock
+        self.gameID = gameID
+        self.matchMinutes = max(5, min(180, matchMinutes))
+        self.matchOvertimeMinutes = max(0, min(30, matchOvertimeMinutes))
+        self.activeMatchDeadline = activeMatchDeadline
         self.alwaysProtected = alwaysProtected
         self.maxDailyLaunches = max(1, min(50, maxDailyLaunches))
         self.maxLaunchDurationMinutes = max(1, min(120, maxLaunchDurationMinutes))
@@ -2022,6 +2039,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         case goalMinutesRequired, goalRewardMinutes
         case maxDailyMatches, deferBlockUntilMatchEnds, postMatchGraceSeconds, activePostMatchGraceDeadline
         case verifyActiveStudy, oneMatchPerGoalBlock, alwaysProtected
+        case gameID, matchMinutes, matchOvertimeMinutes, activeMatchDeadline
         case maxDailyLaunches, maxLaunchDurationMinutes, launchCooldownMinutes, activeLaunchDeadline, launchCooldownDeadline
         case pomodoroWorkMinutes, pomodoroShortBreakMinutes, pomodoroLongBreakMinutes, pomodoroLongBreakEvery
         case pomodoroTotalCycles, pomodoroPenaltyReset, protectPomodoroBreaks, pomodoroWaitForUser
@@ -2051,6 +2069,10 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         activePostMatchGraceDeadline = try c.decodeIfPresent(TrustedDeadline.self, forKey: .activePostMatchGraceDeadline)
         verifyActiveStudy = try c.decodeIfPresent(Bool.self, forKey: .verifyActiveStudy) ?? false
         oneMatchPerGoalBlock = try c.decodeIfPresent(Bool.self, forKey: .oneMatchPerGoalBlock) ?? false
+        gameID = try c.decodeIfPresent(String.self, forKey: .gameID)
+        matchMinutes = max(5, min(180, try c.decodeIfPresent(Int.self, forKey: .matchMinutes) ?? 30))
+        matchOvertimeMinutes = max(0, min(30, try c.decodeIfPresent(Int.self, forKey: .matchOvertimeMinutes) ?? 10))
+        activeMatchDeadline = try c.decodeIfPresent(TrustedDeadline.self, forKey: .activeMatchDeadline)
         alwaysProtected = try c.decodeIfPresent(Bool.self, forKey: .alwaysProtected) ?? false
         maxDailyLaunches = max(1, min(50, try c.decodeIfPresent(Int.self, forKey: .maxDailyLaunches) ?? 5))
         maxLaunchDurationMinutes = max(1, min(120, try c.decodeIfPresent(Int.self, forKey: .maxLaunchDurationMinutes) ?? 5))
@@ -2103,7 +2125,8 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
     }
 
     public var hasTargets: Bool {
-        (blockApps && !apps.isEmpty)
+        game != nil
+            || (blockApps && !apps.isEmpty)
             || blockGameLibraries
             || blockSearchMedia
             || (webBlockAction != .warn && (webListMode == .blockAll || !FocusRules.parseDomains(domains).valid.isEmpty))
@@ -2401,6 +2424,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         case .dailyLimit:
             return usedTodaySeconds < dailyBudgetSeconds
         case .workGoal:
+            if isInTimedMatch(at: now, continuous: continuous) { return true }
             guard workedTodaySeconds >= goalRequiredSeconds else { return false }
             if isInPostMatchGrace(at: now, continuous: continuous) { return true }
             if deferBlockUntilMatchEnds && isMatchInProgress { return true }
@@ -2445,6 +2469,8 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         case .dailyLimit:
             return usedTodaySeconds >= dailyBudgetSeconds
         case .workGoal:
+            // A timed match that already started is never cut short: its overtime is how it ends.
+            if isInTimedMatch(at: now, continuous: continuous) { return false }
             guard workedTodaySeconds >= goalRequiredSeconds else { return true }
             if isInPostMatchGrace(at: now, continuous: continuous) {
                 return false
@@ -2688,6 +2714,12 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             if current.maxDailyMatches > 0 && (proposed.maxDailyMatches == 0 || proposed.maxDailyMatches > current.maxDailyMatches) {
                 return "ampliar el límite de partidas diarias de «\(current.name)»"
             }
+            if current.gameID != nil && proposed.gameID != current.gameID {
+                return "cambiar el juego de «\(current.name)»"
+            }
+            if current.usesTimedMatches && (proposed.matchMinutes > current.matchMinutes || proposed.matchOvertimeMinutes > current.matchOvertimeMinutes) {
+                return "alargar las \(current.matchUnitPlural) o la prórroga de «\(current.name)»"
+            }
             if current.oneMatchPerGoalBlock && !proposed.oneMatchPerGoalBlock {
                 return "dejar de exigir una hora de estudio por cada partida en «\(current.name)»"
             }
@@ -2814,6 +2846,8 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             postMatchGraceSeconds: 60,
             verifyActiveStudy: true,
             oneMatchPerGoalBlock: true,
+            gameID: GameCatalog.leagueID,
+            matchMinutes: 35,
             alwaysProtected: true,
             blockApps: true,
             appListMode: .blockListed,

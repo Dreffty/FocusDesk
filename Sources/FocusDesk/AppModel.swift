@@ -174,6 +174,12 @@ final class AppModel: ObservableObject {
     var postMatchGraceArmedRules: Set<UUID> = []
     /// Rules whose 60-min verified study goal unlock was already announced today (`dayKey-ruleID`).
     var studyGoalUnlockedNotifiedToday: Set<String> = []
+    /// Whether each app bundle declares itself a game (`LSApplicationCategoryType`), by bundle path.
+    var gameCategoryCache: [String: Bool] = [:]
+    /// Last time the game of each timed game rule was seen running.
+    var timedMatchLastSeen: [UUID: Date] = [:]
+    /// Timed game rules whose overtime warning was already shown for the match in progress.
+    var timedMatchOvertimeWarned: Set<UUID> = []
     /// Last timestamp when 1-second passive study tracking ticked.
     var lastPassiveStudyTickAt: Date?
     /// Continuous active screen-work seconds accumulated before triggering a rest break (`tickAsScreenBreak`).
@@ -2003,6 +2009,7 @@ final class AppModel: ObservableObject {
         tickPomodoroRules(at: instant)
         tickPassiveStudyTracking(at: instant)
         tickLeagueMatchAndPostMatchGrace(at: instant)
+        tickTimedGameMatches(at: instant)
         tickTaskPomodoro(at: instant)
         if ticks.isMultiple(of: 5) {
             accessible = MacActivity.accessibility

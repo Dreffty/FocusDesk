@@ -67,6 +67,18 @@ enum SnapshotTool {
             AppPreferences.current.set(true, forKey: "FocusDesk.dayLayoutHourly")
             model.page = AppPage.today.rawValue
 
+            // The editor of a game rule, with the game picker and the timed-match settings.
+            model.editingGeneralRule = GeneralBlockRule.gameTemplate(GameCatalog.game(id: "fortnite")!)
+            try await settle(0.8)
+            try capture(window.attachedSheet?.contentView, name: "editor-juego", in: folder)
+            written.append("editor-juego")
+            if let page = largestScrollContent(in: window.attachedSheet?.contentView) {
+                try capture(page, name: "editor-juego-completa", in: folder)
+                written.append("editor-juego-completa")
+            }
+            model.editingGeneralRule = nil
+            try await settle()
+
             // Editor of a recurring occurrence (shows the series picker and its hint).
             if let series = model.workspace.tasks.first(where: { $0.repeatRule != .never }) {
                 model.editingTask = series
@@ -249,6 +261,14 @@ enum SnapshotTool {
         quick.protection = .none
         quick.startCountdown(minutes: 30)
         model.saveGeneralRule(quick)
+        // A game rule in the middle of a timed match. «Otro juego» with a fictitious app, so it never closes a real game.
+        var game = GeneralBlockRule.gameTemplate(GameCatalog.game(id: GameCatalog.customID)!)
+        game.name = "1 h de estudio por partida · Juego de prueba"
+        game.blockApps = true
+        game.apps = [AllowedApp(id: "com.example.juego-de-prueba", name: "Juego de prueba", path: "/Applications/Juego de prueba.app")]
+        game.protection = .none
+        game.startTimedMatch()
+        model.saveGeneralRule(game)
         model.updateSettings { $0.continuousBreakEnabled = true }
 
         model.selectedDate = Date()

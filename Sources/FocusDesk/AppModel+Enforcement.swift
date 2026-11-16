@@ -1058,6 +1058,7 @@ extension AppModel {
     }
 
     func isMatchInProgress(for rule: GeneralBlockRule) -> Bool {
+        if rule.isInTimedMatch(at: now) { return true }
         guard rule.deferBlockUntilMatchEnds, LeagueMatchRules.ruleTargetsLeague(rule) else { return false }
         return isLoLMatchCurrentlyInProgress
     }
@@ -2011,6 +2012,7 @@ extension AppModel {
             workspace.generalRules[idx].activeLaunchDeadline = nil
             workspace.generalRules[idx].launchCooldownDeadline = nil
             workspace.generalRules[idx].activePostMatchGraceDeadline = nil
+            workspace.generalRules[idx].activeMatchDeadline = nil
         }
         quotaExhaustedNotifiedToday.remove("\(pKey)-\(rule.id.uuidString)")
         quotaExhaustedNotifiedToday.remove("\(day)-\(rule.id.uuidString)")
@@ -2247,6 +2249,15 @@ extension AppModel {
                 return
             }
 
+            if rule.usesTimedMatches, appBelongsToGame(fg.app, rule: rule) {
+                _ = mutateRuleBlock(ruleID: rule.id)
+                let verb = applyBlockAction(to: fg.app, bundleID: id, action: rule.activeBlockAction())
+                activateFallbackApp(excluding: id)
+                notice = "\(gameLockMessage(rule, at: at)) (\(verb))"
+                scheduleStrictRecheck(after: 0.8)
+                return
+            }
+
             if rule.blockApps && !rule.apps.isEmpty && !FocusRules.appAllowed(bundleID: id, apps: rule.apps, mode: rule.appListMode) {
                 _ = mutateRuleBlock(ruleID: rule.id)
                 let verb = applyBlockAction(to: fg.app, bundleID: id, action: rule.activeBlockAction())
@@ -2287,7 +2298,7 @@ extension AppModel {
         return fired
     }
 
-    private func activateFallbackApp(excluding blockedID: String) {
+    func activateFallbackApp(excluding blockedID: String) {
         if let candidate = lastAllowed, !candidate.isTerminated, candidate.bundleIdentifier != blockedID {
             _ = candidate.activate(options: [])
             return

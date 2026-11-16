@@ -2436,6 +2436,7 @@ struct GeneralRuleEditor: View {
                 }
 
             case .workGoal:
+                GameRuleEditorSection(draft: $draft)
                 HStack(spacing: 12) {
                     Image(systemName: "flag.checkered")
                         .font(.app(18))
@@ -2463,6 +2464,7 @@ struct GeneralRuleEditor: View {
                 Toggle("Detección pasiva de estudio activo (cuenta sin darle a «Empezar» siempre que tengas abierta una pestaña/ventana productiva y actividad real)", isOn: $draft.verifyActiveStudy)
                     .toggleStyle(.checkbox)
                     .font(.app(11))
+                if draft.game == nil {
                 HStack(spacing: 12) {
                     Toggle("Limitar tiempo de juego/recompensa por bloque", isOn: Binding(
                         get: { draft.goalRewardMinutes > 0 },
@@ -2478,9 +2480,12 @@ struct GeneralRuleEditor: View {
                             .foregroundStyle(Palette.mint)
                     }
                 }
+                }
+                if draft.game == nil || draft.game?.detection == .exactLeague {
                 VStack(alignment: .leading, spacing: 6) {
+                    if draft.game == nil {
                     HStack(spacing: 12) {
-                        Toggle("Limitar partidas de League of Legends al día", isOn: Binding(
+                        Toggle("Limitar partidas al día", isOn: Binding(
                             get: { draft.maxDailyMatches > 0 },
                             set: { enabled in
                                 draft.maxDailyMatches = enabled ? max(2, draft.maxDailyMatches) : 0
@@ -2498,6 +2503,7 @@ struct GeneralRuleEditor: View {
                             .toggleStyle(.checkbox)
                             .font(.app(11))
                     }
+                    }
                     if draft.maxDailyMatches > 0 || LeagueMatchRules.ruleTargetsLeague(draft) {
                         HStack(spacing: 12) {
                             Toggle("No sacar nunca a mitad de partida (esperar a que termine la partida en curso)", isOn: $draft.deferBlockUntilMatchEnds)
@@ -2509,6 +2515,7 @@ struct GeneralRuleEditor: View {
                             }
                         }
                     }
+                }
                 }
 
             case .launchLimit:

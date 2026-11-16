@@ -940,8 +940,12 @@ private struct PassiveStudyStrip: View {
         let matchInProgress = model.isMatchInProgress(for: rule)
         let postGraceLeft = rule.postMatchGraceRemainingSeconds(at: model.now)
         let enforcing = model.isRuleEnforcing(rule, at: model.now)
+        let gameStatus = rule.maxDailyMatches > 0 ? model.gameRuleStatus(rule, at: model.now) : nil
 
         let status: (text: String, icon: String, color: Color) = {
+            if let gameStatus {
+                return (gameStatus.text, gameStatus.icon, gameStatus.warning ? Palette.warning : Palette.mint)
+            }
             if postGraceLeft > 0 {
                 return ("Partida terminada · se cierra en \(Int(ceil(postGraceLeft))) s", "timer", Palette.warning)
             }
@@ -970,8 +974,8 @@ private struct PassiveStudyStrip: View {
                     .lineLimit(1)
                     .layoutPriority(1)
                 Spacer(minLength: 8)
-                ProgressView(value: workFraction)
-                    .tint(goalMet && !matchesExhausted ? Palette.mint : Palette.warning)
+                ProgressView(value: gameStatus?.progress ?? workFraction)
+                    .tint(status.color)
                     .frame(width: 72)
                 Image(systemName: "chevron.right").font(.app(10, weight: .semibold)).foregroundStyle(Palette.mint)
             }
@@ -985,6 +989,14 @@ private struct PassiveStudyStrip: View {
         .help("Suma sola mientras estudias o trabajas con una ventana o pestaña abierta (Claude, el navegador, PDFs o código siguen libres). Al acabar la última partida da \(rule.postMatchGraceSeconds) s y la cierra.\(rule.protection == .challenge ? " Quitarla pide un código de \(rule.unlockChars) caracteres." : "") Abrir Reglas (⌘5).")
         .accessibilityLabel("\(rule.name). \(status.text). Estudio de hoy: \(FocusRules.clock(worked)) de \(rule.goalMinutesRequired) minutos.\(rule.maxDailyMatches > 0 ? " Partidas: \(matches) de \(maxMatches)." : "")")
         .accessibilityHint("Abre Reglas y límites")
+        .overlay(alignment: .trailing) {
+            if gameStatus?.canFinish == true {
+                Button("He terminado") { model.finishGameMatchNow(rule) }
+                    .buttonStyle(.focus(.secondary, compact: true))
+                    .help("Da por acabada esta \(rule.matchUnitSingular) y cierra el juego.")
+                    .padding(.trailing, 120)
+            }
+        }
     }
 }
 

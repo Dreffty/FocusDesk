@@ -1585,6 +1585,9 @@ public struct Workspace: Codable, Equatable, Sendable {
         if let idx = decodedRules.firstIndex(where: { $0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID }) {
             // 16-nov-2026: the mandatory rule moved from «60 min → 2 matches» to «60 min per match».
             // Only ever tightens it, so it is safe to apply to a saved rule on load.
+            if decodedRules[idx].gameID == nil {
+                decodedRules[idx].gameID = GameCatalog.leagueID
+            }
             if !decodedRules[idx].oneMatchPerGoalBlock {
                 decodedRules[idx].oneMatchPerGoalBlock = true
                 decodedRules[idx].name = LeagueMatchRules.mandatoryRuleName
