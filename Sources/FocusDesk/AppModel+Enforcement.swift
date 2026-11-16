@@ -100,6 +100,27 @@ enum RunUpChange: Equatable {
 
 extension AppModel {
 
+    // MARK: - The Accessibility permission
+
+    /// What the running session and the rules that are on cannot do, in words, while the permission is missing.
+    var accessibilityWarning: String? {
+        guard !preview, !accessible else { return nil }
+        let running = session.flatMap { $0.endedAt == nil && !$0.paused ? $0.task : nil }
+        return AccessibilityNeed.warning(for: AccessibilityNeed.features(
+            session: running,
+            rules: workspace.generalRules,
+            inspectEmbeddedPages: workspace.settings.inspectEmbeddedPages
+        ))
+    }
+
+    /// Checked as a protected session starts: finding out in the middle of it is too late.
+    func warnIfAccessibilityMissing(startingWith task: FocusTask) {
+        accessible = MacActivity.accessibility
+        guard !preview, !accessible, task.protection != .none else { return }
+        let features = AccessibilityNeed.features(of: task, inspectEmbeddedPages: workspace.settings.inspectEmbeddedPages)
+        if let warning = AccessibilityNeed.warning(for: features) { notice = warning }
+    }
+
     // MARK: - Protected before it starts
 
     /// Starts of sessions of `taskID` in the history: one inside the run-up window means it was already worked on.
@@ -127,8 +148,8 @@ extension AppModel {
               protectedBeforeStart(current, at: instant) else { return true }
         let what: String?
         switch change.outcome(from: current, now: instant) {
-        case .deleted: what = RunUp.loosening(current: current, proposed: nil)
-        case .changed(let proposed): what = RunUp.loosening(current: current, proposed: proposed)
+        case .deleted: what = RunUp.loosening(current: current, proposed: nil, now: instant)
+        case .changed(let proposed): what = RunUp.loosening(current: current, proposed: proposed, now: instant)
         }
         guard let what else { return true }
 
@@ -549,7 +570,7 @@ extension AppModel {
             if punisherJustFired, let message = punisherMessage(for: s) {
                 notice = message
             } else {
-                notice = "\(distractingName) está en la lista negra de «\(s.task.title)»: \(verb)."
+                notice = "\(distractingName) está bloqueada en «\(s.task.title)»: \(verb)."
             }
             if isNewInterruption, !preview { notifyDistraction(notice ?? "", session: s) }
             scheduleStrictRecheck(after: 0.8)
@@ -587,7 +608,7 @@ extension AppModel {
             let punisherJustFired = workspace.session?.registerBlock() ?? false
             let verb = applyBlockAction(to: distracting, bundleID: id)
             let ok = target.activate(options: [])
-            strictTracker.recordRedirectAttempt(succeeded: ok)
+            strictTracker.recordRedirectAttempt()
             if punisherJustFired, let message = punisherMessage(for: s) {
                 notice = message
             } else {
@@ -758,15 +779,8 @@ extension AppModel {
         let searchMediaHit = s.task.blockSearchMedia ? SearchMediaRules.matches(host: host, pathAndQuery: path) : nil
         let outside = searchMediaHit != nil || !FocusRules.webAllowed(host: host, path: path, list: s.task.domains, mode: s.task.webListMode)
         let visitKey = path.isEmpty || path == "/" ? host : "\(host)\(path)"
-        let changed = workspace.session?.activities.last?.domain != host
         let newVisit = outside && domainEpisodeHost != visitKey
-        if changed {
-            workspace.session?.record(
-                Activity(appID: bundleID, name: browserName, domain: host, interruption: newVisit),
-                at: Date(),
-                uptime: uptime
-            )
-        }
+        workspace.session?.recordVisit(appID: bundleID, name: browserName, domain: host, interruption: newVisit, at: Date(), uptime: uptime)
         domainEpisodeHost = outside ? visitKey : nil
         guard outside else { return }
 
@@ -906,46 +920,64 @@ extension AppModel {
 
     // MARK: - The witness
 
-    /// Writes the fingerprint of the running protected session (or active protected general rule) into the Keychain, outside `workspace.json`.
+    /// Writes the fingerprint of the running protected session (or active protected general rule) into the Keychain,
+    /// outside `workspace.json`, but only when it would say something new: this runs every ten seconds and on every save.
     func refreshWitness() {
         guard !preview else { return }
-        let protectedRules = workspace.generalRules.filter { $0.enabled && $0.protection != .none }
-        if !protectedRules.isEmpty {
-            KeychainWitness.saveRulesWitness(ProtectedRulesWitness(rules: protectedRules, savedAt: now))
-        } else {
-            KeychainWitness.clearRulesWitness()
+        if !witnessLoaded {
+            witnessLoaded = true
+            // One whose fingerprint does not match is written again, also the first time after the fingerprint changes.
+            storedRulesWitness = KeychainWitness.loadRulesWitness().flatMap { $0.intact ? $0.rules : nil }
+            storedSessionWitness = KeychainWitness.load()
         }
 
+        let protectedRules = workspace.generalRules.filter { $0.enabled && $0.protection != .none }
+        if protectedRules.isEmpty {
+            if storedRulesWitness != nil { KeychainWitness.clearRulesWitness() }
+            storedRulesWitness = nil
+        } else if WitnessPlan.rulesNeedSaving(protectedRules, lastSaved: storedRulesWitness) {
+            KeychainWitness.saveRulesWitness(ProtectedRulesWitness(rules: protectedRules, savedAt: now))
+            storedRulesWitness = protectedRules
+        }
+
+        var desired: SessionWitness?
+        var tolerance = WitnessPlan.sameEndTolerance
         if let s = session, s.enforcing(at: now, uptime: uptime), s.task.protection != .none {
-            KeychainWitness.save(
-                SessionWitness(
-                    sessionID: s.id,
-                    taskTitle: s.task.title,
-                    protection: s.task.protection,
-                    deadline: s.witnessDeadline(at: now, uptime: uptime)
-                )
+            desired = SessionWitness(
+                sessionID: s.id,
+                taskTitle: s.task.title,
+                protection: s.task.protection,
+                deadline: s.witnessDeadline(at: now, uptime: uptime)
             )
-            return
-        }
-        if let rule = activeProtectedGeneralRule {
+        } else if let rule = activeProtectedGeneralRule {
             let left = remainingRuleLockSeconds(rule, at: now)
-            KeychainWitness.save(
-                SessionWitness(
-                    sessionID: rule.id,
-                    taskTitle: rule.name,
-                    protection: rule.protection,
-                    deadline: TrustedDeadline(seconds: max(60, left), wall: now)
-                )
+            if left <= 0 { tolerance = WitnessPlan.openEndedHorizon / 2 }
+            desired = SessionWitness(
+                sessionID: rule.id,
+                taskTitle: rule.name,
+                protection: rule.protection,
+                deadline: TrustedDeadline(seconds: left > 0 ? max(60, left) : WitnessPlan.openEndedHorizon, wall: now)
             )
-            return
         }
-        KeychainWitness.clear()
+        switch WitnessPlan.action(stored: storedSessionWitness, desired: desired, tolerance: tolerance) {
+        case .keep:
+            return
+        case .save:
+            guard let desired else { return }
+            KeychainWitness.save(desired)
+            storedSessionWitness = desired
+        case .clear:
+            KeychainWitness.clear()
+            storedSessionWitness = nil
+        }
     }
 
     /// At launch: a witness for a protected session or protected general rules that the data file no longer knows
     /// about means the file was edited, replaced or deleted while FocusDesk was closed.
     func checkWitnessAtLaunch() {
         guard !preview else { return }
+        // This looks at the Keychain and clears it directly: what `refreshWitness` remembers is read again afterwards.
+        defer { witnessLoaded = false }
         if let rulesWitness = KeychainWitness.loadRulesWitness(), rulesWitness.intact {
             var restoredNames: [String] = []
             let launchNow = Date()
@@ -1062,7 +1094,20 @@ extension AppModel {
             workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: ref),
             launchesToday: launchesToday(for: rule, at: ref),
             matchesToday: matchesToday(for: rule, at: ref),
-            isMatchInProgress: isMatchInProgress(for: rule)
+            isMatchInProgress: isMatchInProgress(for: rule),
+            runUpMinutes: workspace.settings.runUpMinutes
+        )
+    }
+
+    /// True when only the run-up margin protects `rule` right now; shrinking that margin would free it.
+    func isRuleArmedByRunUp(_ rule: GeneralBlockRule, at instant: Date? = nil) -> Bool {
+        let ref = instant ?? now
+        return rule.isInRunUp(
+            at: ref,
+            usedTodaySeconds: usedSecondsToday(for: rule, at: ref),
+            workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: ref),
+            isMatchInProgress: isMatchInProgress(for: rule),
+            minutes: workspace.settings.runUpMinutes
         )
     }
 
@@ -1136,6 +1181,9 @@ extension AppModel {
         let observedPage = WebRules.isBrowser(id) ? lastObservedBrowserPage[id] : nil
         let recentPage = (observedPage != nil && instant.timeIntervalSince(observedPage!.at) <= 25) ? observedPage : nil
 
+        let rollover = workspace.settings.dayRolloverHour
+        let day = FocusRules.dayKey(for: instant, rolloverHour: rollover)
+        let study = StudySources.active(workspace.settings.studySources, today: day)
         guard StudyActivityVerifier.isVerifiedStudyActivity(
             idleSeconds: idleSeconds,
             frontBundleID: id,
@@ -1143,11 +1191,11 @@ extension AppModel {
             hasVisibleWindowOnScreen: hasVisibleWindow,
             frontWindowTitle: title,
             browserHost: recentPage?.host,
-            browserPath: recentPage?.path
+            browserPath: recentPage?.path,
+            studyApps: study.apps,
+            studyWebEntries: study.webs
         ) else { return }
 
-        let rollover = workspace.settings.dayRolloverHour
-        let day = FocusRules.dayKey(for: instant, rolloverHour: rollover)
         let prevStudy = workspace.verifiedStudySecondsToday(at: instant)
         let newStudy = workspace.addVerifiedStudySeconds(delta, at: instant)
 
@@ -1324,7 +1372,7 @@ extension AppModel {
                 if rule.kind == .workGoal && worked < neededSeconds && (rule.maxDailyMatches == 0 || played < rule.maxDailyMatches) {
                     let leftMin = max(1, Int(ceil((neededSeconds - worked) / 60)))
                     let next = rule.earnsMatchesPerGoalBlock ? " para la partida \(played + 1)/\(rule.maxDailyMatches)" : ""
-                    msg = "League of Legends está bloqueado: te faltan \(leftMin) min de estudio activo verificado hoy\(next) (con ventana o pestaña abierta)."
+                    msg = "League of Legends está bloqueado: te faltan \(leftMin) min de estudio activo verificado hoy\(next) (en lo que cuenta como estudio)."
                 } else {
                     msg = "League of Legends está bloqueado por hoy (\(matchesToday(for: rule, at: instant))/\(max(1, rule.maxDailyMatches)) partidas completadas)."
                 }
@@ -1374,7 +1422,6 @@ extension AppModel {
             at: ref
         )
         _ = persist()
-        updateFloatingPill(at: ref)
         notice = "Micro-pausa de \(rule.microPauseMinutes) min activada en «\(rule.name)». Te \(left == 1 ? "queda 1 pausa" : "quedan \(left) pausas") hoy."
     }
 
@@ -1569,7 +1616,7 @@ extension AppModel {
         notice = "Descanso pospuesto. Te \(left == 1 ? "queda 1 salto" : "quedan \(left) saltos") hoy."
     }
 
-    // MARK: - Floating Timer Pill HUD (showTimer)
+    // MARK: - Task Pomodoro
 
     /// Announces each change between focus and break in a task done in Pomodoro, once per change.
     func tickTaskPomodoro(at instant: Date) {
@@ -1593,94 +1640,6 @@ extension AppModel {
             : "\(minutes) min de foco en «\(s.task.title)». El bloqueo vuelve a estar activo."
         notice = "\(title). \(body)"
         if !preview { reminders.notify(title, body: body, identifier: "task-pomodoro-" + key) }
-    }
-
-    func updateFloatingPill(at instant: Date) {
-        guard !preview, workspace.settings.showFloatingTimerPill, !screenIsLocked else {
-            floatingPill.hide()
-            return
-        }
-        if let cBreak = activeContinuousBreak(at: instant) {
-            floatingPill.update(title: "Descanso · \(cBreak.message)", remaining: cBreak.remaining, urgency: .pauseOrBreak)
-            return
-        }
-        if let sBreak = activeBreak(at: instant) {
-            floatingPill.update(title: sBreak.period.title, remaining: sBreak.remaining, urgency: .pauseOrBreak)
-            return
-        }
-        for rule in workspace.generalRules where rule.enabled {
-            if let graceDeadline = rule.activePostMatchGraceDeadline {
-                let rem = graceDeadline.remainingAfterPossibleReboot(wall: instant)
-                if rem > 0 {
-                    let played = matchesToday(for: rule, at: instant)
-                    let maxM = max(1, rule.maxDailyMatches)
-                    floatingPill.update(
-                        title: "Cerrando LoL (Partida \(played)/\(maxM)) · \(rule.name)",
-                        remaining: rem,
-                        urgency: .critical
-                    )
-                    return
-                }
-            }
-            if let mpDeadline = rule.activeMicroPauseDeadline {
-                let rem = mpDeadline.remainingAfterPossibleReboot(wall: instant)
-                if rem > 0 {
-                    floatingPill.update(title: "Pausa · \(rule.name)", remaining: rem, urgency: .pauseOrBreak)
-                    return
-                }
-            }
-            if rule.kind == .pomodoro, let pomoDeadline = rule.activePomodoroDeadline {
-                let rem = pomoDeadline.remainingAfterPossibleReboot(wall: instant)
-                if rem > 0 {
-                    let isBreak = rule.pomodoroPhase != .work
-                    let urgency: FloatingTimerPillController.Urgency = isBreak
-                        ? .pauseOrBreak
-                        : (rem <= 60 ? .critical : (rem <= 180 ? .warning : .normal))
-                    floatingPill.update(
-                        title: "\(rule.pomodoroPhase.label) (\(rule.pomodoroCurrentCycle)/\(rule.pomodoroTotalCycles)) · \(rule.name)",
-                        remaining: rem,
-                        urgency: urgency
-                    )
-                    return
-                }
-            }
-            if rule.kind == .launchLimit, let visitDeadline = rule.activeLaunchDeadline {
-                let rem = visitDeadline.remainingAfterPossibleReboot(wall: instant)
-                if rem > 0 {
-                    let urgency: FloatingTimerPillController.Urgency = rem <= 60 ? .critical : (rem <= 300 ? .warning : .normal)
-                    floatingPill.update(title: "Visita · \(rule.name)", remaining: rem, urgency: urgency)
-                    return
-                }
-            }
-        }
-        if let front = NSWorkspace.shared.frontmostApplication, let bundleID = front.bundleIdentifier {
-            // While an active League of Legends match (`GameClient`) is running, hide the floating pill so it never covers the top-right in-game HUD.
-            if LeagueMatchRules.isMatchGameProcess(bundleID: bundleID, appPath: front.bundleURL?.path, executablePath: front.executableURL?.path) {
-                floatingPill.hide()
-                return
-            }
-            for rule in workspace.generalRules where rule.enabled && isRuleTrackingQuota(rule, at: instant) {
-                if matchesRuleUsage(rule: rule, bundleID: bundleID, app: front, title: lastTitle.title, at: instant) {
-                    let rem: TimeInterval
-                    if rule.kind == .dailyLimit {
-                        rem = rule.remainingDailyBudgetSeconds(usedTodaySeconds: usedSecondsToday(for: rule, at: instant))
-                    } else if rule.kind == .workGoal && rule.goalRewardMinutes > 0 {
-                        rem = rule.remainingGoalRewardSeconds(workedTodaySeconds: effectiveWorkedSeconds(for: rule, at: instant), usedTodaySeconds: usedSecondsToday(for: rule, at: instant))
-                    } else {
-                        continue
-                    }
-                    if rem > 0 {
-                        let urgency: FloatingTimerPillController.Urgency = rem <= 60 ? .critical : (rem <= 300 ? .warning : .normal)
-                        let titlePrefix = rule.maxDailyMatches > 0
-                            ? "Partidas \(matchesToday(for: rule, at: instant))/\(rule.maxDailyMatches) · "
-                            : ""
-                        floatingPill.update(title: titlePrefix + rule.name, remaining: rem, urgency: urgency)
-                        return
-                    }
-                }
-            }
-        }
-        floatingPill.hide()
     }
 
     /// Gates any change to a `GeneralBlockRule` that is currently enforcing (or in a protected Pomodoro break) and protected.
@@ -1825,8 +1784,47 @@ extension AppModel {
         notice = "Regla «\(rule.name)» guardada."
     }
 
+    // MARK: - What counts as study (FD-09)
+
+    /// Today's key, with the day rollover from Ajustes.
+    var studyToday: String { FocusRules.dayKey(for: now, rolloverHour: workspace.settings.dayRolloverHour) }
+
+    /// Marks an app or site as study. It counts from tomorrow: added now, it could finish today's goal on the spot.
+    func addStudySource(_ source: StudySource) {
+        guard writable, !source.value.isEmpty else { return }
+        guard !workspace.settings.studySources.contains(where: { $0.id == source.id }) else {
+            notice = "«\(source.name)» ya cuenta como estudio."
+            return
+        }
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86_400)
+        var added = source
+        added.countsFrom = FocusRules.dayKey(for: tomorrow, rolloverHour: workspace.settings.dayRolloverHour)
+        updateSettings { $0.studySources.append(added) }
+        notice = "«\(source.name)» contará como estudio desde mañana."
+    }
+
+    /// Adds a site typed by hand («apuntes.ejemplo.com» or a full address).
+    func addStudyWeb(_ text: String) {
+        let parsed = FocusRules.parseDomains(text)
+        guard let domain = parsed.valid.first else {
+            notice = "«\(text)» no parece una web. Escribe algo como apuntes.ejemplo.com."
+            return
+        }
+        addStudySource(StudySource(kind: .web, value: domain, name: domain))
+    }
+
+    /// Unmarking only makes the count stricter, so it is always free.
+    func removeStudySource(_ source: StudySource) {
+        guard writable else { return }
+        updateSettings { $0.studySources.removeAll { $0.id == source.id } }
+    }
+
     func deleteGeneralRule(_ rule: GeneralBlockRule) {
         guard writable else { return }
+        guard rule.canBeDeleted else {
+            notice = "«\(rule.name)» viene con FocusDesk y vuelve sola al abrirla: para que no bloquee, desactívala con su código."
+            return
+        }
         guard passesGeneralRuleGate(.delete(rule)) else { return }
         workspace.generalRules.removeAll { $0.id == rule.id }
         _ = persist()

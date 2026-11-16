@@ -341,6 +341,72 @@ struct Card<Content: View>: View {
     }
 }
 
+/// A card folded down to one line: its title and what is inside, so nothing that is set stays hidden.
+struct FoldedCard<Content: View>: View {
+    let title: String
+    let icon: String
+    let summary: String
+    var attention = false
+    @Binding var isExpanded: Bool
+    @ViewBuilder var content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Card(padding: 16) {
+            VStack(alignment: .leading, spacing: 14) {
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.right")
+                            .font(.app(10, weight: .semibold))
+                            .foregroundStyle(Palette.muted)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .frame(width: 12)
+                        Image(systemName: icon).font(.app(12, weight: .semibold)).foregroundStyle(Palette.mint)
+                        Text(title).font(.app(13, weight: .semibold))
+                        Spacer(minLength: 12)
+                        Text(summary)
+                            .font(.app(11))
+                            .monospacedDigit()
+                            .foregroundStyle(attention ? Palette.warning : Palette.muted)
+                            .lineLimit(1)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title)
+                .accessibilityValue(summary)
+                .accessibilityHint(isExpanded ? "Plegar" : "Desplegar")
+                .accessibilityAddTraits(.isHeader)
+                if isExpanded {
+                    content
+                }
+            }
+        }
+    }
+}
+
+/// Text on the left and the switch on the right edge, the way a Mac lays them out: pegged to their labels, each
+/// switch ended up at a different place and a column of them zigzagged.
+struct TrailingSwitchToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 12) {
+            configuration.label
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
+            // The label travels with the switch, hidden, so VoiceOver still says what it does.
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+    }
+}
+
+extension ToggleStyle where Self == TrailingSwitchToggleStyle {
+    static var trailingSwitch: TrailingSwitchToggleStyle { TrailingSwitchToggleStyle() }
+}
+
 struct SectionHeader<Trailing: View>: View {
     let title: String
     let icon: String?

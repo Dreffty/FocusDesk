@@ -5,6 +5,7 @@ import XCTest
 /// were still missing. Each test is a way out someone would try at 8:55 for a task that starts at 9:00.
 final class RunUpAndFolderTests: XCTestCase {
     let nine = Date(timeIntervalSince1970: 1_800_000_000)
+    var fiveToNine: Date { nine.addingTimeInterval(-5 * 60) }
 
     private func task(protection: SessionProtection = .challenge, minutes: Int = 60, autoStart: Bool = false) -> FocusTask {
         FocusTask(
@@ -54,44 +55,83 @@ final class RunUpAndFolderTests: XCTestCase {
 
     func testRefusesEveryWayOfPuttingItOff() {
         let current = task(autoStart: true)
-        XCTAssertEqual(RunUp.loosening(current: current, proposed: nil), "Borrarla")
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: nil, now: fiveToNine), "Borrarla")
 
         var inbox = current; inbox.isScheduled = false
-        XCTAssertEqual(RunUp.loosening(current: current, proposed: inbox), "Pasarla a la bandeja")
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: inbox, now: fiveToNine), "Pasarla a la bandeja")
 
         var done = current; done.completed = true
-        XCTAssertEqual(RunUp.loosening(current: current, proposed: done), "Marcarla como hecha sin hacerla")
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: done, now: fiveToNine), "Marcarla como hecha sin hacerla")
 
         var later = current; later.scheduledAt = nine.addingTimeInterval(10 * 60)
-        XCTAssertEqual(RunUp.loosening(current: current, proposed: later), "Retrasarla")
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: later, now: fiveToNine), "Retrasarla")
 
         var manual = current; manual.autoStart = false
-        XCTAssertEqual(RunUp.loosening(current: current, proposed: manual), "Quitarle el inicio automático")
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: manual, now: fiveToNine), "Quitarle el inicio automático")
 
         var skipped = current; skipped.skippedDates.insert(FocusRules.dayKey(for: nine))
-        XCTAssertEqual(RunUp.loosening(current: current, proposed: skipped), "Saltársela")
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: skipped, now: fiveToNine), "Saltársela")
 
         var softer = current; softer.protection = .none
-        XCTAssertEqual(RunUp.loosening(current: current, proposed: softer), "Rebajar su protección")
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: softer, now: fiveToNine), "Rebajar su protección")
 
         var shorter = current; shorter.minutes = 30
-        XCTAssertEqual(RunUp.loosening(current: current, proposed: shorter), "Acortarla")
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: shorter, now: fiveToNine), "Acortarla")
+    }
+
+    /// FD-02: a las 8:55, adelantar a las 5:00 una tarea protegida de las 9:00 la dejaba fuera de su ventana, y
+    /// entonces borrarla era gratis. Mover la hora al pasado es sacarla de su hora, no hacerla antes.
+    func testMovingItIntoThePastCostsTheSameAsStoppingIt() {
+        let current = task(minutes: 60)
+        var finished = current; finished.scheduledAt = nine.addingTimeInterval(-4 * 3600)
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: finished, now: fiveToNine), "Sacarla de su hora",
+                       "acabaría antes de ahora: al minuto siguiente borrarla sería gratis")
+
+        var oneMinuteLeft = current; oneMinuteLeft.scheduledAt = fiveToNine.addingTimeInterval(-59 * 60)
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: oneMinuteLeft, now: fiveToNine), "Sacarla de su hora",
+                       "no vale con que aún no haya terminado: bastaría con esperar un minuto")
+
+        var stretchedBack = current; stretchedBack.scheduledAt = nine.addingTimeInterval(-4 * 3600); stretchedBack.minutes = 245
+        XCTAssertEqual(RunUp.loosening(current: current, proposed: stretchedBack, now: fiveToNine), "Sacarla de su hora",
+                       "alargarla a la vez que se mueve al pasado tampoco la deja a su hora")
+
+        var running = task(minutes: 60)
+        running.scheduledAt = nine.addingTimeInterval(-10 * 60)
+        var evenEarlier = running; evenEarlier.scheduledAt = nine.addingTimeInterval(-40 * 60)
+        XCTAssertEqual(RunUp.loosening(current: running, proposed: evenEarlier, now: nine), "Sacarla de su hora",
+                       "una tarea cuya hora ya llegó tampoco se escapa moviéndola más atrás")
+    }
+
+    func testMovingItToATimeStillAheadStaysFree() {
+        let current = task(minutes: 60)
+        var soon = current; soon.scheduledAt = nine.addingTimeInterval(-2 * 60)
+        XCTAssertNil(RunUp.loosening(current: current, proposed: soon, now: fiveToNine), "a las 8:58 sigue por delante")
+        var rightNow = current; rightNow.scheduledAt = fiveToNine
+        XCTAssertNil(RunUp.loosening(current: current, proposed: rightNow, now: fiveToNine), "empezarla ahora mismo es hacerla antes")
+        var justPast = current; justPast.scheduledAt = fiveToNine.addingTimeInterval(-3 * 60)
+        XCTAssertNil(RunUp.loosening(current: current, proposed: justPast, now: fiveToNine),
+                     "unos minutos de margen: ponerla a la hora en que te has sentado no es escapar")
+        var untouched = task(minutes: 60)
+        untouched.scheduledAt = nine.addingTimeInterval(-30 * 60)
+        var renamed = untouched; renamed.title = "Otro título"
+        XCTAssertNil(RunUp.loosening(current: untouched, proposed: renamed, now: nine),
+                     "si no se mueve, que su hora ya haya pasado no la encarece")
     }
 
     func testDoingItSoonerLongerOrStricterStaysFree() {
         let current = task(protection: .challenge)
         var earlier = current; earlier.scheduledAt = nine.addingTimeInterval(-15 * 60)
-        XCTAssertNil(RunUp.loosening(current: current, proposed: earlier))
+        XCTAssertNil(RunUp.loosening(current: current, proposed: earlier, now: nine.addingTimeInterval(-20 * 60)))
         var longer = current; longer.minutes = 90
-        XCTAssertNil(RunUp.loosening(current: current, proposed: longer))
+        XCTAssertNil(RunUp.loosening(current: current, proposed: longer, now: fiveToNine))
         var harder = current; harder.protection = .forced
-        XCTAssertNil(RunUp.loosening(current: current, proposed: harder))
+        XCTAssertNil(RunUp.loosening(current: current, proposed: harder, now: fiveToNine))
         var renamed = current; renamed.title = "Estudiar redes (tema 6)"
-        XCTAssertNil(RunUp.loosening(current: current, proposed: renamed))
+        XCTAssertNil(RunUp.loosening(current: current, proposed: renamed, now: fiveToNine))
         var rounded = current; rounded.scheduledAt = nine.addingTimeInterval(20)
-        XCTAssertNil(RunUp.loosening(current: current, proposed: rounded), "redondear la hora no es retrasarla")
+        XCTAssertNil(RunUp.loosening(current: current, proposed: rounded, now: fiveToNine), "redondear la hora no es retrasarla")
         var moreFolders = current; moreFolders.blockedFolders = ["/tmp/series"]
-        XCTAssertNil(RunUp.loosening(current: current, proposed: moreFolders))
+        XCTAssertNil(RunUp.loosening(current: current, proposed: moreFolders, now: fiveToNine))
     }
 
     // MARK: - The ratchet and blocked folders

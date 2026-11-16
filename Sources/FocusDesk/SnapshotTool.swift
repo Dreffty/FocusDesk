@@ -64,7 +64,7 @@ enum SnapshotTool {
                 return "SNAPSHOTS: " + written.joined(separator: ", ")
             }
 
-            UserDefaults.standard.set(true, forKey: "FocusDesk.dayLayoutHourly")
+            AppPreferences.current.set(true, forKey: "FocusDesk.dayLayoutHourly")
             model.page = AppPage.today.rawValue
 
             // Editor of a recurring occurrence (shows the series picker and its hint).
@@ -97,6 +97,14 @@ enum SnapshotTool {
             }
             model.editingTask = guarded
             try await settle(0.8)
+            try capture(window.attachedSheet?.contentView, name: "editor-plegado", in: folder)
+            written.append("editor-plegado")
+            model.editingTask = nil
+            try await settle()
+            model.unfoldEditorForSnapshot = true
+            model.editingTask = guarded
+            try await settle(0.8)
+            model.unfoldEditorForSnapshot = false
             try capture(window.attachedSheet?.contentView, name: "editor-proteccion", in: folder)
             written.append("editor-proteccion")
             if let page = largestScrollContent(in: window.attachedSheet?.contentView) {
@@ -152,6 +160,25 @@ enum SnapshotTool {
             try await settle(0.8)
             try capture(window.attachedSheet?.contentView, name: "confirmacion", in: folder)
             written.append("confirmacion")
+
+            // Hoy with nothing running: the card of the next task instead of the session.
+            model.confirm(completed: true, note: "")
+            try await idle(model)
+            model.page = AppPage.today.rawValue
+            try await settle(0.8)
+            try capture(window.contentView, name: "hoy-sin-sesion", in: folder)
+            written.append("hoy-sin-sesion")
+
+            // What counts as study, with one site added today (it shows «desde mañana»).
+            model.addStudyWeb("apuntes.ejemplo.com")
+            for (suffix, appearance) in appearances {
+                let host = NSHostingView(rootView: StudySourcesSettings(model: model).padding(20).frame(width: 640).background(Palette.background))
+                host.appearance = NSAppearance(named: appearance)
+                host.frame = NSRect(origin: .zero, size: host.fittingSize)
+                try await settle(0.3)
+                try capture(host, name: "estudio-\(suffix)", in: folder)
+                written.append("estudio-\(suffix)")
+            }
 
             return "SNAPSHOTS: " + written.map { $0 + ".png" }.joined(separator: ", ") + " → " + folder.path
         } catch {
@@ -230,8 +257,8 @@ enum SnapshotTool {
 
     private static func pagesToShow(_ model: AppModel) -> [(String, () -> Void)] {
         [
-            ("hoy-horas", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(true, forKey: "FocusDesk.dayLayoutHourly") }),
-            ("hoy-lista", { model.page = AppPage.today.rawValue; UserDefaults.standard.set(false, forKey: "FocusDesk.dayLayoutHourly") }),
+            ("hoy-horas", { model.page = AppPage.today.rawValue; AppPreferences.current.set(true, forKey: "FocusDesk.dayLayoutHourly") }),
+            ("hoy-lista", { model.page = AppPage.today.rawValue; AppPreferences.current.set(false, forKey: "FocusDesk.dayLayoutHourly") }),
             ("semana", { model.page = AppPage.week.rawValue }),
             ("historial", { model.historyShowsAudit = false; model.page = AppPage.history.rawValue }),
             ("historial-registro", { model.historyShowsAudit = true; model.page = AppPage.history.rawValue }),
@@ -256,7 +283,7 @@ enum SnapshotTool {
     }
 
     private static func mainWindow() -> NSWindow? {
-        NSApp.windows.first { $0.frameAutosaveName == "FocusDeskMainWindow" }
+        NSApp.windows.first { $0.identifier?.rawValue == AppDelegate.mainWindowID }
     }
 
     private static func settle(_ seconds: Double = 0.5) async throws {

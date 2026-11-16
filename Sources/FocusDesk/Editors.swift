@@ -14,6 +14,10 @@ struct TaskEditor: View {
     /// The date the editor was opened with. The occurrence to detach is this one even if the user moves it.
     @State private var originalOccurrenceDate: Date?
     @State private var seriesKind: AppModel.SeriesEditKind = .notInSeries
+    // Writing down something simple takes a title, a time and a length. The rest stays folded, saying what is inside.
+    @State private var optionsExpanded = false
+    @State private var blockingExpanded = false
+    @State private var resultExpanded = false
     /// The title gets the cursor when the editor opens; the checklist hands focus on with Tab.
     @FocusState private var focusedField: EditorField?
     private enum EditorField: Hashable { case title, profileName, checklist }
@@ -39,50 +43,8 @@ struct TaskEditor: View {
             }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    // Reusable Profiles (Item 9)
-                    Card(padding: 16) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            SectionHeader("Perfiles y plantillas reutilizables", icon: "bookmark.fill") {
-                                Button {
-                                    saveProfileName = draft.title.isEmpty ? "Nuevo perfil" : draft.title
-                                    showSaveProfile.toggle()
-                                } label: {
-                                    Label(showSaveProfile ? "Ocultar" : "Guardar como perfil", systemImage: "bookmark.badge.plus")
-                                }
-                                .buttonStyle(.focus(.ghost, compact: true))
-                            }
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(model.workspace.profiles) { profile in
-                                        Button {
-                                            applyProfile(profile)
-                                        } label: {
-                                            HStack(spacing: 5) {
-                                                Circle()
-                                                    .fill(Palette.category(profile.category, in: model.workspace.settings.categories))
-                                                    .frame(width: 6, height: 6)
-                                                Text(profile.name)
-                                                Text("\(profile.minutes)m").opacity(0.75)
-                                            }
-                                        }
-                                        .buttonStyle(SelectableChipStyle(selected: draft.profileID == profile.id))
-                                    }
-                                }
-                            }
-                            if showSaveProfile {
-                                HStack(spacing: 8) {
-                                    // Return here saves the profile, not the whole task (it used to close the editor).
-                                    TextField("Nombre del perfil (ej. Grabar vídeo)", text: $saveProfileName)
-                                        .textFieldStyle(.roundedBorder)
-                                        .focused($focusedField, equals: .profileName)
-                                        .onSubmit { saveDraftAsProfile() }
-                                    Button("Guardar perfil") { saveDraftAsProfile() }
-                                        .buttonStyle(FocusPrimaryButton(compact: true))
-                                }
-                            }
-                        }
-                    }
+                VStack(alignment: .leading, spacing: 12) {
+                    profilesRow
 
                     if belongsToSeries {
                         VStack(alignment: .leading, spacing: 6) {
@@ -97,178 +59,24 @@ struct TaskEditor: View {
                         }.padding(12).background(Palette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
 
-                    // Objective & Schedule (Items 10, 11, 12)
-                    Card(padding: 18) {
+                    essentialsCard
+
+                    FoldedCard(title: "Más opciones", icon: "slider.horizontal.3", summary: draft.optionsSummary,
+                               attention: draft.repeatRule == .customDays && draft.repeatDays.isEmpty, isExpanded: $optionsExpanded) {
+                        optionsContent
+                    }
+
+                    FoldedCard(title: "Bloqueo", icon: "lock.shield", summary: draft.blockingSummary,
+                               attention: draft.blockingIsIncomplete, isExpanded: $blockingExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("¿QUÉ VAS A HACER?").fieldLabelStyle()
-                                TextField("Ej. Grabar el vídeo de mañana", text: $draft.title)
-                                    .font(.app(15))
-                                    .textFieldStyle(.roundedBorder)
-                                    .focused($focusedField, equals: .title)
-                            }
-
-                            HStack {
-                                Toggle("Reservar horario en la agenda", isOn: $draft.isScheduled).toggleStyle(.switch)
-                                Spacer()
-                                if draft.isScheduled {
-                                    Toggle("Cita fija (no desplazar)", isOn: $draft.isFixedAppointment)
-                                        .toggleStyle(.checkbox)
-                                        .font(.app(10))
-                                        .foregroundStyle(Palette.muted)
-                                } else {
-                                    Chip("Bandeja de pendientes sin hora", icon: "tray", color: Palette.mint)
-                                }
-                            }
-
-                            HStack(alignment: .top, spacing: 18) {
-                                if draft.isScheduled {
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text("CUÁNDO EMPIEZA").fieldLabelStyle()
-                                        DatePicker("Inicio", selection: $draft.scheduledAt).labelsHidden()
-                                        HStack(spacing: 6) {
-                                            Button("Ahora +10m") { draft.scheduledAt = Date().addingTimeInterval(600) }
-                                                .buttonStyle(.focus(.secondary, compact: true))
-                                            // From the time already chosen: on a task for tomorrow it used to jump to today.
-                                            Button("+1h") { draft.scheduledAt = draft.scheduledAt.addingTimeInterval(3600) }
-                                                .buttonStyle(.focus(.ghost, compact: true))
-                                        }
-                                    }
-                                }
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("FECHA LÍMITE · OPCIONAL").fieldLabelStyle()
-                                    HStack {
-                                        Toggle("Antes de", isOn: Binding(
-                                            get: { draft.dueDate != nil },
-                                            set: { enabled in
-                                                draft.dueDate = enabled ? (Calendar.current.date(byAdding: .day, value: 2, to: Date()) ?? Date().addingTimeInterval(86400)) : nil
-                                            }
-                                        )).labelsHidden()
-                                        if let due = draft.dueDate {
-                                            DatePicker("Fecha límite", selection: Binding(
-                                                get: { due },
-                                                set: { draft.dueDate = $0 }
-                                            ), displayedComponents: [.date, .hourAndMinute]).labelsHidden()
-                                            if draft.isScheduled && due < draft.end {
-                                                Chip("Termina después de su límite", icon: "exclamationmark.triangle.fill", color: Palette.warning)
-                                            }
-                                        } else {
-                                            Text("Sin fecha límite").font(.app(10)).foregroundStyle(Palette.muted)
-                                        }
-                                    }
-                                }
-                                Spacer()
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("DURACIÓN").fieldLabelStyle()
-                                    // Same range and steps as every other duration control (it went 5 → 1 → 6 → 11 before).
-                                    Stepper("\(draft.minutes) min", value: $draft.minutes, in: FocusRules.minutesRange, step: 5)
-                                    HStack(spacing: 6) {
-                                        ForEach([15, 30, 60, 90], id: \.self) { minutes in
-                                            Button("\(minutes)m") { draft.minutes = minutes }
-                                                .buttonStyle(SelectableChipStyle(selected: draft.minutes == minutes))
-                                                .accessibilityLabel("\(minutes) minutos")
-                                        }
-                                    }
-                                    .fixedSize()
-                                }
-                            }
-
+                            workspaceCard
                             Divider().overlay(Palette.stroke)
-
-                            HStack(spacing: 20) {
-                                Picker("Área", selection: $draft.category) {
-                                    let names = model.workspace.settings.categories.map(\.name)
-                                    ForEach(names.contains(draft.category) ? names : names + [draft.category], id: \.self) { Text($0) }
-                                }
-                                if draft.isScheduled {
-                                    Picker("Repetición", selection: $draft.repeatRule) {
-                                        ForEach(RepeatRule.allCases, id: \.self) { Text($0.label).tag($0) }
-                                    }
-                                }
-                            }
-
-                            if draft.isScheduled && draft.repeatRule == .customDays {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("DÍAS DE LA SEMANA").fieldLabelStyle()
-                                    HStack(spacing: 6) {
-                                        ForEach([(2, "Lun"), (3, "Mar"), (4, "Mié"), (5, "Jue"), (6, "Vie"), (7, "Sáb"), (1, "Dom")], id: \.0) { day, label in
-                                            let active = draft.repeatDays.contains(day)
-                                            Button(label) {
-                                                if active { draft.repeatDays.remove(day) } else { draft.repeatDays.insert(day) }
-                                            }
-                                            .buttonStyle(SelectableChipStyle(selected: active))
-                                            .accessibilityLabel(fullDayNameFor(day))
-                                        }
-                                    }
-                                    if draft.repeatDays.isEmpty {
-                                        Text("Selecciona al menos un día para la repetición.").font(.app(10)).foregroundStyle(Palette.warning)
-                                    }
-                                }
-                            }
-
-                            if draft.isScheduled {
-                                Toggle("Empezar sola a su hora", isOn: $draft.autoStart)
-                                    .toggleStyle(.switch)
-                                    .help("Si el Mac está desbloqueado y no hay otra sesión en marcha, la sesión empieza sola a la hora prevista.")
-                            }
-
-                            pomodoroSection
-                            if draft.isScheduled {
-                                HStack {
-                                    Stepper("Avisar \(draft.leadMinutes) minutos antes", value: $draft.leadMinutes, in: 0...60, step: 5)
-                                    Spacer()
-                                    if model.workspace.tasks.contains(where: { FocusRules.overlaps(draft, $0) }) {
-                                        Chip("Coincide con otra tarea", icon: "exclamationmark.triangle", color: Palette.warning)
-                                    }
-                                }
-                            }
-
-                            if draft.minutes > 60 {
-                                Text("Vorssaint mostrará el final solo durante los últimos 60 minutos. El contador de FocusDesk seguirá visible.").font(.app(10)).foregroundStyle(Palette.muted)
-                            }
+                            protectionCard
                         }
                     }
 
-                    workspaceCard
-
-                    protectionCard
-
-                    // Checklist & Output Folder
-                    Card(padding: 18) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            SectionHeader("Cómo sabrás que has terminado", icon: "checkmark.circle")
-                            Text("Checklist: un paso por línea").font(.app(10)).foregroundStyle(Palette.muted)
-                            TextEditor(text: $draft.checklist)
-                                .focused($focusedField, equals: .checklist)
-                                // Tab moves on instead of typing a tab character; ⇧Tab goes back to the title.
-                                .onKeyPress(.tab, phases: .down) { press in
-                                    focusedField = press.modifiers.contains(.shift) ? .title : nil
-                                    return .handled
-                                }
-                                .font(.app(13))
-                                .frame(height: 76)
-                                .accessibilityLabel("Checklist, un paso por línea")
-                                .padding(6)
-                                .background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.stroke))
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("Carpeta de resultados").font(.app(12, weight: .medium))
-                                    Text(draft.folder ?? "Opcional. Solo se comparan metadatos; también podrás adjuntar un archivo al terminar.")
-                                        .font(.app(10))
-                                        .foregroundStyle(Palette.muted)
-                                        .lineLimit(2)
-                                }
-                                Spacer()
-                                Button("Elegir carpeta…") { chooseFolder() }
-                                    .buttonStyle(.focus(.secondary, compact: true))
-                                if draft.folder != nil {
-                                    Button("Quitar") { draft.folder = nil }
-                                        .buttonStyle(.focus(.ghost, compact: true))
-                                }
-                            }
-                            if let folderWarning { Text(folderWarning).font(.app(10)).foregroundStyle(Palette.warning) }
-                        }
+                    FoldedCard(title: "Resultado", icon: "checkmark.circle", summary: draft.resultSummary, isExpanded: $resultExpanded) {
+                        resultContent
                     }
                 }.padding(.trailing, 6)
             }
@@ -292,9 +100,18 @@ struct TaskEditor: View {
             }
         }
         .padding(24)
-        .frame(width: 700, height: min(780, (NSScreen.main?.visibleFrame.height ?? 820) - 70))
+        .frame(width: 700, height: min(optionsExpanded || blockingExpanded || resultExpanded ? 780 : 610, (NSScreen.main?.visibleFrame.height ?? 820) - 70))
+        // Something that stops the task from being saved never stays folded away.
+        .onChange(of: draft.blockingIsIncomplete) { _, incomplete in if incomplete { blockingExpanded = true } }
+        .onChange(of: draft.repeatDays.isEmpty) { _, empty in if empty && draft.repeatRule == .customDays { optionsExpanded = true } }
         .onAppear {
             focusedField = .title
+            if draft.blockingIsIncomplete || model.unfoldEditorForSnapshot { blockingExpanded = true }
+            if draft.repeatRule == .customDays && draft.repeatDays.isEmpty { optionsExpanded = true }
+            if model.unfoldEditorForSnapshot {
+                optionsExpanded = true
+                resultExpanded = true
+            }
             guard originalOccurrenceDate == nil else { return }
             originalOccurrenceDate = draft.scheduledAt
             seriesKind = model.seriesEditKind(for: draft)
@@ -309,6 +126,222 @@ struct TaskEditor: View {
         .tint(Palette.mint)
     }
 
+    /// Reusable profiles, one line: a click fills the whole task in.
+    @ViewBuilder private var profilesRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("PERFILES").fieldLabelStyle()
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(model.workspace.profiles) { profile in
+                            Button {
+                                applyProfile(profile)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Circle()
+                                        .fill(Palette.category(profile.category, in: model.workspace.settings.categories))
+                                        .frame(width: 6, height: 6)
+                                    Text(profile.name)
+                                    Text(FocusRules.durationText(minutes: profile.minutes)).opacity(0.75)
+                                }
+                            }
+                            .buttonStyle(SelectableChipStyle(selected: draft.profileID == profile.id))
+                        }
+                    }
+                }
+                Button {
+                    saveProfileName = draft.title.isEmpty ? "Nuevo perfil" : draft.title
+                    showSaveProfile.toggle()
+                } label: {
+                    Label(showSaveProfile ? "Ocultar" : "Guardar como perfil", systemImage: "bookmark.badge.plus")
+                }
+                .buttonStyle(.focus(.ghost, compact: true))
+                .fixedSize()
+            }
+            if showSaveProfile {
+                HStack(spacing: 8) {
+                    // Return here saves the profile, not the whole task (it used to close the editor).
+                    TextField("Nombre del perfil (ej. Grabar vídeo)", text: $saveProfileName)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .profileName)
+                        .onSubmit { saveDraftAsProfile() }
+                    Button("Guardar perfil") { saveDraftAsProfile() }
+                        .buttonStyle(FocusPrimaryButton(compact: true))
+                }
+            }
+        }
+    }
+
+    /// What every task needs: what, when and for how long.
+    @ViewBuilder private var essentialsCard: some View {
+        Card(padding: 18) {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("¿QUÉ VAS A HACER?").fieldLabelStyle()
+                    TextField("Ej. Grabar el vídeo de mañana", text: $draft.title)
+                        .font(.app(15))
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .title)
+                }
+
+                Toggle("Reservar horario en la agenda", isOn: $draft.isScheduled).toggleStyle(.trailingSwitch)
+
+                HStack(alignment: .top, spacing: 18) {
+                    if draft.isScheduled {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("CUÁNDO EMPIEZA").fieldLabelStyle()
+                            DatePicker("Inicio", selection: $draft.scheduledAt).labelsHidden()
+                            HStack(spacing: 6) {
+                                Button("Ahora +10m") { draft.scheduledAt = Date().addingTimeInterval(600) }
+                                    .buttonStyle(.focus(.secondary, compact: true))
+                                // From the time already chosen: on a task for tomorrow it used to jump to today.
+                                Button("+1h") { draft.scheduledAt = draft.scheduledAt.addingTimeInterval(3600) }
+                                    .buttonStyle(.focus(.ghost, compact: true))
+                                if model.workspace.tasks.contains(where: { FocusRules.overlaps(draft, $0) }) {
+                                    Chip("Coincide con otra tarea", icon: "exclamationmark.triangle", color: Palette.warning)
+                                }
+                            }
+                        }
+                    } else {
+                        Chip("Bandeja de pendientes sin hora", icon: "tray", color: Palette.mint)
+                    }
+                    Spacer()
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("DURACIÓN").fieldLabelStyle()
+                        // Same range and steps as every other duration control (it went 5 → 1 → 6 → 11 before).
+                        Stepper(FocusRules.durationText(minutes: draft.minutes), value: $draft.minutes, in: FocusRules.minutesRange, step: 5)
+                        HStack(spacing: 6) {
+                            ForEach([15, 30, 60, 90], id: \.self) { minutes in
+                                Button("\(minutes)m") { draft.minutes = minutes }
+                                    .buttonStyle(SelectableChipStyle(selected: draft.minutes == minutes))
+                                    .accessibilityLabel("\(minutes) minutos")
+                            }
+                        }
+                        .fixedSize()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Area, repetition, deadline and how it starts.
+    @ViewBuilder private var optionsContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 20) {
+                Picker("Área", selection: $draft.category) {
+                    let names = model.workspace.settings.categories.map(\.name)
+                    ForEach(names.contains(draft.category) ? names : names + [draft.category], id: \.self) { Text($0) }
+                }
+                if draft.isScheduled {
+                    Picker("Repetición", selection: $draft.repeatRule) {
+                        ForEach(RepeatRule.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                }
+            }
+
+            if draft.isScheduled && draft.repeatRule == .customDays {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("DÍAS DE LA SEMANA").fieldLabelStyle()
+                    HStack(spacing: 6) {
+                        ForEach([(2, "Lun"), (3, "Mar"), (4, "Mié"), (5, "Jue"), (6, "Vie"), (7, "Sáb"), (1, "Dom")], id: \.0) { day, label in
+                            let active = draft.repeatDays.contains(day)
+                            Button(label) {
+                                if active { draft.repeatDays.remove(day) } else { draft.repeatDays.insert(day) }
+                            }
+                            .buttonStyle(SelectableChipStyle(selected: active))
+                            .accessibilityLabel(fullDayNameFor(day))
+                        }
+                    }
+                    if draft.repeatDays.isEmpty {
+                        Text("Selecciona al menos un día para la repetición.").font(.app(10)).foregroundStyle(Palette.warning)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("FECHA LÍMITE · OPCIONAL").fieldLabelStyle()
+                HStack {
+                    Toggle("Antes de", isOn: Binding(
+                        get: { draft.dueDate != nil },
+                        set: { enabled in
+                            draft.dueDate = enabled ? (Calendar.current.date(byAdding: .day, value: 2, to: Date()) ?? Date().addingTimeInterval(86400 * 2)) : nil
+                        }
+                    )).labelsHidden()
+                    if let due = draft.dueDate {
+                        DatePicker("Fecha límite", selection: Binding(
+                            get: { due },
+                            set: { draft.dueDate = $0 }
+                        ), displayedComponents: [.date, .hourAndMinute]).labelsHidden()
+                        if draft.isScheduled && due < draft.end {
+                            Chip("Termina después de su límite", icon: "exclamationmark.triangle.fill", color: Palette.warning)
+                        }
+                    } else {
+                        Text("Sin fecha límite").font(.app(10)).foregroundStyle(Palette.muted)
+                    }
+                }
+            }
+
+            Divider().overlay(Palette.stroke)
+
+            if draft.isScheduled {
+                Toggle("Empezar sola a su hora", isOn: $draft.autoStart)
+                    .toggleStyle(.trailingSwitch)
+                    .help("Si el Mac está desbloqueado y no hay otra sesión en marcha, la sesión empieza sola a la hora prevista.")
+            }
+
+            pomodoroSection
+
+            if draft.isScheduled {
+                Stepper("Avisar \(draft.leadMinutes) minutos antes", value: $draft.leadMinutes, in: 0...60, step: 5)
+                Toggle("Cita fija (no desplazar)", isOn: $draft.isFixedAppointment)
+                    .toggleStyle(.checkbox)
+                    .font(.app(11))
+                    .foregroundStyle(Palette.muted)
+            }
+
+            if draft.minutes > 60 {
+                Text("Vorssaint mostrará el final solo durante los últimos 60 minutos. El contador de FocusDesk seguirá visible.").font(.app(10)).foregroundStyle(Palette.muted)
+            }
+        }
+    }
+
+    /// How you will know it is done.
+    @ViewBuilder private var resultContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Checklist: un paso por línea").font(.app(10)).foregroundStyle(Palette.muted)
+            TextEditor(text: $draft.checklist)
+                .focused($focusedField, equals: .checklist)
+                // Tab moves on instead of typing a tab character; ⇧Tab goes back to the title.
+                .onKeyPress(.tab, phases: .down) { press in
+                    focusedField = press.modifiers.contains(.shift) ? .title : nil
+                    return .handled
+                }
+                .font(.app(13))
+                .frame(height: 76)
+                .accessibilityLabel("Checklist, un paso por línea")
+                .padding(6)
+                .background(Palette.elevated.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.stroke))
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Carpeta de resultados").font(.app(12, weight: .medium))
+                    Text(draft.folder ?? "Opcional. Solo se comparan metadatos; también podrás adjuntar un archivo al terminar.")
+                        .font(.app(10))
+                        .foregroundStyle(Palette.muted)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Button("Elegir carpeta…") { chooseFolder() }
+                    .buttonStyle(.focus(.secondary, compact: true))
+                if draft.folder != nil {
+                    Button("Quitar") { draft.folder = nil }
+                        .buttonStyle(.focus(.ghost, compact: true))
+                }
+            }
+            if let folderWarning { Text(folderWarning).font(.app(10)).foregroundStyle(Palette.warning) }
+        }
+    }
+
     /// Focus and breaks inside the task itself, so a long block does not have to be one sitting.
     @ViewBuilder private var pomodoroSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -316,7 +349,7 @@ struct TaskEditor: View {
                 get: { draft.pomodoroWorkMinutes > 0 },
                 set: { draft.pomodoroWorkMinutes = $0 ? 25 : 0 }
             ))
-            .toggleStyle(.switch)
+            .toggleStyle(.trailingSwitch)
             if draft.usesPomodoro {
                 HStack(spacing: 18) {
                     Stepper("Foco \(draft.pomodoroWorkMinutes) min", value: $draft.pomodoroWorkMinutes, in: 10...90, step: 5)
@@ -348,19 +381,27 @@ struct TaskEditor: View {
     }
 
     @ViewBuilder private var workspaceCard: some View {
-        Card(padding: 18) {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader("Tu espacio de trabajo", icon: "macwindow") {
+        VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Tu espacio de trabajo", icon: "macwindow")
+                // First the switch, then what depends on it: the list used to sit above the switch that turns it on.
+                Toggle("Bloquear las apps que distraen", isOn: $draft.strict).toggleStyle(.trailingSwitch)
+                Toggle("Bloquear bibliotecas de juegos (Steam, Epic, Battle.net, Riot, juegos de Mac…)", isOn: $draft.blockGameLibraries)
+                    .toggleStyle(.trailingSwitch)
+                    .font(.app(12))
+                HStack(spacing: 10) {
+                    Text("Puedes usar").font(.app(12))
+                    Picker("Puedes usar", selection: $draft.appListMode) {
+                        ForEach(AppListMode.allCases, id: \.self) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    Spacer()
                     Button { chooseApps() } label: { Label("Elegir apps", systemImage: "plus") }
                         .buttonStyle(.focus(.secondary, compact: true))
                 }
-                Picker("Modo de lista de apps", selection: $draft.appListMode) {
-                    ForEach(AppListMode.allCases, id: \.self) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
                 Text(draft.appListMode.explanation).font(.app(10)).foregroundStyle(Palette.muted)
                 if draft.apps.isEmpty {
                     Text(draft.appListMode == .allowListed
@@ -388,15 +429,11 @@ struct TaskEditor: View {
                         }
                     }
                 }
-                Toggle("Bloquear las apps que distraen", isOn: $draft.strict).toggleStyle(.switch)
-                Toggle("Bloquear bibliotecas de juegos (Steam, Epic, Battle.net, Riot, juegos de Mac…)", isOn: $draft.blockGameLibraries)
-                    .toggleStyle(.switch)
-                    .font(.app(12))
-                Text("Si abres una app bloqueada (o fuera de tu lista blanca), FocusDesk la oculta o cierra\(model.workspace.settings.focusDuringStrict ? " y activa No molestar mientras dura la sesión" : ""). \(draft.protection == .none ? "Puedes pausar en cualquier momento." : "Para parar antes de tiempo, lo que elijas abajo en «Si quieres dejarlo a medias».") Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
+                Text("Si abres una app bloqueada, FocusDesk la oculta o cierra\(model.workspace.settings.focusDuringStrict ? " y activa No molestar mientras dura la sesión" : ""). \(draft.protection == .none ? "Puedes pausar en cualquier momento." : "Para parar antes de tiempo, lo que elijas abajo en «Si quieres dejarlo a medias».") Finder, Ajustes, FocusDesk, diálogos del sistema y Vorssaint siguen accesibles.").font(.app(10)).foregroundStyle(Palette.muted)
                 if draft.strict && draft.apps.isEmpty && !draft.blockGameLibraries {
                     Text(draft.appListMode == .allowListed
                          ? "Elige al menos una app permitida para poder bloquear las demás."
-                         : "Elige al menos una app en la lista negra para bloquearla.").font(.app(10)).foregroundStyle(Palette.warning)
+                         : "Elige al menos una app para bloquearla.").font(.app(10)).foregroundStyle(Palette.warning)
                 }
 
                 Divider().overlay(Palette.stroke)
@@ -434,7 +471,6 @@ struct TaskEditor: View {
 
                 Divider().overlay(Palette.stroke)
                 BlockedFoldersField(folders: $draft.blockedFolders)
-            }
         }
     }
 
@@ -463,13 +499,17 @@ struct TaskEditor: View {
                     }.buttonStyle(.focus(.ghost, compact: true))
                 }
             }
-            Picker("Modo de lista de webs", selection: $draft.webListMode) {
-                ForEach(WebListMode.allCases, id: \.self) { mode in
-                    Text(mode.shortLabel).tag(mode)
+            HStack(spacing: 10) {
+                Text("Puedes abrir").font(.app(12))
+                Picker("Puedes abrir", selection: $draft.webListMode) {
+                    ForEach(WebListMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             if draft.webListMode != .blockAll {
                 TextField(
                     draft.webListMode == .allowListed
@@ -550,7 +590,6 @@ struct TaskEditor: View {
     }
 
     @ViewBuilder private var protectionCard: some View {
-        Card(padding: 18) {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader("Si quieres dejarlo a medias", icon: "lock.shield")
                 Text("Lo decides ahora, con la cabeza fría, para el momento en que no la tengas.")
@@ -566,7 +605,7 @@ struct TaskEditor: View {
                 Text(draft.protection.explanation).font(.app(11)).foregroundStyle(Palette.muted)
                 if let saved = model.workspace.tasks.first(where: { $0.id == draft.id }),
                    model.protectedBeforeStart(saved) {
-                    Label("Ya está protegida: empieza a las \(saved.scheduledAt.formatted(date: .omitted, time: .shortened)). Retrasarla o ablandarla costará lo mismo que pararla; adelantarla, alargarla o endurecerla, no.",
+                    Label("Ya está protegida: empieza a las \(saved.scheduledAt.formatted(date: .omitted, time: .shortened)). Retrasarla, moverla al pasado o ablandarla costará lo mismo que pararla; adelantarla a una hora por venir, alargarla o endurecerla, no.",
                           systemImage: "lock.fill")
                         .font(.app(10, weight: .medium))
                         .foregroundStyle(Palette.warning)
@@ -612,16 +651,15 @@ struct TaskEditor: View {
                 }
 
                 Divider().overlay(Palette.stroke)
-                Toggle("Endurecer si insistes", isOn: $draft.punisherEnabled).toggleStyle(.switch)
+                Toggle("Endurecer si insistes", isOn: $draft.punisherEnabled).toggleStyle(.trailingSwitch)
                 Text("Tras cuatro intentos seguidos en pocos minutos, durante un rato FocusDesk cierra esas apps en vez de ocultarlas.")
                     .font(.app(10))
                     .foregroundStyle(Palette.muted)
-                Toggle("Proteger los ajustes que desarman el bloqueo", isOn: $draft.guardSystemPanes).toggleStyle(.switch)
+                Toggle("Proteger los ajustes que desarman el bloqueo", isOn: $draft.guardSystemPanes).toggleStyle(.trailingSwitch)
                 Text("Cierra «Privacidad y seguridad», «Fecha y hora» y «Usuarios y grupos» mientras dura la sesión. El resto de Ajustes del Sistema sigue a mano.")
                     .font(.app(10))
                     .foregroundStyle(Palette.muted)
             }
-        }
     }
 
     private func chooseApps() {
@@ -975,7 +1013,7 @@ private struct RunUpSettings: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader("Antes de que empiece una tarea protegida", icon: "lock.shield")
+                SectionHeader("Antes de que empiece una tarea o una regla protegida", icon: "lock.shield")
                 Picker("Protegerla desde", selection: Binding(
                     get: { model.workspace.settings.runUpMinutes },
                     set: { model.setRunUpMinutes($0) }
@@ -985,7 +1023,7 @@ private struct RunUpSettings: View {
                     }
                 }
                 .frame(maxWidth: 360)
-                Text("A las 8:55, una tarea de las 9:00 aún no ha empezado y borrarla sería gratis: justo cuando gana el impulso. Desde este margen, retrasar, borrar o ablandar una tarea protegida cuesta lo mismo que pararla —su código, su espera o la salida de emergencia—. Adelantarla, alargarla o endurecerla sigue libre, y las tareas que «Se pueden parar» no cambian.")
+                Text("A las 8:55, una tarea de las 9:00 aún no ha empezado y borrarla sería gratis: justo cuando gana el impulso. Desde este margen, retrasar, borrar, mover al pasado o ablandar una tarea protegida cuesta lo mismo que pararla —su código, su espera o la salida de emergencia—. Adelantarla a una hora por venir, alargarla o endurecerla sigue libre, y las tareas que «Se pueden parar» no cambian. Las reglas con protección también: un horario queda protegido desde este margen antes de empezar, y un presupuesto o una recompensa cuando le quedan esos minutos.")
                     .font(.app(10))
                     .foregroundStyle(Palette.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -995,6 +1033,126 @@ private struct RunUpSettings: View {
 }
 
 /// No molestar during the sessions that block apps, with the one-time setup of its two shortcuts.
+/// FD-09: what counts as verified study for the rules that ask for it (the LoL one among them). Only what is here.
+struct StudySourcesSettings: View {
+    @ObservedObject var model: AppModel
+    @State private var newWeb = ""
+    @State private var showMissingApps = false
+
+    private var sources: [StudySource] { model.workspace.settings.studySources }
+    private var installedApps: [StudySource] { sources.filter { $0.kind == .app && Self.appURL($0) != nil } }
+    private var missingApps: [StudySource] { sources.filter { $0.kind == .app && Self.appURL($0) == nil } }
+    private var webs: [StudySource] { sources.filter { $0.kind == .web } }
+
+    static func appURL(_ source: StudySource) -> URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: source.value)
+    }
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Qué cuenta como estudio", icon: "book")
+                Text("Las reglas que piden estudio verificado, como la de LoL, solo cuentan el tiempo en estas apps y webs, y en cualquier PDF. Lo demás no cuenta, y los juegos nunca.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Apps").font(.app(11, weight: .semibold))
+                FlowLayout(spacing: 6) {
+                    ForEach(installedApps) { chip($0) }
+                }
+                if !missingApps.isEmpty {
+                    DisclosureGroup(isExpanded: $showMissingApps) {
+                        FlowLayout(spacing: 6) {
+                            ForEach(missingApps) { chip($0) }
+                        }
+                        .padding(.top, 6)
+                    } label: {
+                        Text("\(missingApps.count) más que no tienes instaladas")
+                            .font(.app(10))
+                            .foregroundStyle(Palette.muted)
+                    }
+                }
+                Button("Añadir app…") { chooseApps() }
+                    .buttonStyle(.focus(.secondary, compact: true))
+                    .disabled(model.readOnly)
+
+                Divider().overlay(Palette.stroke)
+                Text("Webs").font(.app(11, weight: .semibold))
+                FlowLayout(spacing: 6) {
+                    ForEach(webs) { chip($0) }
+                }
+                HStack(spacing: 8) {
+                    TextField("apuntes.ejemplo.com", text: $newWeb)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 260)
+                        .onSubmit(addWeb)
+                        .accessibilityLabel("Web que cuenta como estudio")
+                    Button("Añadir web", action: addWeb)
+                        .buttonStyle(.focus(.secondary, compact: true))
+                        .disabled(model.readOnly || newWeb.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                Text("Una web incluye sus subdominios: usal.es cuenta también para Studium. Lo que añades cuenta desde mañana, para que no sirva para cumplir la meta de hoy. Quitar algo es inmediato.")
+                    .font(.app(10))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private func chip(_ source: StudySource) -> some View {
+        let pending = !source.counts(today: model.studyToday)
+        HStack(spacing: 5) {
+            if source.kind == .app, let url = Self.appURL(source) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                    .resizable()
+                    .frame(width: 14, height: 14)
+                    .accessibilityHidden(true)
+            }
+            Text(source.name).font(.app(10, weight: .medium))
+            if pending {
+                Text("desde mañana").font(.app(9)).foregroundStyle(Palette.muted)
+            }
+            Button {
+                model.removeStudySource(source)
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Palette.muted)
+            .disabled(model.readOnly)
+            .accessibilityLabel("Quitar \(source.name) de lo que cuenta como estudio")
+            .help("Dejar de contar \(source.name) como estudio")
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Palette.fill, in: Capsule())
+        .overlay(Capsule().strokeBorder(Palette.stroke, lineWidth: 1))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(pending ? "\(source.name), cuenta desde mañana" : source.name)
+    }
+
+    private func addWeb() {
+        let text = newWeb.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        model.addStudyWeb(text)
+        newWeb = ""
+    }
+
+    private func chooseApps() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let id = Bundle(url: url)?.bundleIdentifier else { continue }
+            model.addStudySource(StudySource(kind: .app, value: id, name: url.deletingPathExtension().lastPathComponent))
+        }
+    }
+}
+
 private struct DoNotDisturbSettings: View {
     @ObservedObject var model: AppModel
     @ObservedObject var focusMode: FocusModeController
@@ -1007,7 +1165,7 @@ private struct DoNotDisturbSettings: View {
                     get: { model.workspace.settings.focusDuringStrict },
                     set: { value in model.updateSettings { $0.focusDuringStrict = value } }
                 ))
-                .toggleStyle(.switch)
+                .toggleStyle(.trailingSwitch)
                 Text("Se activa al empezar una tarea con «Bloquear las apps que distraen» y se quita al pausarla o terminarla. macOS no deja saber si ya lo tenías puesto: en ese caso también se quitará.")
                     .font(.app(10))
                     .foregroundStyle(Palette.muted)
@@ -1138,27 +1296,20 @@ struct SettingsView: View {
                             get: { model.workspace.settings.showMenuBarItem },
                             set: { value in model.updateSettings { $0.showMenuBarItem = value } }
                         ))
-                        .toggleStyle(.switch)
+                        .toggleStyle(.trailingSwitch)
                         Text("Si lo ocultas, el tiempo sigue en el Dock y FocusDesk se abre con su atajo o desde el Dock.")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
-                        Toggle("Mostrar píldora flotante de cuenta atrás al usar un presupuesto diario o visita", isOn: Binding(
-                            get: { model.workspace.settings.showFloatingTimerPill },
-                            set: { value in
-                                model.updateSettings { $0.showFloatingTimerPill = value }
-                                model.updateFloatingPill(at: Date())
-                            }
-                        ))
-                        .toggleStyle(.switch)
                         Toggle("Avisarme cuando queden 5 min y 1 min de un presupuesto diario o visita", isOn: Binding(
                             get: { model.workspace.settings.preBlockRemindersEnabled },
                             set: { value in model.updateSettings { $0.preBlockRemindersEnabled = value } }
                         ))
-                        .toggleStyle(.switch)
+                        .toggleStyle(.trailingSwitch)
                     }
                 }
                 DoNotDisturbSettings(model: model, focusMode: model.focusMode)
                 RunUpSettings(model: model)
+                StudySourcesSettings(model: model)
             }
 
             if section == .connections || section == .all {
@@ -1350,7 +1501,7 @@ struct SettingsView: View {
                             get: { model.workspace.settings.continuousBreakEnabled },
                             set: { value in model.updateSettings { $0.continuousBreakEnabled = value } }
                         ))
-                        .toggleStyle(.switch)
+                        .toggleStyle(.trailingSwitch)
                         if model.workspace.settings.continuousBreakEnabled {
                             HStack(spacing: 16) {
                                 Stepper("Cada \(model.workspace.settings.continuousWorkMinutes) min de trabajo continuo", value: Binding(
@@ -1693,12 +1844,12 @@ struct ProfileEditorSheet: View {
                 }
                 Stepper("Duración: \(draft.minutes) min", value: $draft.minutes, in: 5...720, step: 5)
             }
-            Toggle("Bloquear las apps que distraen", isOn: $draft.strict)
-            Picker("Modo de apps", selection: $draft.appListMode) {
-                ForEach(AppListMode.allCases, id: \.self) { Text($0.shortLabel).tag($0) }
+            Toggle("Bloquear las apps que distraen", isOn: $draft.strict).toggleStyle(.trailingSwitch)
+            Picker("Puedes usar", selection: $draft.appListMode) {
+                ForEach(AppListMode.allCases, id: \.self) { Text($0.label).tag($0) }
             }
             .pickerStyle(.segmented)
-            Toggle("Empezar sola a su hora", isOn: $draft.autoStart)
+            Toggle("Empezar sola a su hora", isOn: $draft.autoStart).toggleStyle(.trailingSwitch)
             HStack {
                 Text("Aplicaciones (\(draft.apps.count))").font(.app(12, weight: .medium))
                 Spacer()
@@ -1725,8 +1876,8 @@ struct ProfileEditorSheet: View {
                         .accessibilityLabel("Quitar \(app.name)")
                 }
             }
-            Picker("Modo de webs", selection: $draft.webListMode) {
-                ForEach(WebListMode.allCases, id: \.self) { Text($0.shortLabel).tag($0) }
+            Picker("Puedes abrir", selection: $draft.webListMode) {
+                ForEach(WebListMode.allCases, id: \.self) { Text($0.label).tag($0) }
             }
             .pickerStyle(.segmented)
             if draft.webListMode != .blockAll {
@@ -1989,9 +2140,9 @@ struct GeneralRuleEditor: View {
                                     .controlSize(.small)
                                     .fixedSize()
                                 }
-                                Picker("Modo de webs", selection: $draft.webListMode) {
+                                Picker("Puedes abrir", selection: $draft.webListMode) {
                                     ForEach(WebListMode.allCases, id: \.self) { mode in
-                                        Text(mode.shortLabel).tag(mode)
+                                        Text(mode.label).tag(mode)
                                     }
                                 }
                                 .pickerStyle(.segmented)
@@ -2067,9 +2218,9 @@ struct GeneralRuleEditor: View {
 
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
-                                Text("APLICACIONES").fieldLabelStyle()
+                                Text("APLICACIONES · PUEDES USAR").fieldLabelStyle()
                                 Spacer()
-                                Picker("Modo de apps", selection: $draft.appListMode) {
+                                Picker("Puedes usar", selection: $draft.appListMode) {
                                     ForEach(AppListMode.allCases, id: \.self) { mode in
                                         Text(mode.label).tag(mode)
                                     }
@@ -2085,8 +2236,8 @@ struct GeneralRuleEditor: View {
                                 .font(.app(11))
                             if draft.apps.isEmpty {
                                 Text(draft.appListMode == .blockListed
-                                     ? "Ninguna app en la lista negra. Si solo quieres limitar webs, juegos o palabras del título, déjalo vacío."
-                                     : "Ninguna app restringida. Si añades apps aquí en lista blanca, solo esas podrán estar al frente.")
+                                     ? "Ninguna app bloqueada. Si solo quieres limitar webs, juegos o palabras del título, déjalo vacío."
+                                     : "Ninguna app restringida. Si añades apps aquí, solo esas podrán estar al frente.")
                                     .font(.app(10))
                                     .foregroundStyle(Palette.muted)
                             } else {

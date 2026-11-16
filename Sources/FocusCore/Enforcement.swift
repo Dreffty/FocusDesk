@@ -25,6 +25,17 @@ public enum TrustedClock {
 
     /// Below this a drift is just NTP keeping the clock tidy; above it, somebody moved the clock.
     public static let suspiciousDrift: TimeInterval = 60
+
+    /// Names this start of the Mac: waking from sleep keeps it, restarting changes it. The continuous clock alone
+    /// cannot tell, because after a restart it soon overtakes the value it had before.
+    public static let bootID: String? = {
+        var size = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var bytes = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.bootsessionuuid", &bytes, &size, nil, 0) == 0 else { return nil }
+        let id = String(cString: bytes)
+        return id.isEmpty ? nil : id
+    }()
 }
 
 /// A deadline anchored to the continuous clock, with the wall-clock time kept only to show it.
@@ -33,12 +44,20 @@ public struct TrustedDeadline: Codable, Equatable, Sendable {
     public var wallEnd: Date
     public var anchorWall: Date
     public var anchorContinuous: Double
+    /// The start of the Mac this deadline was set in. Missing in data saved before it existed.
+    public var anchorBootID: String?
 
-    public init(seconds: TimeInterval, wall: Date = Date(), continuous: Double = TrustedClock.continuousSeconds()) {
+    public init(
+        seconds: TimeInterval,
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds(),
+        bootID: String? = TrustedClock.bootID
+    ) {
         self.continuousEnd = continuous + max(0, seconds)
         self.wallEnd = wall.addingTimeInterval(max(0, seconds))
         self.anchorWall = wall
         self.anchorContinuous = continuous
+        self.anchorBootID = bootID
     }
 
     public func remaining(continuous: Double = TrustedClock.continuousSeconds()) -> TimeInterval {
@@ -51,17 +70,27 @@ public struct TrustedDeadline: Codable, Equatable, Sendable {
 
     /// The Mac was restarted, so the continuous clock started again from zero and the anchor is meaningless.
     /// The wall clock is all that is left; it is used, and the caller is told the guarantee was weaker this once.
-    public func rebooted(continuous: Double = TrustedClock.continuousSeconds()) -> Bool {
-        continuous < anchorContinuous
+    /// Without a saved `anchorBootID` (older data) a restart only shows while the clock is still below the anchor.
+    public func rebooted(continuous: Double = TrustedClock.continuousSeconds(), bootID: String? = TrustedClock.bootID) -> Bool {
+        if let anchorBootID, let bootID, anchorBootID != bootID { return true }
+        return continuous < anchorContinuous
     }
 
-    public func remainingAfterPossibleReboot(wall: Date = Date(), continuous: Double = TrustedClock.continuousSeconds()) -> TimeInterval {
-        rebooted(continuous: continuous) ? max(0, wallEnd.timeIntervalSince(wall)) : remaining(continuous: continuous)
+    public func remainingAfterPossibleReboot(
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds(),
+        bootID: String? = TrustedClock.bootID
+    ) -> TimeInterval {
+        rebooted(continuous: continuous, bootID: bootID) ? max(0, wallEnd.timeIntervalSince(wall)) : remaining(continuous: continuous)
     }
 
     /// Seconds elapsed since this deadline passed (`0` while it has not passed yet).
-    public func elapsedSincePassed(wall: Date = Date(), continuous: Double = TrustedClock.continuousSeconds()) -> TimeInterval {
-        if rebooted(continuous: continuous) {
+    public func elapsedSincePassed(
+        wall: Date = Date(),
+        continuous: Double = TrustedClock.continuousSeconds(),
+        bootID: String? = TrustedClock.bootID
+    ) -> TimeInterval {
+        if rebooted(continuous: continuous, bootID: bootID) {
             return max(0, wall.timeIntervalSince(wallEnd))
         }
         return max(0, continuous - continuousEnd)
@@ -196,22 +225,22 @@ public enum AppListMode: String, Codable, CaseIterable, Sendable {
 
     public var label: String {
         switch self {
-        case .allowListed: return "Permitir solo estas apps (lista blanca)"
-        case .blockListed: return "Bloquear estas apps (lista negra)"
+        case .allowListed: return "Solo estas apps"
+        case .blockListed: return "Todas menos estas"
         }
     }
 
     public var shortLabel: String {
         switch self {
-        case .allowListed: return "Permitir solo estas"
-        case .blockListed: return "Bloquear estas"
+        case .allowListed: return "Solo estas"
+        case .blockListed: return "Todas menos estas"
         }
     }
 
     public var explanation: String {
         switch self {
         case .allowListed: return "Solo puedes usar las apps elegidas abajo; cualquier otra se oculta o se cierra."
-        case .blockListed: return "Solo se bloquean las apps elegidas abajo; el resto del Mac queda libre."
+        case .blockListed: return "Puedes usar todo menos las apps elegidas abajo: el resto del Mac queda libre."
         }
     }
 }
@@ -228,17 +257,17 @@ public enum WebListMode: String, Codable, CaseIterable, Sendable {
 
     public var label: String {
         switch self {
-        case .allowListed: return "Permitir solo estas webs (lista blanca)"
-        case .blockListed: return "Bloquear estas webs o rutas (lista negra)"
-        case .blockAll: return "Bloquear todas las webs"
+        case .allowListed: return "Solo estas webs"
+        case .blockListed: return "Todas menos estas"
+        case .blockAll: return "Ninguna"
         }
     }
 
     public var shortLabel: String {
         switch self {
-        case .allowListed: return "Permitir solo estas"
-        case .blockListed: return "Bloquear estas"
-        case .blockAll: return "Bloquear todas"
+        case .allowListed: return "Solo estas"
+        case .blockListed: return "Todas menos estas"
+        case .blockAll: return "Ninguna"
         }
     }
 }
@@ -380,7 +409,7 @@ public enum Loosening: Equatable, Sendable {
         case .systemPanesUnguarded: return "La protección de «Privacidad y seguridad» y «Fecha y hora» no se quita con la sesión en marcha."
         case .punisherRemoved: return "El endurecimiento tras varios intentos seguidos no se quita con la sesión en marcha."
         case .foldersUnblocked: return "No se pueden desbloquear carpetas con la sesión en marcha. Bloquear más sí."
-        case .appsUnblocked: return "No se pueden desbloquear apps ni pasar de lista blanca a lista negra con la sesión en marcha."
+        case .appsUnblocked: return "No se pueden desbloquear apps con la sesión en marcha, ni cambiar la lista de forma que algo bloqueado deje de estarlo."
         case .domainsUnblocked: return "No se pueden desbloquear webs ni abrir más dominios mientras la sesión bloquea webs."
         case .titleKeywordsRemoved: return "No se pueden quitar palabras bloqueadas del título de ventana con la sesión en marcha."
         case .searchMediaUnblocked: return "No se puede quitar el bloqueo de imágenes y vídeos en buscadores con la sesión en marcha."
@@ -429,32 +458,21 @@ public enum Ratchet {
         if proposed.stopDelayMinutes < current.stopDelayMinutes { return .shorterWait(current.stopDelayMinutes) }
         if proposed.blockAction.strength < current.blockAction.strength { return .softerAppAction }
         if proposed.webBlockAction.strength < current.webBlockAction.strength { return .softerWebAction }
-        let currentApps = Set(current.apps.map(\.id))
-        let proposedApps = Set(proposed.apps.map(\.id))
-        if current.appListMode == .allowListed && proposed.appListMode == .blockListed && current.strict {
-            return .appsUnblocked
-        }
-        if current.appListMode == .allowListed {
-            // The app list is a list of what IS allowed: adding to it widens the hole, removing narrows it.
-            if !proposedApps.subtracting(currentApps).isEmpty { return .moreAllowedApps }
-            if current.strict && proposedApps.isEmpty && !current.blockGameLibraries { return .noAllowedApps }
-        } else {
-            // In blacklist mode, removing an app from the blocked list opens a hole.
-            if current.strict && !currentApps.isSubset(of: proposedApps) { return .appsUnblocked }
+        // Without the app block the list does nothing, so changing it costs nothing either.
+        if current.strict {
+            let currentApps = Set(current.apps.map(\.id))
+            let proposedApps = Set(proposed.apps.map(\.id))
+            if FocusRules.appListOpens(currentMode: current.appListMode, current: currentApps, proposedMode: proposed.appListMode, proposed: proposedApps) {
+                guard current.appListMode == .allowListed, proposed.appListMode == .allowListed else { return .appsUnblocked }
+                return proposedApps.isEmpty ? .noAllowedApps : .moreAllowedApps
+            }
         }
         if current.webBlockAction != .warn {
-            if current.webListMode == .blockAll && proposed.webListMode != .blockAll {
-                return .domainsUnblocked
-            }
-            if current.webListMode == .allowListed && proposed.webListMode == .blockListed {
-                return .domainsUnblocked
-            }
-            let currentDomains = Set(FocusRules.parseDomains(current.domains).valid)
-            let proposedDomains = Set(FocusRules.parseDomains(proposed.domains).valid)
-            if current.webListMode == .allowListed && proposed.webListMode == .allowListed {
-                if !proposedDomains.subtracting(currentDomains).isEmpty { return .moreAllowedDomains }
-            } else if current.webListMode == .blockListed && proposed.webListMode == .blockListed {
-                if !currentDomains.isSubset(of: proposedDomains) { return .domainsUnblocked }
+            let currentDomains = FocusRules.parseDomains(current.domains).valid
+            let proposedDomains = FocusRules.parseDomains(proposed.domains).valid
+            if FocusRules.webListOpens(currentMode: current.webListMode, current: currentDomains, proposedMode: proposed.webListMode, proposed: proposedDomains) {
+                let stillAllowList = current.webListMode == .allowListed && proposed.webListMode == .allowListed
+                return stillAllowList && !proposedDomains.isEmpty ? .moreAllowedDomains : .domainsUnblocked
             }
             if current.blockSearchMedia && !proposed.blockSearchMedia { return .searchMediaUnblocked }
         }
@@ -478,11 +496,13 @@ public enum Ratchet {
 /// FocusMe's `activeProtectionRunUp`. At 8:55 a task that starts at 9:00 has «not started yet», and deleting it is
 /// free: the exact moment the impulse wins. From `minutes` before its start until its planned end, a protected task
 /// defends itself, and anything that puts it off or softens it costs what stopping it would cost — the code, the
-/// wait or the emergency exit. Doing it earlier, for longer or more strictly stays free.
+/// wait or the emergency exit. Doing it earlier (at a time still ahead), for longer or more strictly stays free.
 public enum RunUp {
     public static let defaultMinutes = 10
     /// What Ajustes offers; 0 switches it off.
     public static let choices = [0, 5, 10, 15, 30, 60]
+    /// How far behind now a task can be moved and still count as doing it earlier: setting it to when you sat down.
+    public static let pastGraceSeconds: TimeInterval = 5 * 60
 
     public static func clampedMinutes(_ value: Int) -> Int { max(0, min(120, value)) }
 
@@ -504,7 +524,7 @@ public enum RunUp {
 
     /// What `proposed` would do to an armed task, named as an action («Retrasarla»), or nil when it only makes the
     /// task sooner, longer or stricter. `nil` as `proposed` means deleting it.
-    public static func loosening(current: FocusTask, proposed: FocusTask?, calendar: Calendar = .current) -> String? {
+    public static func loosening(current: FocusTask, proposed: FocusTask?, now: Date, calendar: Calendar = .current) -> String? {
         guard let proposed else { return "Borrarla" }
         if !proposed.isScheduled { return "Pasarla a la bandeja" }
         if proposed.completed && !current.completed { return "Marcarla como hecha sin hacerla" }
@@ -512,6 +532,12 @@ public enum RunUp {
         if proposed.skippedDates.contains(day) && !current.skippedDates.contains(day) { return "Saltársela" }
         // Half a minute of slack: rounding a time in the editor is not putting the task off.
         if proposed.scheduledAt > current.scheduledAt.addingTimeInterval(30) { return "Retrasarla" }
+        // Earlier is free only while the new time is still ahead (or barely behind): moved into the past, the task
+        // would leave its window a moment later and deleting it would be free. Stretching it to reach now is the same.
+        if proposed.scheduledAt < current.scheduledAt.addingTimeInterval(-30),
+           proposed.end <= now || proposed.scheduledAt < now.addingTimeInterval(-pastGraceSeconds) {
+            return "Sacarla de su hora"
+        }
         if current.autoStart && !proposed.autoStart { return "Quitarle el inicio automático" }
         return Ratchet.loosening(current: current, proposed: proposed)?.asAction
     }
@@ -745,6 +771,8 @@ public enum RelaunchDecision {
     public static let window: TimeInterval = 180
     /// A watcher younger than this has just been started by a log-in, not lived through a log-out.
     public static let startupGrace: TimeInterval = 90
+    /// How long after a restart, a shutdown or a log-out closed FocusDesk the watcher leaves it closed.
+    public static let systemQuitGrace: TimeInterval = 180
 
     public static func shouldRelaunch(
         session: WorkSession?,
@@ -752,10 +780,14 @@ public enum RelaunchDecision {
         appRunning: Bool,
         watcherAge: TimeInterval,
         recentRelaunches: Int,
+        closedBySystemAt: Date? = nil,
         now: Date = Date()
     ) -> Bool {
         guard !appRunning, recentRelaunches < maxRelaunches else { return false }
-        if hasActiveProtectedRule && watcherAge >= startupGrace { return true }
+        // macOS just closed it to restart, shut down or log out: reopening it now would get in the way of the one
+        // exit that always has to work. If the restart was called off, it comes back when this time is up.
+        let closingForSystem = closedBySystemAt.map { now.timeIntervalSince($0) < systemQuitGrace } ?? false
+        if hasActiveProtectedRule && watcherAge >= startupGrace && !closingForSystem { return true }
         guard let session else { return false }
         // Killed or crashed mid-session: what was saved last still says it was running.
         if session.runningSince != nil { return session.shouldResumeAfterRelaunch(now: now) }
@@ -765,6 +797,77 @@ public enum RelaunchDecision {
             return session.shouldResumeAfterRelaunch(now: now)
         }
         return false
+    }
+}
+
+/// When FocusDesk puts its own watcher back: a rule that is mandatory 24/7 turns the setting on, and a setting that
+/// says «on» with nothing installed is a promise nobody is keeping. Turning it off stays possible: from Ajustes once
+/// nothing is protected, or by hand with `launchctl bootout`, which is documented in the README.
+public enum RelaunchGuardPlan {
+    public static func shouldInstall(settingOn: Bool, fileExists: Bool, runningInstalledApp: Bool, demo: Bool) -> Bool {
+        settingOn && !fileExists && runningInstalledApp && !demo
+    }
+
+    /// The Aplicaciones folders. Build folders and backups of older versions also end in `.app`, and the login item
+    /// must not end up pointing at them.
+    public static func isInstalledLocation(bundlePath: String, home: String) -> Bool {
+        bundlePath.hasPrefix("/Applications/") || bundlePath.hasPrefix(home + "/Applications/")
+    }
+}
+
+// MARK: - What stops working without Accessibility
+
+/// A block that cannot act must say so where it is seen. These are the parts that depend on the permission.
+public enum AccessibilityNeed {
+    public static let titleBlock = "el bloqueo por título de ventana"
+    public static let settingsGuard = "la protección de Ajustes del Sistema"
+    public static let otherBrowsers = "leer las webs en Firefox y Zen"
+    public static let embeddedPages = "ver las webs dentro de otras apps"
+
+    public static func features(of task: FocusTask, inspectEmbeddedPages: Bool) -> [String] {
+        features(
+            titleKeywords: task.blockedTitleKeywords,
+            guardsPanes: task.guardSystemPanes && task.protection != .none,
+            blocksWebs: task.webBlockAction != .warn || task.blockSearchMedia,
+            inspectEmbeddedPages: inspectEmbeddedPages
+        )
+    }
+
+    public static func features(of rule: GeneralBlockRule, inspectEmbeddedPages: Bool) -> [String] {
+        // A rule with nothing on its list blocks no website, whatever its action says.
+        let hasWebTargets = rule.webListMode == .blockAll || !FocusRules.parseDomains(rule.domains).valid.isEmpty
+        return features(
+            titleKeywords: rule.blockedTitleKeywords,
+            guardsPanes: rule.guardSystemPanes && rule.protection != .none,
+            blocksWebs: (rule.webBlockAction != .warn && hasWebTargets) || rule.blockSearchMedia,
+            inspectEmbeddedPages: inspectEmbeddedPages
+        )
+    }
+
+    /// Everything the running session and the rules that are on rely on, without repeats, in the order found.
+    public static func features(session: FocusTask?, rules: [GeneralBlockRule], inspectEmbeddedPages: Bool) -> [String] {
+        var result: [String] = []
+        let found = (session.map { features(of: $0, inspectEmbeddedPages: inspectEmbeddedPages) } ?? [])
+            + rules.filter(\.enabled).flatMap { features(of: $0, inspectEmbeddedPages: inspectEmbeddedPages) }
+        for feature in found where !result.contains(feature) { result.append(feature) }
+        return result
+    }
+
+    public static func warning(for features: [String]) -> String? {
+        guard let last = features.last else { return nil }
+        let list = features.count == 1 ? last : features.dropLast().joined(separator: ", ") + " y " + last
+        return "Falta el permiso de Accesibilidad. Sin él no \(features.count == 1 ? "funciona" : "funcionan") \(list). Actívalo en Ajustes del Sistema › Privacidad y seguridad › Accesibilidad."
+    }
+
+    private static func features(titleKeywords: String, guardsPanes: Bool, blocksWebs: Bool, inspectEmbeddedPages: Bool) -> [String] {
+        var result: [String] = []
+        if !FocusRules.parseTitleKeywords(titleKeywords).isEmpty { result.append(titleBlock) }
+        if guardsPanes { result.append(settingsGuard) }
+        if blocksWebs {
+            result.append(otherBrowsers)
+            if inspectEmbeddedPages { result.append(embeddedPages) }
+        }
+        return result
     }
 }
 
@@ -1000,9 +1103,38 @@ public struct ProtectedRulesWitness: Codable, Equatable, Sendable {
     static func computeDigest(rules: [GeneralBlockRule]) -> String {
         let material = rules
             .sorted { $0.id.uuidString < $1.id.uuidString }
-            .map { "\($0.id.uuidString):\($0.name):\($0.kind.rawValue):\($0.protection.rawValue):\($0.domains)" }
+            .map { rule in
+                let apps = rule.apps.map(\.id).sorted().joined(separator: ",")
+                return "\(rule.id.uuidString):\(rule.name):\(rule.kind.rawValue):\(rule.protection.rawValue):\(rule.domains):\(rule.blockApps):\(rule.appListMode.rawValue):\(apps)"
+            }
             .joined(separator: "|")
         return SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Whether the Keychain has to be written at all. It was written every ten seconds whether anything had changed or
+/// not, because the fingerprint carried the time it was made.
+public enum WitnessPlan {
+    /// A running block ends at the same moment however often it is measured, give or take rounding.
+    public static let sameEndTolerance: TimeInterval = 30
+    /// A rule protected 24/7 has no end to write down: the fingerprint runs this far ahead and is renewed halfway.
+    public static let openEndedHorizon: TimeInterval = 3600
+
+    public enum Action: Equatable { case keep, save, clear }
+
+    public static func action(stored: SessionWitness?, desired: SessionWitness?, tolerance: TimeInterval = sameEndTolerance) -> Action {
+        guard let desired else { return stored == nil ? .keep : .clear }
+        guard let stored,
+              stored.sessionID == desired.sessionID,
+              stored.taskTitle == desired.taskTitle,
+              stored.protection == desired.protection,
+              stored.deadline.anchorBootID == desired.deadline.anchorBootID,
+              abs(stored.deadline.continuousEnd - desired.deadline.continuousEnd) <= tolerance else { return .save }
+        return .keep
+    }
+
+    public static func rulesNeedSaving(_ rules: [GeneralBlockRule], lastSaved: [GeneralBlockRule]?) -> Bool {
+        rules != lastSaved
     }
 }
 
@@ -1051,7 +1183,6 @@ public enum GuardedSettingsPane: String, CaseIterable, Sendable {
 public enum SearchMediaRules {
     public static func matches(host: String, pathAndQuery: String) -> String? {
         let h = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let pq = pathAndQuery.lowercased()
         let isGoogle = h == "google.com" || h.hasSuffix(".google.com") || h.contains("google.")
         let isBing = h == "bing.com" || h.hasSuffix(".bing.com")
         let isDuck = h == "duckduckgo.com" || h.hasSuffix(".duckduckgo.com")
@@ -1060,33 +1191,40 @@ public enum SearchMediaRules {
         let isEcosia = h == "ecosia.org" || h.hasSuffix(".ecosia.org")
         let isYandex = h.contains("yandex.")
 
+        // The real path and the real parameters: `udm=28` is Shopping, and `?q=udm=2` is what somebody searched for.
+        let address = pathAndQuery.lowercased().split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+        let parts = address.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        let path = parts[0]
+        let parameters = parts.count > 1 ? parts[1].split(separator: "&").map(String.init) : []
+        func has(_ parameter: String) -> Bool { parameters.contains(parameter) }
+
         if isGoogle {
-            if pq.contains("tbm=isch") || pq.contains("udm=2") || pq.hasPrefix("/imghp") || pq.hasPrefix("/images") {
+            if has("tbm=isch") || has("udm=2") || path.hasPrefix("/imghp") || path.hasPrefix("/images") {
                 return "Google Imágenes"
             }
-            if pq.contains("tbm=vid") || pq.contains("udm=7") || pq.contains("udm=39") || pq.hasPrefix("/videohp") || pq.hasPrefix("/videos") {
+            if has("tbm=vid") || has("udm=7") || has("udm=39") || path.hasPrefix("/videohp") || path.hasPrefix("/videos") {
                 return "Google Vídeos"
             }
         }
         if isBing {
-            if pq.hasPrefix("/images") || pq.contains("ia=images") { return "Bing Imágenes" }
-            if pq.hasPrefix("/videos") || pq.contains("ia=videos") { return "Bing Vídeos" }
+            if path.hasPrefix("/images") || has("ia=images") { return "Bing Imágenes" }
+            if path.hasPrefix("/videos") || has("ia=videos") { return "Bing Vídeos" }
         }
         if isDuck {
-            if pq.contains("iax=images") || pq.contains("ia=images") { return "DuckDuckGo Imágenes" }
-            if pq.contains("iax=videos") || pq.contains("ia=videos") { return "DuckDuckGo Vídeos" }
+            if has("iax=images") || has("ia=images") { return "DuckDuckGo Imágenes" }
+            if has("iax=videos") || has("ia=videos") { return "DuckDuckGo Vídeos" }
         }
         if isBrave {
-            if pq.hasPrefix("/images") { return "Brave Imágenes" }
-            if pq.hasPrefix("/videos") { return "Brave Vídeos" }
+            if path.hasPrefix("/images") { return "Brave Imágenes" }
+            if path.hasPrefix("/videos") { return "Brave Vídeos" }
         }
         if isYahoo {
-            if h.hasPrefix("images.search.") || pq.contains("/search/images") { return "Yahoo Imágenes" }
-            if h.hasPrefix("video.search.") || pq.contains("/search/video") { return "Yahoo Vídeos" }
+            if h.hasPrefix("images.search.") || path.contains("/search/images") { return "Yahoo Imágenes" }
+            if h.hasPrefix("video.search.") || path.contains("/search/video") { return "Yahoo Vídeos" }
         }
         if isEcosia || isYandex {
-            if pq.hasPrefix("/images") { return "Buscador de Imágenes" }
-            if pq.hasPrefix("/videos") || pq.hasPrefix("/video") { return "Buscador de Vídeos" }
+            if path.hasPrefix("/images") { return "Buscador de Imágenes" }
+            if path.hasPrefix("/videos") || path.hasPrefix("/video") { return "Buscador de Vídeos" }
         }
         return nil
     }
@@ -1152,7 +1290,7 @@ public enum LeagueMatchRules {
     /// Stable UUID of the mandatory passive rule «Primero 60 min de estudio · luego máx. 2 partidas de LoL».
     public static let mandatoryStudyThenLoLRuleID = UUID(uuidString: "22222222-2222-2222-2222-222222222206")!
     public static let mandatoryRuleName = "1 h de estudio por partida de LoL · máx. 2 al día"
-    public static let mandatoryRuleMessage = "Cada partida de LoL se gana con 60 min de estudio real (con ventana o pestaña de trabajo abierta): 1 h → 1 partida, se bloquea, otra hora → la 2.ª. Sin cortes a mitad y 1 minuto de margen al terminar."
+    public static let mandatoryRuleMessage = "Cada partida de LoL se gana con 60 min de estudio real (en las apps y webs de Ajustes › Qué cuenta como estudio): 1 h → 1 partida, se bloquea, otra hora → la 2.ª. Sin cortes a mitad y 1 minuto de margen al terminar."
 
     /// Bundle ID of the inner League of Legends match binary (`/Contents/LoL/Game/LeagueofLegends.app`) that only exists while an active match is running.
     public static let gameClientBundleID = "com.riotgames.LeagueofLegends.GameClient"
@@ -1256,57 +1394,105 @@ public enum LeagueMatchRules {
 /// Verifies whether the user is actively studying or working on the Mac (either passively or during a task session),
 /// requiring recent keyboard/mouse/trackpad interaction (`idleSeconds < maxIdleSeconds`), a real open window on screen,
 /// and an active non-entertainment app or browser tab (allowing Claude, ChatGPT, docs, PDFs, IDEs, Office, etc.).
+/// One app or site that counts as verified study (FD-09).
+public struct StudySource: Codable, Equatable, Hashable, Identifiable, Sendable {
+    public enum Kind: String, Codable, Sendable { case app, web }
+
+    public var kind: Kind
+    /// A bundle identifier for an app; a domain or domain/path for a site.
+    public var value: String
+    public var name: String
+    /// First day (`FocusRules.dayKey`) on which it counts; nil for the starting list. Adding a site at minute 59
+    /// must not finish today's study goal, so whatever is added starts counting the next day.
+    public var countsFrom: String?
+
+    public init(kind: Kind, value: String, name: String, countsFrom: String? = nil) {
+        self.kind = kind
+        self.value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.name = name
+        self.countsFrom = countsFrom
+    }
+
+    public var id: String { kind.rawValue + ":" + value.lowercased() }
+
+    public func counts(today: String) -> Bool {
+        guard let countsFrom else { return true }
+        return countsFrom <= today
+    }
+}
+
+public enum StudySources {
+    private static func app(_ id: String, _ name: String) -> StudySource { StudySource(kind: .app, value: id, name: name) }
+    private static func web(_ domain: String) -> StudySource { StudySource(kind: .web, value: domain, name: domain) }
+
+    /// The starting list: AI assistants, PDFs, code and office work, and the university.
+    public static let defaults: [StudySource] = [
+        app("com.anthropic.claudefordesktop", "Claude"),
+        app("com.openai.chat", "ChatGPT"),
+        app("com.openai.codex", "ChatGPT (Codex)"),
+        app("com.apple.Preview", "Vista Previa"),
+        app("com.adobe.Reader", "Adobe Acrobat Reader"),
+        app("com.adobe.Acrobat.Pro", "Adobe Acrobat"),
+        app("com.readdle.PDFExpert-Mac", "PDF Expert"),
+        app("net.sourceforge.skim-app.skim", "Skim"),
+        app("com.apple.dt.Xcode", "Xcode"),
+        app("com.microsoft.VSCode", "Visual Studio Code"),
+        app("com.todesktop.230313mzl4w4u92", "Cursor"),
+        app("ai.opencode.desktop", "OpenCode"),
+        app("com.apple.Terminal", "Terminal"),
+        app("com.googlecode.iterm2", "iTerm"),
+        app("com.utmapp.UTM", "UTM"),
+        app("com.microsoft.Word", "Word"),
+        app("com.microsoft.Excel", "Excel"),
+        app("com.microsoft.Powerpoint", "PowerPoint"),
+        app("com.microsoft.onenote.mac", "OneNote"),
+        app("com.apple.iWork.Pages", "Pages"),
+        app("com.apple.iWork.Numbers", "Numbers"),
+        app("com.apple.iWork.Keynote", "Keynote"),
+        app("com.apple.Notes", "Notas"),
+        app("md.obsidian", "Obsidian"),
+        app("notion.id", "Notion"),
+        web("claude.ai"),
+        web("chatgpt.com"),
+        web("chat.openai.com"),
+        web("gemini.google.com"),
+        web("notebooklm.google.com"),
+        web("docs.google.com"),
+        web("drive.google.com"),
+        web("usal.es"),
+        web("educa.jcyl.es"),
+        web("office.com"),
+        web("overleaf.com"),
+        web("notion.so"),
+        web("github.com"),
+        web("stackoverflow.com"),
+        web("cppreference.com"),
+        web("programiz.com"),
+        web("wikipedia.org"),
+        web("wolframalpha.com"),
+        web("desmos.com"),
+        web("khanacademy.org")
+    ]
+
+    /// What counts on `today`, ready for `StudyActivityVerifier`: lowercased bundle identifiers and a site list.
+    public static func active(_ sources: [StudySource], today: String) -> (apps: Set<String>, webs: String) {
+        let live = sources.filter { $0.counts(today: today) && !$0.value.isEmpty }
+        let apps = Set(live.filter { $0.kind == .app }.map { $0.value.lowercased() })
+        let webs = live.filter { $0.kind == .web }.map(\.value).joined(separator: ", ")
+        return (apps, webs)
+    }
+}
+
 public enum StudyActivityVerifier {
     /// Maximum seconds since last user input (mouse/keyboard/scroll) for passive time to count as active study.
     /// Set to 300s (5 min) so reading a PDF, lecture notes, or a long Claude explanation without moving the mouse still counts continuously.
     public static let maxIdleSeconds: TimeInterval = 300
 
-    /// Apps that do not count as active study when sitting in the foreground.
-    public static let nonStudyAppBundleIDs: Set<String> = [
-        "com.apple.loginwindow",
-        "com.apple.screensaver.engine",
-        "com.apple.tv",
-        "com.apple.music",
-        "com.spotify.client",
-        "com.hnc.discord",
-        "com.netflix.netflix"
-    ]
+    private static let startingList = StudySources.active(StudySources.defaults, today: "")
 
-    /// Entertainment, social, streaming, and gaming domains/subpaths that do not count as active study in a browser.
-    /// Productive sites (`claude.ai`, `chatgpt.com`, docs, PDFs, campuses, regular educational videos, etc.) DO count.
-    public static let nonStudyWebEntries: String = [
-        "youtube.com/shorts",
-        "instagram.com",
-        "tiktok.com",
-        "x.com",
-        "twitter.com",
-        "facebook.com",
-        "threads.net",
-        "bsky.app",
-        "netflix.com",
-        "twitch.tv",
-        "primevideo.com",
-        "disneyplus.com",
-        "max.com",
-        "store.steampowered.com",
-        "steamcommunity.com",
-        "epicgames.com",
-        "roblox.com",
-        "poki.com",
-        "crazygames.com",
-        "leagueoflegends.com",
-        "op.gg",
-        "u.gg",
-        "porofessor.gg",
-        "mobafire.com"
-    ].joined(separator: ", ")
-
-    /// Blank/new-tab browser window titles that indicate no actual page is open when URL inspection is unavailable.
-    public static let emptyTabTitles: Set<String> = [
-        "nueva pestaña", "new tab", "página de inicio", "start page", "about:blank", "sin título", "untitled"
-    ]
-
-    /// Returns `true` when the user is actively interacting with a real study/work window or productive browser tab.
+    /// Returns `true` when the user is actively in an app or on a site marked as study (`StudySource`), or reading a
+    /// PDF in the browser. Anything not on the list does not count: a browser whose address could not be read
+    /// included, unless its title is a PDF.
     public static func isVerifiedStudyActivity(
         idleSeconds: TimeInterval,
         frontBundleID: String,
@@ -1314,59 +1500,47 @@ public enum StudyActivityVerifier {
         hasVisibleWindowOnScreen: Bool,
         frontWindowTitle: String? = nil,
         browserHost: String? = nil,
-        browserPath: String? = nil
+        browserPath: String? = nil,
+        studyApps: Set<String>? = nil,
+        studyWebEntries: String? = nil
     ) -> Bool {
         guard idleSeconds >= 0, idleSeconds < maxIdleSeconds else { return false }
         let trimmedID = frontBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedID.isEmpty, hasVisibleWindowOnScreen else { return false }
-        let lowerID = trimmedID.lowercased()
 
-        // Games and game launchers never count as study.
+        // Games and game launchers never count as study, even if someone marks them.
         if LeagueMatchRules.isLeagueOrRiotProcess(bundleID: trimmedID, appPath: frontAppPath) {
             return false
         }
         if GameLibraryRules.matchesGameApp(bundleID: trimmedID, appPath: frontAppPath) != nil {
             return false
         }
-        if nonStudyAppBundleIDs.contains(lowerID) {
-            return false
-        }
 
-        // If the foreground app is a web browser, verify that an actual tab is open and it is not an entertainment site.
         if WebRules.isBrowser(trimmedID) {
             let cleanHost = browserHost?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
             let cleanPath = browserPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "/"
             if !cleanHost.isEmpty {
-                return FocusRules.webAllowed(
-                    host: cleanHost,
-                    path: cleanPath,
-                    list: nonStudyWebEntries,
-                    mode: .blockListed
-                )
+                if cleanPath.lowercased().hasSuffix(".pdf") { return true }
+                let webs = studyWebEntries ?? startingList.webs
+                guard !FocusRules.parseDomains(webs).valid.isEmpty else { return false }
+                return FocusRules.webAllowed(host: cleanHost, path: cleanPath, list: webs, mode: .allowListed)
             }
-            // Fallback if the browser tab is a local PDF/file or when AppleEvents/Accessibility has not returned a URL yet:
-            // if a window title is available, verify it is not a blank new tab or an obvious distraction title;
-            // if neither URL nor title could be read due to macOS permissions/timeout, allow as long as a real browser window is visible on screen.
-            if let title = frontWindowTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
-                let lowerTitle = title.lowercased()
-                if emptyTabTitles.contains(lowerTitle) { return false }
-                for keyword in ["netflix", "twitch", "tiktok", "instagram", "league of legends", "shorts"] {
-                    if lowerTitle.contains(keyword) { return false }
-                }
-            }
-            return true
+            // No address (not read yet, or no permission): only a PDF opened from disk is known to be study.
+            let title = frontWindowTitle?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return title.hasSuffix(".pdf") || title.contains(".pdf ")
         }
 
-        return true
+        return (studyApps ?? startingList.apps).contains(trimmedID.lowercased())
     }
 }
 
 /// Inspects clipboard contents when `protectClipboard` is active (`TargetListHandler::isClipboardPassed` in FocusMe).
 public enum ClipboardGuardRules {
     private static let dangerousCommandTokens: [String] = [
-        "killall focusdesk", "pkill -9 focusdesk", "pkill focusdesk",
-        "launchctl unload", "launchctl bootout", "launchctl remove local.focusdesk"
+        "killall focusdesk", "pkill -9 focusdesk", "pkill focusdesk"
     ]
+    /// Only about FocusDesk: copying a `launchctl` command for any other app is nobody's business here.
+    private static let launchctlTokens = ["launchctl unload", "launchctl bootout", "launchctl remove"]
 
     /// Returns a human-readable reason when the clipboard text contains a blocked URL or a terminal command meant to kill FocusDesk.
     public static func violation(
@@ -1380,6 +1554,11 @@ public enum ClipboardGuardRules {
         let lower = trimmed.lowercased()
         for cmd in dangerousCommandTokens where lower.contains(cmd) {
             return "comando de terminal protegido («\(cmd)»)"
+        }
+        if lower.contains("local.focusdesk") {
+            for cmd in launchctlTokens where lower.contains(cmd) {
+                return "comando de terminal protegido («\(cmd)»)"
+            }
         }
         guard webBlockAction != .warn else { return nil }
         if (lower.hasPrefix("http://") || lower.hasPrefix("https://")),
@@ -2297,11 +2476,22 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         launchesToday: Int = 0,
         matchesToday: Int = 0,
         isMatchInProgress: Bool = false,
+        runUpMinutes: Int = 0,
         continuous: Double = TrustedClock.continuousSeconds(),
         calendar: Calendar = .current
     ) -> Bool {
         guard protection != .none else { return false }
         if enabled && alwaysProtected {
+            return true
+        }
+        if isInRunUp(
+            at: now,
+            usedTodaySeconds: usedTodaySeconds,
+            workedTodaySeconds: workedTodaySeconds,
+            isMatchInProgress: isMatchInProgress,
+            minutes: runUpMinutes,
+            calendar: calendar
+        ) {
             return true
         }
         if isEnforcing(
@@ -2320,6 +2510,35 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             return true
         }
         return false
+    }
+
+    /// True in the minutes just before the rule starts to block: a schedule about to begin, or a budget or earned
+    /// reward about to run out. Like a task's run-up, loosening it then costs the same as once it blocks; otherwise
+    /// a 20-minute budget could be raised to 720 at minute 19, or a schedule switched off at 8:59.
+    public func isInRunUp(
+        at now: Date,
+        usedTodaySeconds: TimeInterval,
+        workedTodaySeconds: TimeInterval,
+        isMatchInProgress: Bool = false,
+        minutes: Int,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let lead = RunUp.clampedMinutes(minutes)
+        guard lead > 0, enabled, hasTargets, protection != .none else { return false }
+        let leadSeconds = Double(lead) * 60
+        switch kind {
+        case .schedule:
+            // Minute by minute, so a short slot that starts and ends inside the margin still counts.
+            return (0...lead).contains { isScheduleActive(at: now.addingTimeInterval(Double($0) * 60), calendar: calendar) }
+        case .dailyLimit:
+            return usedTodaySeconds >= dailyBudgetSeconds - leadSeconds
+        case .workGoal:
+            guard workedTodaySeconds >= goalRequiredSeconds, !isMatchInProgress,
+                  earnedGoalBudgetSeconds(workedTodaySeconds: workedTodaySeconds) != nil else { return false }
+            return remainingGoalRewardSeconds(workedTodaySeconds: workedTodaySeconds, usedTodaySeconds: usedTodaySeconds) <= leadSeconds
+        case .launchLimit, .countdown, .pomodoro, .alwaysOn:
+            return false
+        }
     }
 
     /// Seconds left until the current enforcement window ends (countdown end, Pomodoro work cycle end, cooldown end, schedule end, or period rollover).
@@ -2524,15 +2743,12 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         if current.blockApps && !proposed.blockApps {
             return "quitar el bloqueo de apps en «\(current.name)»"
         }
-        if current.blockApps {
-            let curApps = Set(current.apps.map(\.id))
-            let nextApps = Set(proposed.apps.map(\.id))
-            if current.appListMode == .allowListed && (proposed.appListMode != .allowListed || !nextApps.subtracting(curApps).isEmpty) {
-                return "abrir más apps en «\(current.name)»"
-            }
-            if current.appListMode == .blockListed && !curApps.isSubset(of: nextApps) {
-                return "desbloquear apps en «\(current.name)»"
-            }
+        if current.blockApps,
+           FocusRules.appListOpens(
+               currentMode: current.appListMode, current: Set(current.apps.map(\.id)),
+               proposedMode: proposed.appListMode, proposed: Set(proposed.apps.map(\.id))
+           ) {
+            return current.appListMode == .allowListed ? "abrir más apps en «\(current.name)»" : "desbloquear apps en «\(current.name)»"
         }
         if current.blockGameLibraries && !proposed.blockGameLibraries {
             return "quitar el bloqueo de bibliotecas de juegos en «\(current.name)»"
@@ -2544,16 +2760,15 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
             return "suavizar el bloqueo web en «\(current.name)»"
         }
         if current.webBlockAction != .warn {
-            let curDomains = Set(FocusRules.parseDomains(current.domains).valid)
-            let nextDomains = Set(FocusRules.parseDomains(proposed.domains).valid)
-            if current.webListMode == .blockAll && proposed.webListMode != .blockAll {
-                return "abrir webs en «\(current.name)»"
-            }
-            if current.webListMode == .allowListed && (proposed.webListMode != .allowListed || !nextDomains.subtracting(curDomains).isEmpty) {
-                return "permitir más webs en «\(current.name)»"
-            }
-            if current.webListMode == .blockListed && !curDomains.isSubset(of: nextDomains) {
-                return "desbloquear webs en «\(current.name)»"
+            if FocusRules.webListOpens(
+                currentMode: current.webListMode, current: FocusRules.parseDomains(current.domains).valid,
+                proposedMode: proposed.webListMode, proposed: FocusRules.parseDomains(proposed.domains).valid
+            ) {
+                switch current.webListMode {
+                case .blockAll: return "abrir webs en «\(current.name)»"
+                case .allowListed: return "permitir más webs en «\(current.name)»"
+                case .blockListed: return "desbloquear webs en «\(current.name)»"
+                }
             }
             if current.blockSearchMedia && !proposed.blockSearchMedia {
                 return "quitar el bloqueo de imágenes/vídeos en buscadores de «\(current.name)»"
@@ -2580,6 +2795,10 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         }
         return nil
     }
+
+    /// The built-in LoL rule is put back on every launch, so it is never offered for deletion: switching it off
+    /// (through its code) is its way out.
+    public var canBeDeleted: Bool { id != LeagueMatchRules.mandatoryStudyThenLoLRuleID }
 
     /// Built-in mandatory passive rule: each League of Legends match costs 60 minutes of verified study (1 match after 60 min, it locks again, the 2nd after 120 min; max 2 a day) (never kicking mid-match, 1-minute post-match grace, protected 24/7 by a 64-character challenge code).
     public static var mandatoryStudyThenLoLRule: GeneralBlockRule {

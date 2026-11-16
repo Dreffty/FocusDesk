@@ -285,3 +285,43 @@ Comprobado: `swift test` con **43 pruebas, 0 fallos**; chequeo integrado en **PA
 de los fallos 1 y 5 fallan al deshacer su arreglo. Instalada y abierta con los datos reales intactos (4 tareas,
 6 sesiones, 3 perfiles). Sin comprobar en pantalla: los avisos de pausa y del inicio automático (el modo demostración
 no envía notificaciones).
+
+---
+
+# Revisión del 7 de noviembre de 2026
+
+Puntos de `REVISION-2026-11-07/1-FocusDesk.md`, rama `claude/revision-2026-11-07`. `main` se creó en la fusión de las
+dos ramas (`cd17a05`) y no lleva ninguno de estos arreglos hasta que se fusione.
+
+Agujeros cerrados, cada uno con su prueba: mover una tarea protegida al pasado (`RunUpAndFolderTests`), cambiar de
+lista dejando pasar lo bloqueado (`ListModeRatchetTests`), reinicios que no se veían (`RebootDetectionTests`), vigilante
+activado y sin instalar (`RelaunchGuardPlanTests`). Falta de Accesibilidad en Hoy: `AccessibilityNeedTests`.
+
+Datos: filas de actividad (`ActivityRowsTests`), escritura (`StoreWritesTests`) y copias diarias
+(`DailySnapshotSafetyTests`). Con una copia de los datos reales: de 2.486 a 179 filas sin perder un segundo
+(10.645,98 s antes y después) y de 903 KB a 30 KB + 64 KB. 200 guardados sin cambios tardan 0,4 s. El resto de fallos pequeños:
+`SmallFixesTests`, `EditorTextsTests` y `PreferencesTests`.
+
+Comprobado: `swift test` con **226 pruebas, 0 fallos**; `--smoke-test` en **PASS** en depuración y en release; capturas de
+todas las pantallas; y las preferencias reales idénticas antes y después de las pruebas con `--preview`.
+
+### Decisiones de Luis aplicadas (8 de noviembre)
+
+- **FD-09, qué cuenta como estudio.** Le he dado la vuelta: solo cuenta lo marcado en Ajustes › General › «Qué cuenta
+  como estudio» (lista inicial de IA, PDF, código, Office y la universidad), más cualquier PDF. Un navegador cuya
+  dirección no se lee ya no cuenta. Lo añadido cuenta desde el día siguiente; quitar es inmediato. `StudySourcesTests`.
+- **FD-10, reglas protegidas antes de bloquear.** Usan el margen de las tareas: horarios antes de empezar, presupuestos y
+  recompensas en sus últimos minutos. El margen no se acorta mientras una regla está dentro. `RuleRunUpTests`.
+- **FD-11, regla de LoL.** No ofrece borrarse, porque vuelve sola al abrir la app; se desactiva con su código.
+  `BuiltInRuleTests`.
+
+`swift test` con **238 pruebas, 0 fallos**, `--smoke-test` en **PASS** con la app empaquetada y preferencias reales
+idénticas antes y después.
+
+## Sin comprobar
+
+- **Reiniciar el Mac con el vigilante puesto**: que `closedBySystemAt` lo deje en paz está probado en la lógica, no en un
+  reinicio real. Y el vigilante instalándose solo: requiere la app en `/Applications`.
+- **Un bloqueo real** con apps de verdad, y las carpetas en el Finder.
+- **VoiceOver de verdad** en el editor plegado, los menús de regla y los interruptores a la derecha (D10).
+- El **Llavero** escribiendo menos: la decisión está probada, las escrituras reales no se han contado.

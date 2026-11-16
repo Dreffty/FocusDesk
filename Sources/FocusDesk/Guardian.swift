@@ -235,6 +235,14 @@ final class RelaunchGuard: ObservableObject {
     /// Only meaningful when FocusDesk runs from a real `.app`: from a build folder there is nothing stable to point at.
     var available: Bool { bundledExecutable != nil }
 
+    /// Running from an Aplicaciones folder, not from a build folder or a backup of an older version.
+    var runningInstalledApp: Bool {
+        available && RelaunchGuardPlan.isInstalledLocation(
+            bundlePath: Bundle.main.bundleURL.standardizedFileURL.path,
+            home: FileManager.default.homeDirectoryForCurrentUser.path
+        )
+    }
+
     private var bundledExecutable: URL? {
         guard let executable = Bundle.main.executableURL else { return nil }
         return executable.path.contains(".app/Contents/MacOS/") ? executable : nil
@@ -338,7 +346,7 @@ enum RelaunchWatcher {
         let dryRun = arguments.contains("--dry-run")
         let directory = testDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("FocusDesk")
-        let store = WorkspaceStore(url: directory.appendingPathComponent("workspace.json"))
+        let reader = WorkspaceWatchReader(store: WorkspaceStore(url: directory.appendingPathComponent("workspace.json")))
         var relaunches: [Date] = []
         // Right after a log-in, the login items get a moment to open FocusDesk themselves.
         if !dryRun && testDirectory == nil { Thread.sleep(forTimeInterval: 10) }
@@ -347,7 +355,7 @@ enum RelaunchWatcher {
             relaunches.removeAll { now.timeIntervalSince($0) > RelaunchDecision.window }
             let appRunning = interfaceRunning()
             // The data file is only read while FocusDesk is gone, never under its feet.
-            let loadedWorkspace = appRunning ? nil : (try? store.load())
+            let loadedWorkspace = appRunning ? nil : reader.read()
             let session = loadedWorkspace?.session
             let hasActiveProtectedRule = loadedWorkspace.map { ws in
                 ws.generalRules.contains { rule in
@@ -367,6 +375,7 @@ enum RelaunchWatcher {
                 appRunning: appRunning,
                 watcherAge: now.timeIntervalSince(started),
                 recentRelaunches: relaunches.count,
+                closedBySystemAt: loadedWorkspace?.closedBySystemAt,
                 now: now
             )
             if dryRun {

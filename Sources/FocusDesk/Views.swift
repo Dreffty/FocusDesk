@@ -74,7 +74,7 @@ struct MainView: View {
                 TopBar(model: model)
                 Rectangle().fill(Palette.stroke).frame(height: 1)
                 if model.error != nil || model.notice != nil || model.resumePrompt != nil
-                    || model.accessibilityBroken || model.session?.stopRequest != nil
+                    || model.accessibilityBroken || model.accessibilityWarning != nil || model.session?.stopRequest != nil
                     || model.activeBreak() != nil
                     || model.workspace.generalRules.contains(where: { $0.stopRequest != nil }) {
                     BannerStack(model: model)
@@ -236,14 +236,17 @@ struct SidebarView: View {
 
                     // The running session and its «Terminar» sit up here: the bottom edge of a sidebar is often hidden when
                     // the window is moved (`sidebars.md › Desktop`).
-                    Group {
-                        if let session = model.session {
-                            SidebarSessionCard(model: model, session: session)
-                        } else if let next = model.next {
-                            SidebarNextCard(model: model, task: next)
+                    // Hoy already has them large, in the middle of the window: there the same countdown came out twice.
+                    if model.currentPage != .today {
+                        Group {
+                            if let session = model.session {
+                                SidebarSessionCard(model: model, session: session)
+                            } else if let next = model.next {
+                                SidebarNextCard(model: model, task: next)
+                            }
                         }
+                        .padding(.top, 14)
                     }
-                    .padding(.top, 14)
                 }
             }
 
@@ -440,7 +443,7 @@ private struct SidebarNextCard: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("SIGUIENTE").font(.app(9, weight: .bold)).tracking(1.2).foregroundStyle(Palette.muted)
             Text(task.title).font(.app(13, weight: .semibold)).lineLimit(2)
-            Text(task.isScheduled ? "\(dayTitle(for: task.scheduledAt)) · \(task.scheduledAt.formatted(date: .omitted, time: .shortened)) · \(task.minutes) min" : "Sin hora · \(task.minutes) min")
+            Text(task.isScheduled ? "\(dayTitle(for: task.scheduledAt)) · \(task.scheduledAt.formatted(date: .omitted, time: .shortened)) · \(FocusRules.durationText(minutes: task.minutes))" : "Sin hora · \(FocusRules.durationText(minutes: task.minutes))")
                 .font(.app(11))
                 .foregroundStyle(Palette.muted)
             HStack(spacing: 6) {
@@ -639,6 +642,22 @@ private struct BannerStack: View {
                 .background(Palette.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.warning.opacity(0.28), lineWidth: 1))
             }
+            // The same when the permission is simply off: it stays here until it is on, because the block is not whole.
+            if let warning = model.accessibilityWarning {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill").padding(.top, 1)
+                    Text(warning)
+                        .font(.app(12))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button("Abrir Accesibilidad") { MacActivity.openAccessibilitySettings() }
+                        .buttonStyle(.focus(.secondary, compact: true))
+                }
+                .padding(12)
+                .foregroundStyle(Palette.warning)
+                .background(Palette.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.warning.opacity(0.28), lineWidth: 1))
+            }
             if let error = model.error {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill").padding(.top, 1)
@@ -694,8 +713,9 @@ private struct BannerStack: View {
 private struct TodayPage: View {
     @ObservedObject var model: AppModel
     var onDelete: (FocusTask) -> Void
-    @AppStorage("FocusDesk.dayLayoutHourly") private var hourly = true
-    @State private var overdueExpanded = true
+    @AppStorage("FocusDesk.dayLayoutHourly", store: AppPreferences.current) private var hourly = true
+    /// Open by default while there are one or two; more than that would push the day out of sight.
+    @State private var overdueExpanded: Bool?
     @FocusState private var agendaFocused: Bool
 
     var body: some View {
@@ -708,10 +728,17 @@ private struct TodayPage: View {
             $0.scheduledAt < Calendar.current.startOfDay(for: Date()) && !Calendar.current.isDate($0.scheduledAt, inSameDayAs: model.selectedDate)
         }
 
-        VStack(alignment: .leading, spacing: 22) {
+        let studyRule = model.workspace.generalRules.first { $0.enabled && ($0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID || $0.maxDailyMatches > 0 || $0.verifyActiveStudy) }
+
+        // Hoy exists to show the day: what is above the agenda has to leave room for it, also on a laptop.
+        VStack(alignment: .leading, spacing: 14) {
             NotificationPermissionBanner(model: model, reminders: model.reminders)
 
-            ProtectionTodayStrip(model: model)
+            ProtectionTodayStrip(model: model, hiding: studyRule?.id)
+
+            if let studyRule {
+                PassiveStudyStrip(model: model, rule: studyRule)
+            }
 
             if let session = model.session {
                 SessionHero(model: model, session: session)
@@ -719,22 +746,13 @@ private struct TodayPage: View {
                 NextUpHero(model: model)
             }
 
-            if let lolRule = model.workspace.generalRules.first(where: { $0.enabled && ($0.id == LeagueMatchRules.mandatoryStudyThenLoLRuleID || $0.maxDailyMatches > 0 || $0.verifyActiveStudy) }) {
-                PassiveStudyLoLCard(model: model, rule: lolRule)
-            }
-
-            HStack(spacing: 12) {
-                StatPill(label: "Por hacer", value: "\(pending.count + projected.count)", icon: "circle.dotted")
-                StatPill(label: "Tiempo previsto", value: "\(plannedMinutes) min", icon: "hourglass", tint: Palette.muted)
-                StatPill(label: "Sin horario", value: "\(model.unscheduledTasks.count)", icon: "tray", tint: Palette.warning)
-                StatPill(label: "Completadas", value: "\(real.filter(\.completed).count)", icon: "checkmark.circle")
-                StatPill(label: "Trabajado", value: Self.workedText(model.workedSeconds(on: model.selectedDate)), icon: "timer", tint: Palette.mint)
-            }
-
-            // What slipped from earlier days goes first and open: at the bottom and folded it was easy to miss.
+            // What slipped from earlier days goes first: at the bottom and folded it was easy to miss.
             if !overdue.isEmpty {
-                Card(padding: 16) {
-                    DisclosureGroup(isExpanded: $overdueExpanded) {
+                Card(padding: 14) {
+                    DisclosureGroup(isExpanded: Binding(
+                        get: { overdueExpanded ?? (overdue.count <= 2) },
+                        set: { overdueExpanded = $0 }
+                    )) {
                         VStack(spacing: 8) {
                             ForEach(overdue) { task in TaskRowView(model: model, task: task, onDelete: onDelete) }
                         }
@@ -745,7 +763,20 @@ private struct TodayPage: View {
                 }
             }
 
-            dayToolbar
+            VStack(alignment: .leading, spacing: 6) {
+                dayToolbar
+                Text(Self.daySummary(
+                    pending: pending.count + projected.count,
+                    plannedMinutes: plannedMinutes,
+                    unscheduled: model.unscheduledTasks.count,
+                    completed: real.filter(\.completed).count,
+                    workedSeconds: model.workedSeconds(on: model.selectedDate)
+                ))
+                .font(.app(11))
+                .monospacedDigit()
+                .foregroundStyle(Palette.muted)
+                .padding(.leading, 4)
+            }
 
             if hourly {
                 HourlyDayTimelineView(model: model, date: model.selectedDate, realTasks: real, projectedTasks: projected)
@@ -803,9 +834,13 @@ private struct TodayPage: View {
         }
     }
 
-    static func workedText(_ seconds: TimeInterval) -> String {
-        let minutes = Int(seconds / 60)
-        return minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) min" : "\(minutes) min"
+    /// The day's figures as one line of text, where five cards used to take a whole row above the agenda.
+    static func daySummary(pending: Int, plannedMinutes: Int, unscheduled: Int, completed: Int, workedSeconds: TimeInterval) -> String {
+        var parts = ["\(pending) por hacer", "previsto \(FocusRules.durationText(minutes: plannedMinutes))"]
+        if unscheduled > 0 { parts.append("\(unscheduled) sin horario") }
+        parts.append(completed == 1 ? "1 hecha" : "\(completed) hechas")
+        parts.append("trabajado \(FocusRules.durationText(minutes: Int(workedSeconds / 60)))")
+        return parts.joined(separator: " · ")
     }
 
     private var dayToolbar: some View {
@@ -887,7 +922,8 @@ private struct NotificationPermissionBanner: View {
     }
 }
 
-private struct PassiveStudyLoLCard: View {
+/// The study-first rule in one line, in the same place every day: how far along you are, and a way to its page.
+private struct PassiveStudyStrip: View {
     @ObservedObject var model: AppModel
     let rule: GeneralBlockRule
 
@@ -905,84 +941,50 @@ private struct PassiveStudyLoLCard: View {
         let postGraceLeft = rule.postMatchGraceRemainingSeconds(at: model.now)
         let enforcing = model.isRuleEnforcing(rule, at: model.now)
 
-        Card(padding: 18) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 10) {
-                    Image(systemName: matchInProgress ? "gamecontroller.fill" : (enforcing ? "shield.lefthalf.filled" : "checkmark.seal.fill"))
-                        .font(.app(16, weight: .semibold))
-                        .foregroundStyle(Palette.onAccent)
-                        .frame(width: 32, height: 32)
-                        .background(enforcing ? Palette.mint : Palette.warning, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        let status: (text: String, icon: String, color: Color) = {
+            if postGraceLeft > 0 {
+                return ("Partida terminada · se cierra en \(Int(ceil(postGraceLeft))) s", "timer", Palette.warning)
+            }
+            if matchInProgress {
+                return ("Partida \(min(maxMatches, matches + 1))/\(maxMatches) en curso · sin cortes", "gamecontroller.fill", Palette.mint)
+            }
+            if !goalMet {
+                return ("Faltan \(FocusRules.clock(required - worked)) de estudio", enforcing ? "lock.fill" : "book.fill", Palette.mint)
+            }
+            if matchesExhausted {
+                return ("\(matches)/\(maxMatches) partidas · bloqueado hasta mañana", "lock.fill", Palette.warning)
+            }
+            return ("Estudio hecho · \(max(0, maxMatches - matches)) partida(s) · máx. \(FocusRules.clock(rewardLeft))", "checkmark.seal.fill", Palette.mint)
+        }()
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(rule.name)
-                                .font(.app(15, weight: .semibold))
-                            Chip(
-                                postGraceLeft > 0 ? "Cerrando en \(Int(ceil(postGraceLeft)))s"
-                                    : (matchInProgress ? "Partida en curso · Sin corte"
-                                       : (enforcing ? "LoL bloqueado" : "LoL desbloqueado")),
-                                icon: matchInProgress ? "gamecontroller.fill" : (enforcing ? "lock.fill" : "lock.open.fill"),
-                                color: enforcing ? Palette.mint : Palette.warning
-                            )
-                            if rule.protection == .challenge {
-                                Chip("Obligatoria 24/7 · Código \(rule.unlockChars) díg.", icon: "key.fill", color: Palette.muted)
-                            }
-                        }
-                        Text("Modo pasivo: suma tiempo automáticamente mientras estudias o trabajas con una pestaña/ventana abierta (Claude, navegador, PDFs, código remain libres). Al acabar la 2.ª partida da \(rule.postMatchGraceSeconds) s y cierra LoL.")
-                            .font(.app(11))
-                            .foregroundStyle(Palette.muted)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    Button("Ver en Reglas (⌘5)") {
-                        model.go(to: .rules)
-                    }
-                    .buttonStyle(.focus(.secondary, compact: true))
-                }
-
-                HStack(spacing: 14) {
-                    if postGraceLeft > 0 {
-                        Label("Partida terminada · cerrando League of Legends en \(Int(ceil(postGraceLeft))) s", systemImage: "timer")
-                            .font(.app(13, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Palette.warning)
-                    } else if matchInProgress {
-                        Label("Partida \(min(maxMatches, matches + 1))/\(maxMatches) en curso · protegida contra cortes hasta que termine", systemImage: "gamecontroller.fill")
-                            .font(.app(13, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Palette.mint)
-                    } else if !goalMet {
-                        let needed = max(0, required - worked)
-                        Label("Faltan \(FocusRules.clock(needed)) de estudio activo hoy para desbloquear League of Legends", systemImage: "book.fill")
-                            .font(.app(13, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Palette.mint)
-                    } else if matchesExhausted {
-                        Label("Has completado las \(matches)/\(maxMatches) partidas de hoy · LoL bloqueado hasta mañana", systemImage: "lock.fill")
-                            .font(.app(13, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Palette.warning)
-                    } else {
-                        Label("Estudio completado · te quedan \(max(0, maxMatches - matches)) partida(s) hoy (máx. \(FocusRules.clock(rewardLeft)))", systemImage: "checkmark.seal.fill")
-                            .font(.app(13, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Palette.mint)
-                    }
-
-                    Spacer()
-
-                    Text("Estudio hoy: \(FocusRules.clock(worked)) / \(rule.goalMinutesRequired) min")
-                        .font(.app(12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(goalMet ? Palette.mint : Palette.text)
-
-                    if rule.maxDailyMatches > 0 {
-                        Text("Partidas: \(matches)/\(maxMatches)")
-                            .font(.app(12, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(matchesExhausted ? Palette.warning : Palette.mint)
-                    }
-                }
-
+        Button { model.go(to: .rules) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: status.icon).foregroundStyle(status.color)
+                Text(rule.name)
+                    .font(.app(12, weight: .semibold))
+                    .lineLimit(1)
+                Text(status.text)
+                    .font(.app(12, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(status.color)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
                 ProgressView(value: workFraction)
                     .tint(goalMet && !matchesExhausted ? Palette.mint : Palette.warning)
+                    .frame(width: 72)
+                Image(systemName: "chevron.right").font(.app(10, weight: .semibold)).foregroundStyle(Palette.mint)
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.mint.opacity(0.22), lineWidth: 1))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .help("Suma sola mientras estudias o trabajas con una ventana o pestaña abierta (Claude, el navegador, PDFs o código siguen libres). Al acabar la última partida da \(rule.postMatchGraceSeconds) s y la cierra.\(rule.protection == .challenge ? " Quitarla pide un código de \(rule.unlockChars) caracteres." : "") Abrir Reglas (⌘5).")
+        .accessibilityLabel("\(rule.name). \(status.text). Estudio de hoy: \(FocusRules.clock(worked)) de \(rule.goalMinutesRequired) minutos.\(rule.maxDailyMatches > 0 ? " Partidas: \(matches) de \(maxMatches)." : "")")
+        .accessibilityHint("Abre Reglas y límites")
     }
 }
 
@@ -990,18 +992,18 @@ private struct NextUpHero: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        Card(padding: 26) {
-            HStack(alignment: .center, spacing: 28) {
-                VStack(alignment: .leading, spacing: 12) {
+        Card(padding: 18) {
+            HStack(alignment: .center, spacing: 20) {
+                VStack(alignment: .leading, spacing: 10) {
                     Label("TU SIGUIENTE PASO", systemImage: "sparkle")
                         .font(.app(10, weight: .bold))
                         .tracking(1.4)
                         .foregroundStyle(Palette.mint)
                     if let next = model.next {
-                        Text(next.title).font(.app(26, weight: .semibold, design: .rounded)).lineLimit(2)
+                        Text(next.title).font(.app(22, weight: .semibold, design: .rounded)).lineLimit(2)
                         HStack(spacing: 6) {
                             Chip(next.category, color: model.color(for: next))
-                            Chip("\(next.minutes) min", icon: "hourglass")
+                            Chip(FocusRules.durationText(minutes: next.minutes), icon: "hourglass")
                             if next.isScheduled {
                                 Chip("\(dayTitle(for: next.scheduledAt)) · \(next.scheduledAt.formatted(date: .omitted, time: .shortened))", icon: "clock")
                             } else {
@@ -1024,7 +1026,7 @@ private struct NextUpHero: View {
                         }
                         .padding(.top, 4)
                     } else {
-                        Text("Una cosa cada vez.").font(.app(26, weight: .semibold, design: .rounded))
+                        Text("Una cosa cada vez.").font(.app(22, weight: .semibold, design: .rounded))
                         Text("Prepara tu primera tarea o aplica un perfil reutilizable. Te ayudamos a volver a ella.")
                             .foregroundStyle(Palette.muted)
                         Button { model.editingTask = model.newTaskDraft() } label: { Label("Crear una tarea", systemImage: "plus") }
@@ -1040,19 +1042,19 @@ private struct NextUpHero: View {
 
     @ViewBuilder private var countdown: some View {
         ZStack {
-            Circle().stroke(Palette.mint.opacity(0.08), lineWidth: 1).frame(width: 140, height: 140)
-            Circle().stroke(Palette.mint.opacity(0.14), lineWidth: 1).frame(width: 104, height: 104)
-            Circle().fill(Palette.mint.opacity(0.07)).frame(width: 70, height: 70)
+            Circle().stroke(Palette.mint.opacity(0.08), lineWidth: 1).frame(width: 104, height: 104)
+            Circle().stroke(Palette.mint.opacity(0.14), lineWidth: 1).frame(width: 78, height: 78)
+            Circle().fill(Palette.mint.opacity(0.07)).frame(width: 52, height: 52)
             if let next = model.next, next.isScheduled, next.scheduledAt > model.now,
                next.scheduledAt.timeIntervalSince(model.now) <= Double(max(10, next.leadMinutes)) * 60 {
                 VStack(spacing: 4) {
                     Text("EMPIEZA EN").font(.app(8, weight: .bold)).tracking(1)
                     Text(FocusRules.clock(next.scheduledAt.timeIntervalSince(model.now)))
-                        .font(.app(22, weight: .medium, design: .monospaced))
+                        .font(.app(19, weight: .medium, design: .monospaced))
                 }
                 .foregroundStyle(Palette.mint)
             } else {
-                Image(systemName: "scope").font(.app(30, weight: .ultraLight)).foregroundStyle(Palette.mint)
+                Image(systemName: "scope").font(.app(24, weight: .ultraLight)).foregroundStyle(Palette.mint)
             }
         }
         .accessibilityLabel("Próxima sesión")
@@ -1078,7 +1080,7 @@ struct TaskRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(task.isScheduled ? task.scheduledAt.formatted(date: .omitted, time: .shortened) : "—")
                     .font(.app(15, weight: .medium, design: .monospaced))
-                Text("\(task.minutes) min").font(.app(10)).foregroundStyle(Palette.muted)
+                Text(FocusRules.durationText(minutes: task.minutes)).font(.app(10)).foregroundStyle(Palette.muted)
             }
             .frame(width: 62, alignment: .leading)
 
@@ -1236,7 +1238,7 @@ private struct InboxRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(task.title).font(.app(14, weight: .medium)).lineLimit(1)
                 HStack(spacing: 5) {
-                    Chip("\(task.minutes) min", icon: "hourglass")
+                    Chip(FocusRules.durationText(minutes: task.minutes), icon: "hourglass")
                     Chip(task.category, color: model.color(for: task))
                     if let due = task.dueDate {
                         DueChip(due: due, now: model.now, prefix: "Antes de")
@@ -1444,7 +1446,7 @@ private struct WeekTaskCard: View {
                 if hasOverlap { Image(systemName: "exclamationmark.triangle.fill").font(.app(9)).foregroundStyle(Palette.warning) }
             }
             Text(task.title).font(.app(12, weight: .semibold)).lineLimit(3).strikethrough(task.completed)
-            Text("\(task.minutes) min").font(.app(10, weight: .medium)).foregroundStyle(color)
+            Text(FocusRules.durationText(minutes: task.minutes)).font(.app(10, weight: .medium)).foregroundStyle(color)
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1483,7 +1485,7 @@ private struct WeekTaskCard: View {
     }
 
     private var weekCardDescription: String {
-        var parts = ["\(task.scheduledAt.formatted(date: .omitted, time: .shortened)), \(task.title), \(task.minutes) minutos, \(task.category)"]
+        var parts = ["\(task.scheduledAt.formatted(date: .omitted, time: .shortened)), \(task.title), \(FocusRules.durationText(minutes: task.minutes))utos, \(task.category)"]
         if task.completed { parts.append("completada") }
         if hasOverlap { parts.append("solapada con otra tarea") }
         if isProjected { parts.append("ocurrencia futura de una serie") }
@@ -1593,8 +1595,8 @@ private struct HistoryPage: View {
             HStack(spacing: 12) {
                 StatPill(label: "Sesiones", value: "\(list.count)", icon: "list.bullet.rectangle")
                 StatPill(label: "Completadas", value: "\(completed)", icon: "checkmark.circle")
-                StatPill(label: "Tiempo de sesión (reloj)", value: "\(sessionMinutes) min", icon: "clock.fill", tint: Palette.muted)
-                StatPill(label: "Actividad observada", value: "\(observedMinutes) min", icon: "eye", tint: Palette.muted)
+                StatPill(label: "Tiempo de sesión (reloj)", value: FocusRules.durationText(minutes: sessionMinutes), icon: "clock.fill", tint: Palette.muted)
+                StatPill(label: "Actividad observada", value: FocusRules.durationText(minutes: observedMinutes), icon: "eye", tint: Palette.muted)
             }
 
             if list.isEmpty {
@@ -1615,7 +1617,7 @@ private struct HistoryPage: View {
                     let done = dayRecords.filter(\.completed).count
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(Self.dayHeader(day)).font(.app(15, weight: .semibold))
-                        Text("\(dayRecords.count) \(dayRecords.count == 1 ? "sesión" : "sesiones") · \(done) \(done == 1 ? "completada" : "completadas") · \(TodayPage.workedText(Double(minutes) * 60))")
+                        Text("\(dayRecords.count) \(dayRecords.count == 1 ? "sesión" : "sesiones") · \(done) \(done == 1 ? "completada" : "completadas") · \(FocusRules.durationText(minutes: minutes))")
                             .font(.app(12))
                             .foregroundStyle(Palette.muted)
                     }
@@ -1703,7 +1705,7 @@ private struct HistoryRecordCard: View {
                         HStack(spacing: 6) {
                             Text("Observado:").font(.app(10)).foregroundStyle(Palette.muted)
                             ForEach(summaries.prefix(4)) { item in
-                                Chip("\(item.name) · \(max(1, Int((item.seconds / 60).rounded()))) min")
+                                Chip("\(item.name) · \(FocusRules.durationText(minutes: max(1, Int((item.seconds / 60).rounded()))))")
                             }
                         }
                     }
@@ -1734,7 +1736,7 @@ private struct HistoryRecordCard: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 6) {
-                    Text("\(Int(record.session.accumulated / 60)) min").font(.app(20, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text(FocusRules.durationText(minutes: Int(record.session.accumulated / 60))).font(.app(20, weight: .semibold, design: .rounded)).monospacedDigit()
                     Text("de \(record.session.task.minutes) previstos").font(.app(10)).foregroundStyle(Palette.muted)
                     Text("\(record.session.interruptionCount) interrupciones").font(.app(10)).foregroundStyle(Palette.muted)
                     Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
@@ -2263,9 +2265,9 @@ struct SessionHero: View {
         let ringColor = remaining < 0 ? Palette.warning : Palette.mint
         let checks = session.task.checklist.split(separator: "\n").map(String.init)
 
-        Card(padding: 26) {
-            HStack(alignment: .center, spacing: 30) {
-                VStack(alignment: .leading, spacing: 14) {
+        Card(padding: 18) {
+            HStack(alignment: .center, spacing: 20) {
+                VStack(alignment: .leading, spacing: 9) {
                     HStack(spacing: 6) {
                         Chip(ended ? "RESULTADO PENDIENTE" : (session.paused ? "EN PAUSA" : "AHORA, SOLO ESTO"),
                              icon: ended ? "checkmark.seal" : (session.paused ? "pause.fill" : "circle.fill"),
@@ -2282,45 +2284,51 @@ struct SessionHero: View {
                                 .help("\(issue) Resuélvelo en Ajustes.")
                         }
                     }
-                    Text(session.task.title).font(.app(26, weight: .semibold, design: .rounded)).lineLimit(2)
-                    Text(model.pomodoroPhase(for: session)?.isBreak == true
-                         ? "Descanso: levántate y aparta la vista. El bloqueo vuelve con el siguiente bloque."
-                         : (session.task.strict ? "Te devolvemos a tus apps de trabajo si te distraes." : "Avisos suaves. Tú decides el ritmo."))
-                        .foregroundStyle(Palette.muted)
+                    Text(session.task.title).font(.app(22, weight: .semibold, design: .rounded)).lineLimit(2)
+                    if model.pomodoroPhase(for: session)?.isBreak == true {
+                        Text("Descanso: levántate y aparta la vista. El bloqueo vuelve con el siguiente bloque.")
+                            .font(.app(12))
+                            .foregroundStyle(Palette.muted)
+                    } else if session.task.strict {
+                        Text("Te devolvemos a tus apps de trabajo si te distraes.")
+                            .font(.app(12))
+                            .foregroundStyle(Palette.muted)
+                    }
                     SessionButtons(model: model)
                     if !session.task.apps.isEmpty {
                         Label(session.task.apps.map(\.name).joined(separator: " · "), systemImage: "square.grid.2x2")
                             .font(.app(10))
                             .foregroundStyle(Palette.muted)
+                            .lineLimit(1)
                     }
                     if !checks.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
+                        // Side by side while they fit: a list of steps must not take the agenda's place.
+                        FlowLayout(spacing: 12) {
                             ForEach(Array(checks.enumerated()), id: \.offset) { index, text in
                                 Toggle(isOn: Binding(
                                     get: { model.session?.checked.contains(String(index)) == true },
                                     set: { model.setCheck(String(index), value: $0) }
-                                )) { Text(text).font(.app(13)) }
+                                )) { Text(text).font(.app(12)) }
                                 .toggleStyle(.checkbox)
                             }
                         }
-                        .padding(.top, 2)
                     }
                 }
                 Spacer(minLength: 0)
                 ZStack {
-                    ProgressRing(progress: progress, color: ringColor, lineWidth: 9)
-                    VStack(spacing: 4) {
+                    ProgressRing(progress: progress, color: ringColor, lineWidth: 7)
+                    VStack(spacing: 2) {
                         Text(FocusRules.clock(remaining))
-                            .font(.app(30, weight: .regular, design: .monospaced))
+                            .font(.app(23, weight: .regular, design: .monospaced))
                             .foregroundStyle(ringColor)
                             .modifier(CountdownTransition())
                         Text(remaining < 0 ? "TIEMPO EXTRA" : "RESTANTE")
-                            .font(.app(9, weight: .semibold))
-                            .tracking(1.4)
+                            .font(.app(8, weight: .semibold))
+                            .tracking(1.2)
                             .foregroundStyle(Palette.muted)
                     }
                 }
-                .frame(width: 168, height: 168)
+                .frame(width: 122, height: 122)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(remaining < 0 ? "Tiempo extra" : (session.paused && !ended ? "En pausa, tiempo restante" : "Tiempo restante"))
                 .accessibilityValue(spokenDuration(remaining))
@@ -2458,7 +2466,7 @@ struct MenuPanel: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("SIGUIENTE TAREA").font(.app(9, weight: .bold)).tracking(1.2).foregroundStyle(Palette.muted)
                     Text(next.title).font(.app(16, weight: .semibold)).lineLimit(2)
-                    Text(next.isScheduled ? "\(dayTitle(for: next.scheduledAt)) · \(next.scheduledAt.formatted(date: .omitted, time: .shortened)) · \(next.minutes) min" : "Bandeja sin hora · \(next.minutes) min")
+                    Text(next.isScheduled ? "\(dayTitle(for: next.scheduledAt)) · \(next.scheduledAt.formatted(date: .omitted, time: .shortened)) · \(FocusRules.durationText(minutes: next.minutes))" : "Bandeja sin hora · \(FocusRules.durationText(minutes: next.minutes))")
                         .font(.app(10))
                         .foregroundStyle(Palette.muted)
                 }
@@ -2547,7 +2555,7 @@ struct MenuPanel: View {
         if s.endedAt != nil {
             Text("Sesión terminada · confirma el resultado").font(.app(10)).foregroundStyle(Palette.mint)
             if let nextTask = model.upcomingAfterSession {
-                Text("\(model.queuedStartTask != nil ? "Esperando para empezar" : "Siguiente"): \(nextTask.title) · \(nextTask.minutes) min")
+                Text("\(model.queuedStartTask != nil ? "Esperando para empezar" : "Siguiente"): \(nextTask.title) · \(FocusRules.durationText(minutes: nextTask.minutes))")
                     .font(.app(10)).foregroundStyle(Palette.muted).lineLimit(1)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {

@@ -114,8 +114,6 @@ enum FeatureCatalog {
             "auditoria registro log cambios desbloqueos") { $0.showAuditLog() }
 
         // Ajustes that change how blocking behaves sit next to the blocks; the rest open their pane.
-        add("Ajustes", "capsule", "Píldora flotante con la cuenta atrás", "La cuenta atrás siempre a la vista", "Bloquear ahora",
-            "pildora hud flotante contador", page(.blocking))
         add("Ajustes", "bell.badge", "Avisos a 5 y 1 min del final", "Antes de que se acabe un presupuesto o visita", "Bloquear ahora",
             "avisos notificaciones minutos", page(.blocking))
         add("Ajustes", "doc.on.clipboard", "Vaciar el portapapeles mientras bloquea", "Si copias algo bloqueado", "Bloquear ahora",
@@ -308,8 +306,8 @@ enum WhatsNew {
     static let release = "2026-10-antidistraccion"
     private static let key = "FocusDesk.whatsNewSeen"
 
-    static var pending: Bool { UserDefaults.standard.string(forKey: key) != release }
-    static func markSeen() { UserDefaults.standard.set(release, forKey: key) }
+    static var pending: Bool { AppPreferences.current.string(forKey: key) != release }
+    static func markSeen() { AppPreferences.current.set(release, forKey: key) }
 }
 
 struct WhatsNewSheet: View {
@@ -323,7 +321,7 @@ struct WhatsNewSheet: View {
     }
 
     private let areas = [
-        Area(page: .blocking, items: ["Bloqueo en 1 clic: de 15 min al resto del día", "Permitir una web unos minutos", "Píldora flotante con la cuenta atrás"]),
+        Area(page: .blocking, items: ["Bloqueo en 1 clic: de 15 min al resto del día", "Permitir una web unos minutos"]),
         Area(page: .rules, items: ["Presupuesto: 20 min de Shorts al día", "Pomodoro que se reinicia si te distraes", "Primero el trabajo, luego el ocio",
                                    "Visitas contadas con enfriamiento", "Horarios de varios tramos"]),
         Area(page: .breaks, items: ["Un descanso tras mucho rato seguido", "Micro-pausas contadas en tus reglas", "Los descansos del Pomodoro, a la vista"]),
@@ -431,7 +429,7 @@ private struct FlowChips: View {
     }
 }
 
-private struct FlowLayout: Layout {
+struct FlowLayout: Layout {
     var spacing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

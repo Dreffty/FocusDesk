@@ -493,6 +493,62 @@ public struct FocusTask: Codable, Equatable, Identifiable, Sendable {
         return hasTitle && validDuration && validStrict && validRepeat && validWeb
     }
 
+    /// What is folded inside «Bloqueo» in the editor, in one line.
+    public var blockingSummary: String {
+        func count(_ value: Int, _ one: String, _ many: String) -> String { "\(value) \(value == 1 ? one : many)" }
+        var parts: [String] = []
+        if strict {
+            let list = count(apps.count, "app", "apps")
+            parts.append(appListMode == .allowListed ? "Solo \(list)" : "Todas menos \(list)")
+        }
+        if blockGameLibraries { parts.append("Juegos") }
+        if webBlockAction != .warn {
+            let list = count(FocusRules.parseDomains(domains).valid.count, "web", "webs")
+            switch webListMode {
+            case .blockAll: parts.append("Ninguna web")
+            case .allowListed: parts.append("Solo \(list)")
+            case .blockListed: parts.append("Todas menos \(list)")
+            }
+        }
+        if blockSearchMedia { parts.append("Imágenes y vídeos") }
+        let keywords = FocusRules.parseTitleKeywords(blockedTitleKeywords).count
+        if keywords > 0 { parts.append(count(keywords, "palabra", "palabras")) }
+        if !blockedFolders.isEmpty { parts.append(count(blockedFolders.count, "carpeta", "carpetas")) }
+        if protection != .none { parts.append(protection.label) }
+        return parts.isEmpty ? "Sin bloqueo" : parts.joined(separator: " · ")
+    }
+
+    /// A block that does not say what to block cannot be saved, so it has to be in sight, not folded away.
+    public var blockingIsIncomplete: Bool {
+        let appsMissing = strict && apps.isEmpty && !blockGameLibraries
+        let websMissing = webBlockAction != .warn && webListMode != .blockAll && !blockSearchMedia && FocusRules.parseDomains(domains).valid.isEmpty
+        return appsMissing || websMissing
+    }
+
+    /// What is folded inside «Resultado».
+    public var resultSummary: String {
+        let steps = checklist.split(whereSeparator: \.isNewline)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+        var parts: [String] = []
+        if steps > 0 { parts.append(steps == 1 ? "1 paso" : "\(steps) pasos") }
+        if folder != nil { parts.append("Carpeta elegida") }
+        return parts.isEmpty ? "Sin checklist" : parts.joined(separator: " · ")
+    }
+
+    /// What is folded inside «Más opciones».
+    public var optionsSummary: String {
+        var parts = [category]
+        if isScheduled {
+            if repeatRule != .never { parts.append(repeatRule.label) }
+            parts.append("Avisa \(leadMinutes) min antes")
+            if autoStart { parts.append("Empieza sola") }
+        }
+        if usesPomodoro { parts.append("Pomodoro") }
+        if dueDate != nil { parts.append("Fecha límite") }
+        if isScheduled && isFixedAppointment { parts.append("Cita fija") }
+        return parts.joined(separator: " · ")
+    }
+
     /// Whether this task defends itself at all: it blocks something, or it resists being stopped.
     public var enforces: Bool {
         strict || blockGameLibraries || webBlockAction != .warn || blockSearchMedia || protection != .none || !blockedFolders.isEmpty
@@ -961,6 +1017,63 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
         if activities.count > 3000 { activities.removeFirst(activities.count - 3000) }
     }
 
+    /// How old a row without a website can be and still be the one this same read of the browser opened.
+    static let freshRowSeconds: TimeInterval = 8
+
+    /// A page read in the browser in front. The same site as the last row is the same row; a row the browser just
+    /// opened takes the site. Only a different site, or time spent on a page with no address, starts another.
+    public mutating func recordVisit(appID: String, name: String, domain: String, interruption: Bool, at now: Date = Date(), uptime: TimeInterval? = nil) {
+        guard !paused, endedAt == nil else { return }
+        if let index = activities.indices.last, activities[index].appID == appID {
+            let last = activities[index]
+            let sameSite = last.domain == domain
+            let justOpened = last.domain == nil && last.domainStatus == nil && now.timeIntervalSince(last.at) <= Self.freshRowSeconds
+            if sameSite || justOpened {
+                closeOpenActivityInterval(at: now, uptime: uptime)
+                activities[index].domain = domain
+                if interruption {
+                    // Another page of the same site is another visit; the row that opened this visit was counted already.
+                    if sameSite || !last.interruption { interruptionCount += 1 }
+                    activities[index].interruption = true
+                }
+                return
+            }
+        }
+        record(Activity(at: now, appID: appID, name: name, domain: domain, interruption: interruption), at: now, uptime: uptime)
+    }
+
+    /// Joins rows that say the same thing, for what was saved before they stopped being split: the same app and the
+    /// same site, with the rows without a site in between. Time and interruptions are kept.
+    public mutating func foldActivities() {
+        guard activities.count > 1 else { return }
+        var folded: [Activity] = []
+        folded.reserveCapacity(activities.count)
+        for row in activities {
+            guard let last = folded.last, last.appID == row.appID else {
+                folded.append(row)
+                continue
+            }
+            let sameRow: Bool
+            if last.domain != nil || row.domain != nil {
+                sameRow = last.domain == nil || row.domain == nil || last.domain == row.domain
+            } else {
+                sameRow = last.title == row.title && last.titleStatus == row.titleStatus && last.domainStatus == row.domainStatus
+            }
+            guard sameRow else {
+                folded.append(row)
+                continue
+            }
+            let index = folded.count - 1
+            folded[index].duration += row.duration
+            folded[index].interruption = last.interruption || row.interruption
+            folded[index].domain = last.domain ?? row.domain
+            folded[index].title = last.title ?? row.title
+            folded[index].titleStatus = last.titleStatus ?? row.titleStatus
+            folded[index].domainStatus = last.domainStatus ?? row.domainStatus
+        }
+        activities = folded
+    }
+
     /// Observes the active application and records a single interruption per continuous exit from the allowed workspace.
     /// Returns `true` only when a new distraction episode begins.
     @discardableResult
@@ -983,7 +1096,10 @@ public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
             inDistractionEpisode = true
         }
         let last = activities.last
-        let sameSignature = last?.appID == appID && last?.title == title && last?.titleStatus == titleStatus && last?.domain == nil
+        // A row about a website (or about not being able to read it) belongs to the browser, and the reading of its
+        // address decides when it changes. A new row here on every tick made two rows every five seconds.
+        let isBrowserRow = last?.domain != nil || last?.domainStatus != nil
+        let sameSignature = last?.appID == appID && (isBrowserRow || (last?.title == title && last?.titleStatus == titleStatus))
         if isNewInterruption || !sameSignature {
             record(
                 Activity(
@@ -1042,14 +1158,10 @@ public struct StrictRedirectTracker: Equatable, Sendable {
         return .redirect
     }
 
-    public mutating func recordRedirectAttempt(succeeded: Bool) {
-        if succeeded {
-            // Still increment consecutive attempts if the OS reported true but never actually switched away from the unallowed app;
-            // `registerAllowedAppObserved()` resets it to 0 as soon as an allowed app becomes active.
-            consecutiveFailures += 1
-        } else {
-            consecutiveFailures += 1
-        }
+    /// Counts even when macOS reports success: it often says yes without the app in front changing. Only
+    /// `registerAllowedAppObserved()`, seeing an allowed app actually become active, brings it back to 0.
+    public mutating func recordRedirectAttempt() {
+        consecutiveFailures += 1
     }
 }
 
@@ -1216,8 +1328,6 @@ public struct Settings: Codable, Equatable, Sendable {
     public var runUpMinutes: Int
     /// Shows an active break timer banner/alert when a scheduled `BreakPeriod` is running.
     public var enforceBreaks: Bool
-    /// Shows a discreet floating countdown pill on screen when consuming a daily limit, launch visit or micro-pause (`showTimer` in FocusMe).
-    public var showFloatingTimerPill: Bool
     /// Sends pre-block warnings when 5 min and 1 min remain on a daily limit or launch visit (`timeLimitReminders` in FocusMe).
     public var preBlockRemindersEnabled: Bool
     /// Triggers a rest break after `continuousWorkMinutes` of continuous screen usage (`tickAsScreenBreak` in FocusMe).
@@ -1236,6 +1346,8 @@ public struct Settings: Codable, Equatable, Sendable {
     public var protectClipboard: Bool
     /// Prevents clearing session history or disabling title/browser observation while a protected block is active (`protectActivity` in FocusMe).
     public var protectActivityHistory: Bool
+    /// What counts as verified study (FD-09): only these apps and sites. Something added counts from the next day.
+    public var studySources: [StudySource]
 
     public static let defaultBreakMessages: [String] = [
         "Descansa la vista 20 segundos mirando a lo lejos.",
@@ -1269,7 +1381,6 @@ public struct Settings: Codable, Equatable, Sendable {
         self.emergencyUses = []
         self.runUpMinutes = RunUp.defaultMinutes
         self.enforceBreaks = true
-        self.showFloatingTimerPill = true
         self.preBlockRemindersEnabled = true
         self.continuousBreakEnabled = false
         self.continuousWorkMinutes = 50
@@ -1279,6 +1390,7 @@ public struct Settings: Codable, Equatable, Sendable {
         self.dayRolloverHour = 0
         self.protectClipboard = false
         self.protectActivityHistory = false
+        self.studySources = StudySources.defaults
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1286,9 +1398,9 @@ public struct Settings: Codable, Equatable, Sendable {
         case hotKeyEnabled, hotKeyCode, hotKeyModifiers, hotKeyLabel, hotKeyTarget
         case categories, workdays, workStartHour, workEndHour, breaks, textScale, showMenuBarItem, focusDuringStrict
         case watchBackgroundWindows, inspectEmbeddedPages, relaunchGuard, emergencyUses, runUpMinutes
-        case enforceBreaks, showFloatingTimerPill, preBlockRemindersEnabled
+        case enforceBreaks, preBlockRemindersEnabled
         case continuousBreakEnabled, continuousWorkMinutes, continuousBreakDurationMinutes, continuousBreakMaxSkipsPerDay, breakMessages
-        case dayRolloverHour, protectClipboard, protectActivityHistory
+        case dayRolloverHour, protectClipboard, protectActivityHistory, studySources
     }
 
     public init(from decoder: Decoder) throws {
@@ -1317,7 +1429,6 @@ public struct Settings: Codable, Equatable, Sendable {
         emergencyUses = try c.decodeIfPresent([String].self, forKey: .emergencyUses) ?? []
         runUpMinutes = RunUp.clampedMinutes(try c.decodeIfPresent(Int.self, forKey: .runUpMinutes) ?? RunUp.defaultMinutes)
         enforceBreaks = try c.decodeIfPresent(Bool.self, forKey: .enforceBreaks) ?? true
-        showFloatingTimerPill = try c.decodeIfPresent(Bool.self, forKey: .showFloatingTimerPill) ?? true
         preBlockRemindersEnabled = try c.decodeIfPresent(Bool.self, forKey: .preBlockRemindersEnabled) ?? true
         continuousBreakEnabled = try c.decodeIfPresent(Bool.self, forKey: .continuousBreakEnabled) ?? false
         continuousWorkMinutes = max(15, min(180, try c.decodeIfPresent(Int.self, forKey: .continuousWorkMinutes) ?? 50))
@@ -1328,6 +1439,7 @@ public struct Settings: Codable, Equatable, Sendable {
         dayRolloverHour = max(0, min(8, try c.decodeIfPresent(Int.self, forKey: .dayRolloverHour) ?? 0))
         protectClipboard = try c.decodeIfPresent(Bool.self, forKey: .protectClipboard) ?? false
         protectActivityHistory = try c.decodeIfPresent(Bool.self, forKey: .protectActivityHistory) ?? false
+        studySources = try c.decodeIfPresent([StudySource].self, forKey: .studySources) ?? StudySources.defaults
     }
 }
 
@@ -1421,6 +1533,9 @@ public struct Workspace: Codable, Equatable, Sendable {
     public var temporaryAllows: [TemporaryAllowEntry]
     /// Audit log of rule/session changes, micro-pauses, and overrides (`PlanChangeLog` in FocusMe).
     public var auditLog: [RuleAuditEntry]
+    /// When macOS last closed FocusDesk for a restart, a shutdown or a log-out; the watcher keeps out of the way for a
+    /// moment after it. Cleared as soon as FocusDesk opens again.
+    public var closedBySystemAt: Date?
     /// Elements that could not be read when this workspace was loaded (not saved). Above zero, the app keeps a copy
     /// of the original file before writing anything.
     public var decodingSkipped = 0
@@ -1447,7 +1562,7 @@ public struct Workspace: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case schema, tasks, profiles, session, history, settings, pendingCalendarOps
         case generalRules, dailyRuleUsage, dailyRuleLaunches, dailyRuleMatches, dailyVerifiedStudySeconds, dailyMicroPausesUsed
-        case dailyContinuousBreakSkips, temporaryAllows, auditLog
+        case dailyContinuousBreakSkips, temporaryAllows, auditLog, closedBySystemAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -1487,6 +1602,7 @@ public struct Workspace: Codable, Equatable, Sendable {
         dailyContinuousBreakSkips = (try? c.decodeIfPresent([String: Int].self, forKey: .dailyContinuousBreakSkips)) ?? [:]
         temporaryAllows = (try? c.decodeIfPresent([TemporaryAllowEntry].self, forKey: .temporaryAllows)) ?? []
         auditLog = (try? c.decodeIfPresent([RuleAuditEntry].self, forKey: .auditLog)) ?? []
+        closedBySystemAt = try? c.decodeIfPresent(Date.self, forKey: .closedBySystemAt)
         let brokenSession = c.contains(.session) && readableSession == nil && (try? c.decodeNil(forKey: .session)) != true ? 1 : 0
         decodingSkipped = (lossyTasks?.skipped ?? 0) + (lossyProfiles?.skipped ?? 0) + (lossyHistory?.skipped ?? 0)
             + (lossyOps?.skipped ?? 0) + (lossyRules?.skipped ?? 0) + brokenSession
@@ -1628,6 +1744,8 @@ public struct Workspace: Codable, Equatable, Sendable {
             history[index].session.activities = []
             history[index].session.baseline = [:]
         }
+        for index in history.indices { history[index].session.foldActivities() }
+        session?.foldActivities()
         let minDayKey = FocusRules.dayKey(for: cutoff)
         dailyRuleUsage = dailyRuleUsage.filter { $0.key >= minDayKey }
         dailyRuleLaunches = dailyRuleLaunches.filter { $0.key >= minDayKey }
@@ -1717,6 +1835,13 @@ public enum FocusRules {
         return value >= 3600
             ? String(format: "%@%d:%02d:%02d", prefix, value / 3600, value / 60 % 60, value % 60)
             : String(format: "%@%02d:%02d", prefix, value / 60, value % 60)
+    }
+
+    /// A length as it is said: «45 min», «2 h», «5 h 25». Past an hour, «325 min» makes you do the sum.
+    public static func durationText(minutes: Int) -> String {
+        let value = max(0, minutes)
+        guard value >= 60 else { return "\(value) min" }
+        return value % 60 == 0 ? "\(value / 60) h" : String(format: "%d h %02d", value / 60, value % 60)
     }
 
     /// Normalizes a domain, domain+subpath, or wildcard (`*`, `?`) token:
@@ -1848,6 +1973,60 @@ public enum FocusRules {
             return normPath == entryPath || normPath.hasPrefix(entryPath + "/")
         }
         return true
+    }
+
+    /// True when some page could match both entries. Used to know whether a new allow list lets through something an
+    /// old block list closed. Two patterns cannot be compared without listing every address, so they count as overlapping.
+    public static func domainEntriesOverlap(_ a: String, _ b: String) -> Bool {
+        func isPattern(_ entry: String) -> Bool { entry.contains("*") || entry.contains("?") }
+        func parts(_ entry: String) -> (host: String, path: String) {
+            let split = entry.lowercased().split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            return (String(split[0]), split.count > 1 ? String(split[1]).trimmingCharacters(in: CharacterSet(charactersIn: "/")) : "")
+        }
+        if isPattern(a) && isPattern(b) { return true }
+        if isPattern(a) || isPattern(b) {
+            let (pattern, plain) = isPattern(a) ? (a, b) : (b, a)
+            let target = parts(plain)
+            // An entry without a path covers every page of its host, so only the pattern's host matters then.
+            return target.path.isEmpty
+                ? entryMatches(host: target.host, entry: parts(pattern).host)
+                : entryMatches(host: target.host, path: "/" + target.path, entry: pattern)
+        }
+        let first = parts(a), second = parts(b)
+        guard first.host == second.host || first.host.hasSuffix("." + second.host) || second.host.hasSuffix("." + first.host) else { return false }
+        guard !first.path.isEmpty, !second.path.isEmpty else { return true }
+        return first.path == second.path || first.path.hasPrefix(second.path + "/") || second.path.hasPrefix(first.path + "/")
+    }
+
+    /// True when changing a website list would let through something the current one closes. The judge behind the
+    /// ratchets: whatever is blocked today has to stay blocked, however the list and its mode are rewritten.
+    public static func webListOpens(currentMode: WebListMode, current: [String], proposedMode: WebListMode, proposed: [String]) -> Bool {
+        // `blockAll` is the hardest list there is, so going to it opens nothing.
+        if proposedMode == .blockAll { return false }
+        // Empty allow and block lists both let every page through, so there is nothing to keep closed.
+        if currentMode != .blockAll && current.isEmpty { return false }
+        switch (currentMode, proposedMode) {
+        case (.blockAll, _), (.allowListed, .blockListed):
+            return true
+        case (.allowListed, _):
+            return proposed.isEmpty || !Set(proposed).isSubset(of: Set(current))
+        case (.blockListed, .blockListed):
+            return !Set(current).isSubset(of: Set(proposed))
+        case (.blockListed, _):
+            // Black to white hardens the rest of the web, but only if nothing that was closed is on the new list.
+            return proposed.isEmpty || proposed.contains { allowed in current.contains { domainEntriesOverlap(allowed, $0) } }
+        }
+    }
+
+    /// The same for an app list. An empty list blocks no app in either mode.
+    public static func appListOpens(currentMode: AppListMode, current: Set<String>, proposedMode: AppListMode, proposed: Set<String>) -> Bool {
+        guard !current.isEmpty else { return false }
+        switch (currentMode, proposedMode) {
+        case (.allowListed, .blockListed): return true
+        case (.allowListed, .allowListed): return proposed.isEmpty || !proposed.isSubset(of: current)
+        case (.blockListed, .blockListed): return !current.isSubset(of: proposed)
+        case (.blockListed, .allowListed): return proposed.isEmpty || !current.isDisjoint(with: proposed)
+        }
     }
 
     public static func domainAllowed(_ host: String, list: String) -> Bool {
