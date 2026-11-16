@@ -941,7 +941,7 @@ public static class Dialogs
         var postGraceBox = MakeTextBox(draft.PostMatchGraceSeconds.ToString(CultureInfo.InvariantCulture));
         var onePerGoalCheck = new System.Windows.Controls.CheckBox
         {
-            Content = "Cada partida cuesta un bloque completo de estudio (1 h → 1 partida → se bloquea)",
+            Content = "Bucle por partida (1 h → 1 partida → se bloquea; sin marcar = 1 h desbloquea todo y deja apagar)",
             IsChecked = draft.OneMatchPerGoalBlock,
             Margin = new Thickness(0, 10, 0, 0)
         };

@@ -1065,4 +1065,22 @@ final class EnforcementTests: XCTestCase {
         XCTAssertTrue(rule.oneMatchPerGoalBlock)
         XCTAssertEqual(rule.name, LeagueMatchRules.mandatoryRuleName)
     }
+
+    func testNonLoopMatchRuleUnlocksProtectionAfterStudyGoalWhileLoopStaysProtected() {
+        var singleGoal = GeneralBlockRule.mandatoryStudyThenLoLRule
+        singleGoal.oneMatchPerGoalBlock = false
+        XCTAssertFalse(singleGoal.earnsMatchesPerGoalBlock)
+
+        // Before 1 h of study: protected (cannot switch off without code).
+        XCTAssertTrue(singleGoal.isProtectedNow(at: zero, workedTodaySeconds: 1800, matchesToday: 0, continuous: 100))
+        // After 1 h of study: unlocked for turning off, even with alwaysProtected or 2/2 matches played.
+        XCTAssertFalse(singleGoal.isProtectedNow(at: zero, workedTodaySeconds: 3600, matchesToday: 0, continuous: 100))
+        XCTAssertFalse(singleGoal.isProtectedNow(at: zero, workedTodaySeconds: 3600, matchesToday: 2, continuous: 100))
+
+        // Loop rule ("1 h study -> 1 match -> 1 h study -> 1 match") stays protected after 1 h.
+        let loopRule = GeneralBlockRule.mandatoryStudyThenLoLRule
+        XCTAssertTrue(loopRule.earnsMatchesPerGoalBlock)
+        XCTAssertTrue(loopRule.isProtectedNow(at: zero, workedTodaySeconds: 3600, matchesToday: 0, continuous: 100))
+        XCTAssertTrue(loopRule.isProtectedNow(at: zero, workedTodaySeconds: 3600, matchesToday: 1, continuous: 100))
+    }
 }

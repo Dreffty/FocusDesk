@@ -2507,6 +2507,11 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         calendar: Calendar = .current
     ) -> Bool {
         guard protection != .none else { return false }
+        // Non-loop match rules ("1h study -> N matches") only protect until the study requirement is met;
+        // once completed, the user can switch off the rule freely. Loop rules ("1h per match") stay protected.
+        if kind == .workGoal && maxDailyMatches > 0 && !earnsMatchesPerGoalBlock && workedTodaySeconds >= goalRequiredSeconds {
+            return false
+        }
         if enabled && alwaysProtected {
             return true
         }

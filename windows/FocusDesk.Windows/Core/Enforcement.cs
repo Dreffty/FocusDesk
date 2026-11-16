@@ -529,6 +529,10 @@ public sealed class GeneralBlockRule
     public bool IsProtectedNow(DateTimeOffset now, double usedTodaySeconds = 0, double workedTodaySeconds = 0, int launchesToday = 0, int matchesToday = 0, bool isMatchInProgress = false, int runUpMinutes = 0, double? continuous = null)
     {
         if (Protection == SessionProtection.None) return false;
+        // Non-loop match rules ("1h study -> N matches") unlock protection once the study requirement is completed;
+        // loop rules (EarnsMatchesPerGoalBlock == true) stay protected across cycles.
+        if (Kind == GeneralRuleKind.WorkGoal && MaxDailyMatches > 0 && !EarnsMatchesPerGoalBlock && workedTodaySeconds >= GoalRequiredSeconds)
+            return false;
         if (Enabled && AlwaysProtected) return true;
         var cont = continuous ?? TrustedClock.ContinuousSeconds();
         if (IsInRunUp(now, usedTodaySeconds, workedTodaySeconds, isMatchInProgress, runUpMinutes)) return true;

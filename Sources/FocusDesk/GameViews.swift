@@ -183,8 +183,8 @@ struct GameRuleEditorSection: View {
                         .font(.app(11))
                 }
                 Text(draft.oneMatchPerGoalBlock
-                     ? "\(draft.goalMinutesRequired) min de estudio → 1 \(game.unitSingular) → se bloquea → otros \(draft.goalMinutesRequired) min → la siguiente."
-                     : "\(draft.goalMinutesRequired) min de estudio desbloquean las \(draft.maxDailyMatches) \(game.unitPlural) de golpe.")
+                     ? "\(draft.goalMinutesRequired) min de estudio → 1 \(game.unitSingular) → se bloquea → otros \(draft.goalMinutesRequired) min → la siguiente (bucle protegido)."
+                     : "\(draft.goalMinutesRequired) min de estudio desbloquean las \(draft.maxDailyMatches) \(game.unitPlural) de golpe y te dejan apagar la regla al acabar el estudio.")
                     .font(.app(10))
                     .foregroundStyle(Palette.muted)
             }
