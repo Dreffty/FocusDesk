@@ -33,6 +33,18 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
     private string _lastClipboardText = "";
     private bool _disposed;
 
+    // True when workspace.json existed but could not be read: the app is read-only until a copy is recovered or imported.
+    private bool _loadFailed;
+    public bool DataUnreadable => _loadFailed;
+
+    // Pauses caused by the computer (locked screen, sleep, other user), which are not an escape attempt and need no code.
+    private Guid? _pausedBySystemSessionId;
+    private bool _screenLocked;
+    private DateTimeOffset? _lastTickAt;
+    private double? _lastTickElapsed;
+    private Microsoft.Win32.SessionSwitchEventHandler? _sessionSwitchHandler;
+    private Microsoft.Win32.PowerModeChangedEventHandler? _powerModeHandler;
+
     private Guid? _sessionFinishedNotifiedId;
     private string? _lastTaskPomodoroKey;
 
@@ -100,34 +112,65 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
     {
         _enablePlatformWatchers = enablePlatformWatchers;
         Store = new WorkspaceStore(customDir);
+
+        // 1) Reading. If the data cannot be read, the app starts EMPTY BUT READ-ONLY: it never writes over the file it
+        //    could not read (it used to save an empty agenda on top of it a minute later). The original is also kept in
+        //    backups/ before anything else happens.
+        var loadedOk = false;
         try
         {
+            LossyReadStats.Reset();
             Workspace = Store.Load();
-            Workspace.Prune(DateTimeOffset.Now);
-            Workspace.ClosedBySystemAt = null;
-            if (Workspace.Session != null)
-            {
-                var now = DateTimeOffset.Now;
-                var shouldResume = Workspace.Session.ShouldResumeAfterRelaunch(now);
-                Workspace.Session.RecoverAfterUncleanExit(now);
-                if (shouldResume)
-                {
-                    Workspace.Session.Resume(now);
-                    Notice = $"«{Workspace.Session.Task.Title}» está protegida y continúa donde estaba.";
-                }
-                else
-                {
-                    Notice = $"«{Workspace.Session.Task.Title}» quedó en pausa al cerrarse FocusDesk. Puedes reanudarla cuando quieras.";
-                }
-            }
-            Store.CreateDailySnapshotIfNeeded();
-            if (_enablePlatformWatchers) CheckWitnessTamper();
-            Persist();
+            loadedOk = true;
         }
         catch (Exception ex)
         {
             Workspace = new Workspace();
-            Error = $"No se pudieron leer tus datos ({ex.Message}).";
+            _loadFailed = true;
+            var kept = Store.KeepOriginalCopy("lectura-fallida");
+            Error = $"No se pudieron leer tus datos ({ex.Message}). No se guarda nada hasta que lo resuelvas: tu archivo está intacto" +
+                    (kept != null ? $" (copia en {Path.GetFileName(kept)} dentro de «backups»)" : "") +
+                    ". En Ajustes puedes «Recuperar copia automática» o importar una copia.";
+        }
+
+        // 2) The rest of the start-up. A failure here must never throw away data that did load.
+        if (loadedOk)
+        {
+            try
+            {
+                var skipped = LossyReadStats.Skipped;
+                if (skipped > 0)
+                {
+                    var kept = Store.KeepOriginalCopy("lectura-parcial");
+                    Error = $"{(skipped == 1 ? "Un elemento" : $"{skipped} elementos")} de tus datos no se {(skipped == 1 ? "podía" : "podían")} leer y se {(skipped == 1 ? "ha" : "han")} dejado fuera. El resto funciona con normalidad; el archivo original está en {(kept != null ? Path.GetFileName(kept) : "«backups»")}.";
+                }
+                Workspace.Prune(DateTimeOffset.Now);
+                Workspace.ClosedBySystemAt = null;
+                if (Workspace.Session != null)
+                {
+                    var now = DateTimeOffset.Now;
+                    var shouldResume = Workspace.Session.ShouldResumeAfterRelaunch(now);
+                    Workspace.Session.RecoverAfterUncleanExit(now);
+                    if (shouldResume)
+                    {
+                        Workspace.Session.Resume(now);
+                        Notice = $"«{Workspace.Session.Task.Title}» está protegida y continúa donde estaba.";
+                    }
+                    else
+                    {
+                        Notice = $"«{Workspace.Session.Task.Title}» quedó en pausa al cerrarse FocusDesk. Puedes reanudarla cuando quieras.";
+                    }
+                }
+                // Series skipped while the app was closed get their next occurrence back (after the daily copy, so it keeps the old state).
+                Store.CreateDailySnapshotIfNeeded();
+                SeriesRoller.Roll(Workspace.Tasks, Workspace.Session?.Task.Id, DateTimeOffset.Now, Workspace.Settings.Workdays);
+                if (_enablePlatformWatchers) CheckWitnessTamper();
+                Persist();
+            }
+            catch (Exception ex)
+            {
+                Error = $"El arranque no terminó del todo ({ex.Message}). Tus datos están cargados.";
+            }
         }
 
         if (Workspace.GeneralRules.Any(r => r.Enabled && r.AlwaysProtected && r.Protection != SessionProtection.None))
@@ -138,7 +181,131 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => Tick();
-        if (_enablePlatformWatchers) _timer.Start();
+        if (_enablePlatformWatchers)
+        {
+            _timer.Start();
+            HookSystemEvents();
+        }
+    }
+
+    // MARK: - Locked screen, sleep and user switch (macOS: pauseForSystem / offerResumeAfterSystemPause)
+
+    private void HookSystemEvents()
+    {
+        try
+        {
+            _sessionSwitchHandler = (_, e) =>
+            {
+                var reason = e.Reason;
+                System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    if (_disposed) return;
+                    switch (reason)
+                    {
+                        case Microsoft.Win32.SessionSwitchReason.SessionLock:
+                        case Microsoft.Win32.SessionSwitchReason.ConsoleDisconnect:
+                        case Microsoft.Win32.SessionSwitchReason.RemoteDisconnect:
+                        case Microsoft.Win32.SessionSwitchReason.SessionLogoff:
+                            _screenLocked = true;
+                            PauseForSystem("por bloqueo de la pantalla o cambio de usuario");
+                            break;
+                        case Microsoft.Win32.SessionSwitchReason.SessionUnlock:
+                        case Microsoft.Win32.SessionSwitchReason.ConsoleConnect:
+                        case Microsoft.Win32.SessionSwitchReason.RemoteConnect:
+                        case Microsoft.Win32.SessionSwitchReason.SessionLogon:
+                            _screenLocked = false;
+                            OfferResumeAfterSystemPause("mientras el equipo estaba bloqueado");
+                            break;
+                    }
+                });
+            };
+            _powerModeHandler = (_, e) =>
+            {
+                var mode = e.Mode;
+                System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    if (_disposed) return;
+                    if (mode == Microsoft.Win32.PowerModes.Suspend)
+                        PauseForSystem("al suspender el equipo");
+                    else if (mode == Microsoft.Win32.PowerModes.Resume)
+                        OfferResumeAfterSystemPause("mientras el equipo estaba suspendido");
+                });
+            };
+            Microsoft.Win32.SystemEvents.SessionSwitch += _sessionSwitchHandler;
+            Microsoft.Win32.SystemEvents.PowerModeChanged += _powerModeHandler;
+        }
+        catch { }
+    }
+
+    private void UnhookSystemEvents()
+    {
+        try
+        {
+            if (_sessionSwitchHandler != null) Microsoft.Win32.SystemEvents.SessionSwitch -= _sessionSwitchHandler;
+            if (_powerModeHandler != null) Microsoft.Win32.SystemEvents.PowerModeChanged -= _powerModeHandler;
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// The computer went to sleep, locked or changed user: not an escape attempt, so no code and no wait. The time away
+    /// does not count. `excludeSeconds` takes out time that was already credited before the pause was noticed.
+    /// </summary>
+    private void PauseForSystem(string reason, double excludeSeconds = 0)
+    {
+        if (Workspace.Session is not { Paused: false, EndedAt: null } s) return;
+        s.Pause(DateTimeOffset.Now);
+        if (excludeSeconds > 0) s.Accumulated = Math.Max(0, s.Accumulated - excludeSeconds);
+        _pausedBySystemSessionId = s.Id;
+        _lastTickElapsed = null;
+        Persist();
+        Notice = $"Sesión en pausa {reason}. Ese rato no cuenta.";
+    }
+
+    private void OfferResumeAfterSystemPause(string reason)
+    {
+        if (_screenLocked) return; // woke up behind the lock screen: unlocking is what brings it back
+        if (_pausedBySystemSessionId == null) return;
+        if (Workspace.Session is not { Paused: true, EndedAt: null } s || s.Id != _pausedBySystemSessionId)
+        {
+            _pausedBySystemSessionId = null;
+            return;
+        }
+        var now = DateTimeOffset.Now;
+        _pausedBySystemSessionId = null;
+        // A protected session does not ask (asking was a free way out: lock, unlock, say no). It simply carries on.
+        if (s.Task.Protection != SessionProtection.None && s.Remaining(now) > 0)
+        {
+            ResumeSession();
+            Notice = $"«{s.Task.Title}» sigue donde estaba: se pausó {reason} y ese rato no cuenta.";
+            return;
+        }
+        Notice = $"«{s.Task.Title}» se pausó {reason}. Te quedan {FocusRules.Clock(Math.Max(0, s.Remaining(now)))}. Pulsa «Reanudar» cuando estés listo.";
+        NotificationRequested?.Invoke($"Sesión en pausa · {s.Task.Title}", Notice);
+    }
+
+    /// <summary>
+    /// Fallback when Windows does not announce the sleep (Modern Standby): the clock ticks every second, so a gap of
+    /// 90 s or more in which the session was credited the whole gap means the machine was away. That time is taken out.
+    /// </summary>
+    private void DetectSleepGap(DateTimeOffset now)
+    {
+        var previousTick = _lastTickAt;
+        _lastTickAt = now;
+        if (Workspace.Session is not { Paused: false, EndedAt: null } s)
+        {
+            _lastTickElapsed = null;
+            return;
+        }
+        var elapsedNow = s.Elapsed(now);
+        var previousElapsed = _lastTickElapsed;
+        _lastTickElapsed = elapsedNow;
+        if (previousTick == null || previousElapsed == null) return;
+        if ((now - previousTick.Value).TotalSeconds < 90) return;
+        var credited = elapsedNow - previousElapsed.Value;
+        if (credited < 90) return; // the clock was moved, not the machine suspended
+        PauseForSystem("tras un reposo del equipo", Math.Max(0, credited - 1.0));
+        if (!_screenLocked) OfferResumeAfterSystemPause("mientras el equipo estaba en reposo");
     }
 
     public void EnsureWatcherIfNeeded()
@@ -217,6 +384,13 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     public bool Persist()
     {
+        // The data on disk could not be read: never write an empty agenda over it (see the constructor).
+        if (_loadFailed)
+        {
+            Error = "Tus datos no se pudieron leer y por eso este cambio NO se ha guardado. Tu archivo está intacto: en Ajustes usa «Recuperar copia automática» o «Importar copia».";
+            StateRefreshed?.Invoke();
+            return false;
+        }
         try
         {
             Store.Save(Workspace);
@@ -363,11 +537,18 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         var now = DateTimeOffset.Now;
         _ticks++;
 
+        DetectSleepGap(now);
+
         if (now.LocalDateTime.Date != _lastPrunedDay)
         {
+            // With the app open overnight, «Hoy» kept showing the day it was started. Follow the new day only if the
+            // person was looking at the day that just ended (not a date chosen on purpose).
+            var previousDay = _lastPrunedDay;
             _lastPrunedDay = now.LocalDateTime.Date;
+            if (_selectedDate.LocalDateTime.Date == previousDay) SelectedDate = now;
             try { Store.CreateDailySnapshotIfNeeded(now); } catch { }
             Workspace.Prune(now);
+            SeriesRoller.Roll(Workspace.Tasks, Workspace.Session?.Task.Id, now, Workspace.Settings.Workdays);
             Persist();
         }
 
@@ -432,7 +613,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     private void StartDueAutoStartTasks(DateTimeOffset now)
     {
-        if (Workspace.Session != null) return;
+        if (Workspace.Session != null || _screenLocked || _loadFailed) return;
         var due = Workspace.Tasks.FirstOrDefault(t =>
             t.AutoStart && !t.Completed && t.IsScheduled &&
             t.ScheduledAt <= now && now < t.End &&
@@ -960,7 +1141,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             }
         }
 
-        if (FocusRules.SystemExemptProcesses.Contains(procClean))
+        if (FocusRules.SystemExemptProcesses.Contains(procClean) || FocusRules.IsOwnProcess(fg.ProcessId))
             return;
 
         // Read browser URL off the UI thread so UIAutomation never freezes the WPF window.
@@ -1128,7 +1309,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
         foreach (var win in WindowsActivity.VisibleWindows())
         {
-            if (win.ProcessId == foregroundPid) continue;
+            if (win.ProcessId == foregroundPid || FocusRules.IsOwnProcess(win.ProcessId)) continue;
             var clean = win.ProcessName.ToLowerInvariant().Replace(".exe", "");
             if (FocusRules.SystemExemptProcesses.Contains(clean)) continue;
             if (Workspace.IsTemporarilyAllowedApp(clean, now, cont)) continue;
@@ -1328,6 +1509,34 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             Notice = $"«{updated.Title}» pospuesta a las {updated.ScheduledAt.LocalDateTime:HH:mm}.";
     }
 
+    /// <summary>
+    /// What restarting this rule's countdown (or Pomodoro) would loosen, or null. A protected block that is already
+    /// running must not be shortened by pressing «Activar» again: that was a free way out with no code.
+    /// </summary>
+    public string? RestartLoosening(GeneralBlockRule rule, GeneralRuleKind kind)
+    {
+        if (!IsRuleProtected(rule)) return null;
+        var proposed = rule.Clone();
+        if (kind == GeneralRuleKind.Countdown) proposed.StartCountdown(); else proposed.StartPomodoro();
+        return GeneralBlockRule.Loosening(rule, proposed);
+    }
+
+    public void StartRuleCountdown(GeneralBlockRule rule)
+    {
+        rule.StartCountdown();
+        Persist();
+        EnsureWatcherIfNeeded();
+        Notice = $"Bloqueo «{rule.Name}» en marcha ({FocusRules.DurationText(rule.CountdownMinutes)}).";
+    }
+
+    public void StartRulePomodoro(GeneralBlockRule rule)
+    {
+        rule.StartPomodoro();
+        Persist();
+        EnsureWatcherIfNeeded();
+        Notice = $"Pomodoro «{rule.Name}» iniciado: ciclo 1/{rule.PomodoroTotalCycles}.";
+    }
+
     public void UseMicroPause(GeneralBlockRule rule)
     {
         var now = DateTimeOffset.Now;
@@ -1433,6 +1642,8 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 Workspace.Tasks.Add(next);
         }
         Workspace.Session = null;
+        // «Sigue pendiente» on an occurrence of an earlier day must not freeze its series there.
+        SeriesRoller.Roll(Workspace.Tasks, null, DateTimeOffset.Now, Workspace.Settings.Workdays);
         Persist();
         Notice = completed ? "Tarea completada y guardada en historial." : "Sesión guardada.";
     }
@@ -1444,6 +1655,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         s.Finish(DateTimeOffset.Now);
         Workspace.History.Insert(0, new SessionRecord { Id = s.Id, Session = s, Completed = false, Cancelled = true, Note = "Sesión cancelada" });
         Workspace.Session = null;
+        SeriesRoller.Roll(Workspace.Tasks, null, DateTimeOffset.Now, Workspace.Settings.Workdays);
         Persist();
         Notice = "Sesión cancelada.";
     }
@@ -1545,13 +1757,38 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     public void ImportBackup(string filePath)
     {
+        LossyReadStats.Reset();
         var imported = Store.ValidateBackup(filePath);
         if (imported.Session != null) { imported.Session.RunningSince = null; imported.Session.RunningUptime = null; }
+        // Keep what is there now before replacing it (the previous agenda would otherwise be gone for good).
+        if (!_loadFailed) Store.KeepOriginalCopy("antes-de-importar");
         Workspace = imported;
+        _loadFailed = false;
         Error = "";
         Persist();
         if (_enablePlatformWatchers) RefreshValveServer();
         Notice = "Copia importada correctamente.";
+    }
+
+    /// <summary>Goes back to the last automatic copy (workspace.backup.json). The way out when the data could not be read.</summary>
+    public void RecoverFromAutoBackup()
+    {
+        try
+        {
+            LossyReadStats.Reset();
+            if (!_loadFailed) Store.KeepOriginalCopy("antes-de-recuperar");
+            var recovered = Store.RecoverFromRollingBackup();
+            Workspace = recovered;
+            _loadFailed = false;
+            Error = "";
+            Persist();
+            if (_enablePlatformWatchers) RefreshValveServer();
+            Notice = "Copia automática recuperada.";
+        }
+        catch (Exception ex)
+        {
+            Error = $"No se pudo recuperar la copia automática: {ex.Message}";
+        }
     }
 
     private static string Capitalize(string s) =>
@@ -1561,6 +1798,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        UnhookSystemEvents();
         _timer.Stop();
         _valveServer?.Dispose();
     }

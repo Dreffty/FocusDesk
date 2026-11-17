@@ -177,6 +177,8 @@ public static class WindowsActivity
 
     public static string ApplyBlockAction(ForegroundAppInfo app, AppBlockAction action)
     {
+        // Never act on FocusDesk itself, whatever the file is called or a rule says.
+        if (FocusRules.IsOwnProcess(app.ProcessId)) return "ignorada (es FocusDesk)";
         var safe = FocusRules.SafeAction(action, app.ProcessName);
         switch (safe)
         {
@@ -244,6 +246,7 @@ public static class WindowsActivity
         var killed = false;
         foreach (var pid in pids)
         {
+            if (FocusRules.IsOwnProcess(pid)) continue;
             try
             {
                 using var p = Process.GetProcessById(pid);

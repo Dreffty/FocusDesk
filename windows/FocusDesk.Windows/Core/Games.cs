@@ -60,6 +60,11 @@ public sealed class GameDefinition
     public string[] ProcessNames { get; init; } = Array.Empty<string>();
     public string[] PathFragments { get; init; } = Array.Empty<string>();
     public string[] TitleKeywords { get; init; } = Array.Empty<string>();
+    /// <summary>
+    /// The window title is only looked at for these processes (Minecraft Java runs as «javaw», so its name says nothing).
+    /// It is never used on every app: a browser tab or an editor titled «minecraft» is not the game.
+    /// </summary>
+    public string[] TitleProcessNames { get; init; } = Array.Empty<string>();
     public string[] WebEntries { get; init; } = Array.Empty<string>();
     public bool MatchesAnyGame { get; init; }
     public string Note { get; init; } = "";
@@ -72,7 +77,7 @@ public sealed class GameDefinition
             return ValorantMatchRules.IsValorantProcess(processName, executablePath);
 
         var proc = (processName ?? "").ToLowerInvariant().Replace(".exe", "");
-        if (!string.IsNullOrEmpty(proc) && ProcessNames.Any(p => proc.Contains(p)))
+        if (!string.IsNullOrEmpty(proc) && ProcessNames.Any(p => ProcessNameMatches(proc, p)))
             return true;
 
         var path = (executablePath ?? "").ToLowerInvariant().Replace('\\', '/');
@@ -80,7 +85,7 @@ public sealed class GameDefinition
             return true;
 
         var title = (windowTitle ?? "").ToLowerInvariant();
-        if (!string.IsNullOrEmpty(title) && TitleKeywords.Any(k => title.Contains(k)))
+        if (!string.IsNullOrEmpty(title) && TitleProcessNames.Contains(proc) && TitleKeywords.Any(k => title.Contains(k)))
             return true;
 
         if (MatchesAnyGame && GameLibraryRules.MatchesGameApp(proc, executablePath) != null)
@@ -88,6 +93,15 @@ public sealed class GameDefinition
 
         return false;
     }
+
+    /// <summary>
+    /// The process IS this name, or it is this name followed by a separator («minecraft.windows», «wow-64»). Never a
+    /// plain `Contains`: «cod» is inside «code» (VS Code) and the rule used to close it.
+    /// </summary>
+    private static bool ProcessNameMatches(string process, string name) =>
+        process == name ||
+        (process.Length > name.Length && process.StartsWith(name, StringComparison.Ordinal) &&
+         process[name.Length] is '.' or '-' or '_' or ' ');
 
     public bool MatchesWeb(string host, string path) =>
         WebEntries.Any(e => FocusRules.EntryMatches(host, path, e));
@@ -169,6 +183,7 @@ public static class GameCatalog
             ProcessNames = new[] { "minecraft", "minecraftlauncher", "prismlauncher", "multimc", "tlauncher" },
             PathFragments = new[] { "/.minecraft/", "/minecraft/", "prismlauncher", "tlauncher" },
             TitleKeywords = new[] { "minecraft" },
+            TitleProcessNames = new[] { "javaw", "java" },
             Note = "Minecraft no tiene partidas: cuenta sesiones de juego."
         },
         new()

@@ -526,30 +526,39 @@ public sealed class FocusTask
         var reference = after.HasValue && after.Value > ScheduledAt ? after.Value : ScheduledAt;
         DateTimeOffset? candidate = null;
 
+        // All the arithmetic is done on the WALL CLOCK of the head («09:00») and each result gets the offset that applies
+        // on its own date. Adding days to a DateTimeOffset kept the old offset, so after the clock change a 09:00
+        // task moved to 08:00 or 10:00.
+        var headLocal = ScheduledAt.LocalDateTime;
+        var timeOfDay = headLocal.TimeOfDay;
+
         if (RepeatRule is RepeatRule.Weekdays or RepeatRule.CustomDays)
         {
             var allowed = RepeatRule == RepeatRule.Weekdays
                 ? wd
                 : (RepeatDays.Count > 0 ? RepeatDays : new HashSet<int> { FocusRules.AppleWeekday(ScheduledAt) });
-            var localTime = ScheduledAt.LocalDateTime;
-            var cursor = new DateTimeOffset(reference.LocalDateTime.Date, reference.Offset);
+            var day = reference.LocalDateTime.Date;
             for (var i = 0; i < 400; i++)
             {
-                var dateOnDay = new DateTimeOffset(cursor.Year, cursor.Month, cursor.Day, localTime.Hour, localTime.Minute, localTime.Second, cursor.Offset);
+                var dateOnDay = FocusRules.FromLocal(day.Add(timeOfDay));
                 var key = FocusRules.DayKey(dateOnDay);
                 if (dateOnDay > ScheduledAt && dateOnDay > reference && allowed.Contains(FocusRules.AppleWeekday(dateOnDay)) && !SkippedDates.Contains(key))
                 {
                     candidate = dateOnDay;
                     break;
                 }
-                cursor = cursor.AddDays(1);
+                day = day.AddDays(1);
             }
         }
         else
         {
-            for (var steps = 1; steps <= 400; steps++)
+            var unitDays = RepeatRule == RepeatRule.Daily ? 1 : 7;
+            // Jump close to `reference` instead of walking from the first date: a long-neglected series still finds its next one.
+            var daysAhead = (int)Math.Max(0, (reference.LocalDateTime.Date - headLocal.Date).TotalDays);
+            var steps = Math.Max(1, daysAhead / unitDays);
+            for (var n = 0; n < 400; n++, steps++)
             {
-                var date = RepeatRule == RepeatRule.Daily ? ScheduledAt.AddDays(steps) : ScheduledAt.AddDays(steps * 7);
+                var date = FocusRules.FromLocal(headLocal.Date.AddDays((double)steps * unitDays).Add(timeOfDay));
                 var key = FocusRules.DayKey(date);
                 if (date > reference && !SkippedDates.Contains(key))
                 {
@@ -572,10 +581,80 @@ public sealed class FocusTask
         return copy;
     }
 
+    /// <summary>Future occurrences of this series between `from` and `to`, for the agenda preview. Nothing is stored.</summary>
+    public List<FocusTask> UpcomingOccurrences(DateTimeOffset from, DateTimeOffset to, HashSet<int>? workdays = null, int maxCount = 60)
+    {
+        var results = new List<FocusTask>();
+        if (RepeatRule == RepeatRule.Never || !IsScheduled || Completed) return results;
+        var cursor = NextOccurrence(from.AddSeconds(-1), workdays);
+        var safety = 0;
+        while (cursor != null && results.Count < maxCount && safety++ < 366)
+        {
+            if (cursor.ScheduledAt > to) break;
+            if (cursor.ScheduledAt >= from)
+            {
+                cursor.SeriesId = SeriesId ?? Id;
+                results.Add(cursor);
+            }
+            cursor = cursor.NextOccurrence(cursor.ScheduledAt, workdays);
+        }
+        return results;
+    }
+
     public FocusTask Clone()
     {
         var json = JsonSerializer.Serialize(this, WorkspaceStore.JsonOptions);
         return JsonSerializer.Deserialize<FocusTask>(json, WorkspaceStore.JsonOptions)!;
+    }
+}
+
+/// <summary>
+/// A recurring task is ONE task whose date is its current occurrence; it only advances when that occurrence is
+/// completed. Skip a day (not started, «Sigue pendiente», cancelled) and it stayed in the past for good, vanishing from
+/// the agenda. Rolling moves the series to its first occurrence from today on and leaves the missed one behind as an
+/// ordinary overdue task, so nothing silently disappears (port of `SeriesRoller` in macOS Planning.swift).
+/// </summary>
+public static class SeriesRoller
+{
+    /// <summary>Returns how many series moved forward. Mutates `tasks` (heads move, overdue copies are appended).</summary>
+    public static int Roll(List<FocusTask> tasks, Guid? sessionTaskId, DateTimeOffset now, HashSet<int>? workdays = null)
+    {
+        var today = now.LocalDateTime.Date;
+        var startOfToday = FocusRules.FromLocal(today);
+        var rolled = 0;
+        var overdueCopies = new List<FocusTask>();
+
+        foreach (var head in tasks.ToList())
+        {
+            if (head.RepeatRule == RepeatRule.Never || !head.IsScheduled || head.Completed || head.Id == sessionTaskId) continue;
+            if (head.ScheduledAt.LocalDateTime.Date >= today) continue;
+            var next = head.NextOccurrence(startOfToday.AddSeconds(-1), workdays);
+            if (next == null) continue;
+
+            // One overdue reminder per series is enough: a week of missed daily tasks must not bury the day in copies.
+            var seriesKey = head.SeriesId ?? head.Id;
+            var alreadyOverdue = tasks.Concat(overdueCopies).Any(o =>
+                o.RepeatRule == RepeatRule.Never && !o.Completed && o.IsScheduled &&
+                (o.SeriesId == seriesKey || o.SeriesId == head.Id) &&
+                o.ScheduledAt.LocalDateTime.Date < today);
+            if (!alreadyOverdue)
+            {
+                var missed = head.Clone();
+                missed.Id = Guid.NewGuid();
+                missed.RepeatRule = RepeatRule.Never;
+                missed.RepeatDays = new HashSet<int>();
+                missed.SkippedDates = new HashSet<string>();
+                missed.SeriesId = seriesKey;
+                overdueCopies.Add(missed);
+            }
+
+            head.ScheduledAt = next.ScheduledAt;
+            head.DueDate = next.DueDate;
+            rolled++;
+        }
+
+        tasks.AddRange(overdueCopies);
+        return rolled;
     }
 }
 
@@ -726,13 +805,13 @@ public sealed class WorkSession
             ResumeOnLaunchUntil = now.AddSeconds(Math.Max(0, Budget - Accumulated));
     }
 
+    /// <summary>
+    /// A session read from disk never keeps running on its own. Only what was saved before the app went away counts
+    /// (the last checkpoint, at most a few seconds old): the time FocusDesk was closed is NOT work. Crediting it let a
+    /// shutdown or a force-quit turn into hours of "study" (macOS clears `runningSince` here for the same reason).
+    /// </summary>
     public void RecoverAfterUncleanExit(DateTimeOffset now)
     {
-        if (RunningSince.HasValue && EndedAt == null)
-        {
-            var span = Math.Clamp((now - RunningSince.Value).TotalSeconds, 0, Math.Max(0, Budget - Accumulated));
-            Accumulated += span;
-        }
         RunningSince = null;
         RunningUptime = null;
         LastActivityAt = null;
@@ -999,11 +1078,18 @@ public sealed class Settings
 public sealed class Workspace
 {
     public int Schema { get; set; } = 1;
+    // One damaged element must not make the whole file unreadable: the lossy converters skip (and count) what does not read.
+    [JsonConverter(typeof(LossyListConverter<FocusTask>))]
     public List<FocusTask> Tasks { get; set; } = new();
+    [JsonConverter(typeof(LossyListConverter<FocusProfile>))]
     public List<FocusProfile> Profiles { get; set; } = FocusProfile.Defaults();
+    [JsonConverter(typeof(LossyObjectConverter<WorkSession>))]
     public WorkSession? Session { get; set; }
+    [JsonConverter(typeof(LossyListConverter<SessionRecord>))]
     public List<SessionRecord> History { get; set; } = new();
+    [JsonConverter(typeof(LossyObjectOrDefaultConverter<Settings>))]
     public Settings Settings { get; set; } = new();
+    [JsonConverter(typeof(LossyListConverter<GeneralBlockRule>))]
     public List<GeneralBlockRule> GeneralRules { get; set; } = GeneralBlockRule.Defaults();
     public Dictionary<string, Dictionary<string, double>> DailyRuleUsage { get; set; } = new();
     public Dictionary<string, Dictionary<string, int>> DailyRuleLaunches { get; set; } = new();
@@ -1011,7 +1097,9 @@ public sealed class Workspace
     public Dictionary<string, double> DailyVerifiedStudySeconds { get; set; } = new();
     public Dictionary<string, Dictionary<string, int>> DailyMicroPausesUsed { get; set; } = new();
     public Dictionary<string, int> DailyContinuousBreakSkips { get; set; } = new();
+    [JsonConverter(typeof(LossyListConverter<TemporaryAllowEntry>))]
     public List<TemporaryAllowEntry> TemporaryAllows { get; set; } = new();
+    [JsonConverter(typeof(LossyListConverter<RuleAuditEntry>))]
     public List<RuleAuditEntry> AuditLog { get; set; } = new();
     public DateTimeOffset? ClosedBySystemAt { get; set; }
 
@@ -1153,20 +1241,49 @@ public sealed class Workspace
 
 public static class FocusRules
 {
-    public static readonly HashSet<string> SystemExemptProcesses = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>
+    /// Name of THIS process. The released file is called «FocusDesk-Windows-x64.exe», and a Windows process is named after
+    /// its file, so comparing with the literal text «focusdesk» left FocusDesk blocking (or killing) itself.
+    /// </summary>
+    public static readonly string OwnProcessName = ReadOwnProcessName();
+
+    private static string ReadOwnProcessName()
     {
+        try
+        {
+            using var me = System.Diagnostics.Process.GetCurrentProcess();
+            var name = me.ProcessName;
+            return string.IsNullOrWhiteSpace(name) ? "focusdesk" : name.ToLowerInvariant();
+        }
+        catch { return "focusdesk"; }
+    }
+
+    private static HashSet<string> WithOwnProcess(params string[] names)
+    {
+        var set = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase) { OwnProcessName };
+        return set;
+    }
+
+    /// <summary>True when `pid` is FocusDesk itself (whatever its file is called).</summary>
+    public static bool IsOwnProcess(int pid) => pid == Environment.ProcessId;
+
+    public static readonly HashSet<string> SystemExemptProcesses = WithOwnProcess(
         "focusdesk", "explorer", "shellexperiencehost", "startmenuexperiencehost", "searchhost",
         "searchui", "applicationframehost", "lockapp", "logonui", "dwm", "csrss", "lsass",
         "winlogon", "svchost", "taskhostw", "sihost", "ctfmon", "narrator", "magnify",
-        "osk", "securityhealthsystray"
-    };
+        "osk", "securityhealthsystray");
 
-    public static readonly HashSet<string> NeverTerminateProcesses = new(StringComparer.OrdinalIgnoreCase)
-    {
+    public static readonly HashSet<string> NeverTerminateProcesses = WithOwnProcess(
         "focusdesk", "explorer", "dwm", "csrss", "lsass", "winlogon", "svchost", "smss",
         "services", "taskhostw", "sihost", "shellexperiencehost", "startmenuexperiencehost",
-        "searchhost", "narrator", "cmd", "windowsterminal", "powershell", "pwsh"
-    };
+        "searchhost", "narrator", "cmd", "windowsterminal", "powershell", "pwsh");
+
+    /// <summary>A wall-clock time (no zone) as an instant, with the offset that applies on THAT date (daylight saving included).</summary>
+    public static DateTimeOffset FromLocal(DateTime wallClock)
+    {
+        var unspecified = DateTime.SpecifyKind(wallClock, DateTimeKind.Unspecified);
+        return new DateTimeOffset(unspecified, TimeZoneInfo.Local.GetUtcOffset(unspecified));
+    }
 
     public static AppBlockAction SafeAction(AppBlockAction action, string processName)
     {

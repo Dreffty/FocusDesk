@@ -68,10 +68,15 @@ public partial class App : System.Windows.Application
             if (_engine != null)
             {
                 _engine.Workspace.ClosedBySystemAt = DateTimeOffset.UtcNow;
-                if (_engine.Workspace.Session is { Paused: false, EndedAt: null } sess && sess.Task.Protection != SessionProtection.None)
+                if (_engine.Workspace.Session is { Paused: false, EndedAt: null } sess)
                 {
-                    var rem = Math.Max(0, sess.Remaining(DateTimeOffset.Now));
-                    sess.ResumeOnLaunchUntil = DateTimeOffset.UtcNow.AddSeconds(rem);
+                    // Save exactly what was worked up to this moment: the time Windows stays off must not count.
+                    sess.Checkpoint(DateTimeOffset.Now);
+                    if (sess.Task.Protection != SessionProtection.None)
+                    {
+                        var rem = Math.Max(0, sess.Remaining(DateTimeOffset.Now));
+                        sess.ResumeOnLaunchUntil = DateTimeOffset.UtcNow.AddSeconds(rem);
+                    }
                 }
                 _engine.Persist();
                 _engine.Dispose();

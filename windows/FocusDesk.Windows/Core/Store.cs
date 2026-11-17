@@ -79,7 +79,30 @@ public sealed class WorkspaceStore
     private sealed class HistoryFile
     {
         public int Version { get; set; } = 1;
+        [JsonConverter(typeof(LossyListConverter<SessionRecord>))]
         public List<SessionRecord> Records { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Keeps the file on disk exactly as it is, in backups/, before anything is written over it. Used when the data could
+    /// not be read (or only partly): the original is what lets a person recover what the app could not.
+    /// </summary>
+    public string? KeepOriginalCopy(string prefix)
+    {
+        try
+        {
+            if (!File.Exists(FilePath)) return null;
+            Directory.CreateDirectory(BackupsDirectoryPath);
+            var target = Path.Combine(BackupsDirectoryPath, $"{prefix}-{DateTime.Now:yyyyMMdd-HHmmss}.json");
+            File.Copy(FilePath, target, overwrite: false);
+            if (File.Exists(HistoryPath))
+            {
+                try { File.Copy(HistoryPath, Path.Combine(BackupsDirectoryPath, $"{prefix}-{DateTime.Now:yyyyMMdd-HHmmss}.history.json"), overwrite: false); }
+                catch { }
+            }
+            return target;
+        }
+        catch { return null; }
     }
 
     private void AttachHistory(Workspace ws)
@@ -233,4 +256,98 @@ public sealed class FlexibleSimilarityConverter : JsonConverter<SimilarityProtec
 
     public override void Write(Utf8JsonWriter writer, SimilarityProtectionLevel value, JsonSerializerOptions options) =>
         writer.WriteNumberValue((int)value);
+}
+
+/// <summary>How many elements could not be read in the current load (so the app can keep the original file and say so).</summary>
+public static class LossyReadStats
+{
+    [ThreadStatic] private static int _skipped;
+    public static int Skipped => _skipped;
+    public static void Reset() => _skipped = 0;
+    internal static void Count() => _skipped++;
+}
+
+/// <summary>
+/// Reads a list keeping every element that reads and skipping (and counting) the ones that do not, so one damaged task
+/// does not make the whole agenda unreadable (`LossyArray` in macOS Models.swift).
+/// </summary>
+public sealed class LossyListConverter<T> : JsonConverter<List<T>>
+{
+    public override bool HandleNull => true;
+
+    public override List<T>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        var list = new List<T>();
+        if (reader.TokenType == JsonTokenType.Null) return list;
+        if (reader.TokenType != JsonTokenType.StartArray)
+        {
+            reader.Skip();
+            LossyReadStats.Count();
+            return list;
+        }
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndArray) break;
+            using var doc = JsonDocument.ParseValue(ref reader);
+            try
+            {
+                var item = doc.RootElement.Deserialize<T>(options);
+                if (item != null) list.Add(item);
+                else LossyReadStats.Count();
+            }
+            catch (Exception)
+            {
+                LossyReadStats.Count();
+            }
+        }
+        return list;
+    }
+
+    public override void Write(Utf8JsonWriter writer, List<T> value, JsonSerializerOptions options)
+    {
+        if (value == null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+        writer.WriteStartArray();
+        foreach (var item in value) JsonSerializer.Serialize(writer, item, options);
+        writer.WriteEndArray();
+    }
+}
+
+/// <summary>An object that does not read becomes «nothing» (a damaged running session is dropped instead of blocking everything).</summary>
+public sealed class LossyObjectConverter<T> : JsonConverter<T> where T : class
+{
+    public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var doc = JsonDocument.ParseValue(ref reader);
+        try { return doc.RootElement.Deserialize<T>(options); }
+        catch (Exception)
+        {
+            LossyReadStats.Count();
+            return null;
+        }
+    }
+
+    public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options) =>
+        JsonSerializer.Serialize(writer, value, options);
+}
+
+/// <summary>Same, for an object that must always exist (settings): what does not read falls back to the defaults.</summary>
+public sealed class LossyObjectOrDefaultConverter<T> : JsonConverter<T> where T : class, new()
+{
+    public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var doc = JsonDocument.ParseValue(ref reader);
+        try { return doc.RootElement.Deserialize<T>(options) ?? new T(); }
+        catch (Exception)
+        {
+            LossyReadStats.Count();
+            return new T();
+        }
+    }
+
+    public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options) =>
+        JsonSerializer.Serialize(writer, value, options);
 }

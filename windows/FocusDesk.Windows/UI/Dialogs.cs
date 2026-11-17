@@ -621,11 +621,70 @@ public static class Dialogs
             Margin = new Thickness(0, 8, 0, 0)
         };
 
+        // «Días concretos» had no way to choose the days, so it could never be saved.
+        var repeatDays = new HashSet<int>(draft.RepeatDays);
+        var repeatDaysWrap = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
+        foreach (var (dayNum, dayLabel) in new[] { (2, "Lun"), (3, "Mar"), (4, "Mié"), (5, "Jue"), (6, "Vie"), (7, "Sáb"), (1, "Dom") })
+        {
+            var dayBtn = new System.Windows.Controls.Button
+            {
+                Content = dayLabel,
+                Padding = new Thickness(11, 5, 11, 5),
+                MinHeight = 30,
+                FontSize = 12,
+                Margin = new Thickness(0, 4, 6, 0)
+            };
+            void RefreshRepeatDayStyle()
+            {
+                var on = repeatDays.Contains(dayNum);
+                dayBtn.Background = BrushHex(on ? "#64E3A1" : "#1B2230");
+                dayBtn.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
+                dayBtn.BorderBrush = BrushHex(on ? "#64E3A1" : "#2E3A4F");
+                dayBtn.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+            }
+            RefreshRepeatDayStyle();
+            dayBtn.Click += (_, _) =>
+            {
+                if (!repeatDays.Add(dayNum)) repeatDays.Remove(dayNum);
+                RefreshRepeatDayStyle();
+            };
+            repeatDaysWrap.Children.Add(dayBtn);
+        }
+        var repeatDaysPanel = new StackPanel();
+        repeatDaysPanel.Children.Add(new TextBlock { Text = "DÍAS DE LA SEMANA", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 12, 0, 0) });
+        repeatDaysPanel.Children.Add(repeatDaysWrap);
+        void SyncRepeatDays()
+        {
+            var custom = GetComboValue(repeatCombo, RepeatRule.Never) == RepeatRule.CustomDays;
+            repeatDaysPanel.Visibility = custom ? Visibility.Visible : Visibility.Collapsed;
+            if (custom && repeatDays.Count == 0)
+            {
+                // Start from the weekday of the chosen start so the first save works.
+                var baseDay = DateTime.TryParseExact(dateBox.Text.Trim(), "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var startDt)
+                    ? startDt
+                    : draft.ScheduledAt.LocalDateTime;
+                repeatDays.Add(((int)baseDay.DayOfWeek) + 1);
+                foreach (var child in repeatDaysWrap.Children.OfType<System.Windows.Controls.Button>())
+                {
+                    var label = child.Content as string ?? "";
+                    var num = label switch { "Lun" => 2, "Mar" => 3, "Mié" => 4, "Jue" => 5, "Vie" => 6, "Sáb" => 7, _ => 1 };
+                    var on = repeatDays.Contains(num);
+                    child.Background = BrushHex(on ? "#64E3A1" : "#1B2230");
+                    child.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
+                    child.BorderBrush = BrushHex(on ? "#64E3A1" : "#2E3A4F");
+                    child.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+                }
+            }
+        }
+        repeatCombo.SelectionChanged += (_, _) => SyncRepeatDays();
+
         var optionsBody = new StackPanel();
         optionsBody.Children.Add(TwoColGrid(
             LabeledField("Repetición", repeatCombo, 0),
             LabeledField("Pomodoro · min foco (0 = continuo)", pomoBox, 0),
             topMargin: 0));
+        optionsBody.Children.Add(repeatDaysPanel);
+        SyncRepeatDays();
         optionsBody.Children.Add(autoStartCheck);
         optionsBody.Children.Add(fixedCheck);
 
@@ -801,7 +860,8 @@ public static class Dialogs
                     ShowInlineError("Fecha y hora no válidas. Usa el formato aaaa-MM-dd HH:mm (ej. 2026-11-16 17:30).");
                     return;
                 }
-                draft.ScheduledAt = new DateTimeOffset(parsedDt, DateTimeOffset.Now.Offset);
+                // The offset that applies on the chosen DATE (daylight saving included), not today's.
+                draft.ScheduledAt = FocusRules.FromLocal(parsedDt);
             }
             if (!int.TryParse(minBox.Text.Trim(), out var parsedMin) || parsedMin is < 1 or > 720)
             {
@@ -814,6 +874,15 @@ public static class Dialogs
             draft.IsScheduled = schedCheck.IsChecked == true;
             draft.Minutes = parsedMin;
             draft.RepeatRule = GetComboValue(repeatCombo, RepeatRule.Never);
+            if (draft.RepeatRule == RepeatRule.CustomDays)
+            {
+                if (repeatDays.Count == 0)
+                {
+                    ShowInlineError("Elige al menos un día de la semana para la repetición «Días concretos».");
+                    return;
+                }
+                draft.RepeatDays = new HashSet<int>(repeatDays);
+            }
             draft.PomodoroWorkMinutes = int.TryParse(pomoBox.Text.Trim(), out var pm) ? Math.Clamp(pm, 0, 120) : 0;
             draft.AutoStart = autoStartCheck.IsChecked == true;
             draft.IsFixedAppointment = fixedCheck.IsChecked == true;

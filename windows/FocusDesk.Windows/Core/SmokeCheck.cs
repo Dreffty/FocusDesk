@@ -136,10 +136,11 @@ public static class SmokeCheck
                 engine1.SaveTask(protTask);
                 engine1.StartSession(protTask);
 
-                // Simulate 25 minutes elapsed before force-kill (Task Manager / taskkill)
+                // Simulate 25 minutes worked and SAVED (checkpoint) right before the force-kill (Task Manager / taskkill)
                 var s = engine1.Workspace.Session!;
-                s.RunningSince = now.AddMinutes(-25);
-                s.RunningUptime = TrustedClock.ContinuousSeconds() - 25 * 60;
+                s.Accumulated = 25 * 60;
+                s.RunningSince = now;
+                s.RunningUptime = TrustedClock.ContinuousSeconds();
                 s.ResumeOnLaunchUntil = now.AddMinutes(35);
                 engine1.Workspace.ClosedBySystemAt = null; // Unclean force-quit!
                 engine1.Persist();
@@ -163,6 +164,107 @@ public static class SmokeCheck
 
                 var watcherAfterLegitQuit = RelaunchGuard.ShouldRelaunch(engine2.Workspace, DateTimeOffset.UtcNow);
                 Check(!watcherAfterLegitQuit, "Cierre legítimo con código: el vigilante respeta la salida y NO reabre FocusDesk");
+            }
+
+            // 3b. Paridad con Mac (auditoría 17-nov-2026): cada comprobación corresponde a un fallo ya corregido.
+            // W-03: el tiempo con FocusDesk cerrado NO cuenta como trabajado.
+            var downtimeDir = Path.Combine(tempDir, "downtime-sim");
+            Directory.CreateDirectory(downtimeDir);
+            using (var engineA = new AppEngine(downtimeDir, enablePlatformWatchers: false))
+            {
+                var plainTask = new FocusTask { Title = "Sin protección", IsScheduled = false, Minutes = 120 };
+                engineA.SaveTask(plainTask);
+                engineA.StartSession(plainTask);
+                var sessionA = engineA.Workspace.Session!;
+                sessionA.Accumulated = 10 * 60;
+                sessionA.RunningSince = now.AddHours(-3);
+                sessionA.RunningUptime = TrustedClock.ContinuousSeconds() - 3 * 3600;
+                engineA.Persist();
+            }
+            using (var engineB = new AppEngine(downtimeDir, enablePlatformWatchers: false))
+            {
+                var back = engineB.Workspace.Session;
+                var backMinutes = (back?.Elapsed(DateTimeOffset.Now) ?? 0) / 60.0;
+                Check(back != null && back.Paused && backMinutes is >= 9.5 and <= 10.5,
+                    $"Tras 3 h con FocusDesk cerrado la sesión conserva solo lo guardado, no las 3 h ({backMinutes:F1} min)");
+            }
+
+            // W-01: un elemento ilegible no tira el resto, y si no se puede leer NADA no se sobrescribe el archivo.
+            var lossyDir = Path.Combine(tempDir, "lossy-sim");
+            Directory.CreateDirectory(lossyDir);
+            File.WriteAllText(Path.Combine(lossyDir, "workspace.json"),
+                """{"schema":1,"tasks":[{"title":"Buena","minutes":30},{"title":"Rota","minutes":"no es un número"}],"generalRules":[]}""");
+            using (var lossy = new AppEngine(lossyDir, enablePlatformWatchers: false))
+            {
+                Check(!lossy.DataUnreadable && lossy.Workspace.Tasks.Count == 1 && lossy.Workspace.Tasks[0].Title == "Buena",
+                    "Una tarea dañada no hace perder las demás");
+            }
+            var unreadableDir = Path.Combine(tempDir, "unreadable-sim");
+            Directory.CreateDirectory(unreadableDir);
+            var unreadablePath = Path.Combine(unreadableDir, "workspace.json");
+            const string brokenJson = "{ esto no es un archivo de FocusDesk";
+            File.WriteAllText(unreadablePath, brokenJson);
+            using (var unreadable = new AppEngine(unreadableDir, enablePlatformWatchers: false))
+            {
+                unreadable.Workspace.Tasks.Add(new FocusTask { Title = "Nueva", IsScheduled = false });
+                var saved = unreadable.Persist();
+                Check(unreadable.DataUnreadable && !saved && File.ReadAllText(unreadablePath) == brokenJson,
+                    "Si los datos no se pueden leer, FocusDesk no escribe encima del archivo");
+            }
+
+            // W-02: FocusDesk se reconoce a sí mismo con el nombre que tenga el .exe.
+            Check(FocusRules.SystemExemptProcesses.Contains(FocusRules.OwnProcessName) &&
+                  FocusRules.NeverTerminateProcesses.Contains(FocusRules.OwnProcessName) &&
+                  FocusRules.IsOwnProcess(Environment.ProcessId),
+                  "FocusDesk nunca se bloquea ni se cierra a sí mismo (sea cual sea el nombre del .exe)");
+
+            // W-05: los juegos no confunden otros programas con el juego.
+            var warzoneGame = GameCatalog.Find("warzone")!;
+            var minecraftGame = GameCatalog.Find("minecraft")!;
+            Check(!warzoneGame.Matches("Code", @"C:\Users\x\AppData\Local\Programs\Microsoft VS Code\Code.exe", "proyecto - Visual Studio Code") &&
+                  warzoneGame.Matches("cod", null, null),
+                  "Warzone no confunde VS Code («code») con el juego («cod»)");
+            Check(!minecraftGame.Matches("chrome", @"C:\Program Files\Google\Chrome\Application\chrome.exe", "Minecraft - Wikipedia") &&
+                  minecraftGame.Matches("javaw", null, "Minecraft 1.20.4"),
+                  "Minecraft no cierra un navegador cuyo título dice «minecraft», pero reconoce javaw");
+
+            // W-07 / W-09: las repeticiones avanzan solas y mantienen la hora de reloj.
+            var overdueSeries = new List<FocusTask>
+            {
+                new() { Title = "Diaria atrasada", ScheduledAt = now.AddDays(-3), Minutes = 30, RepeatRule = RepeatRule.Daily }
+            };
+            var rolled = SeriesRoller.Roll(overdueSeries, null, now);
+            Check(rolled == 1 && overdueSeries.Count == 2 &&
+                  overdueSeries[0].ScheduledAt.LocalDateTime.Date >= now.LocalDateTime.Date &&
+                  overdueSeries.Count(t => t.RepeatRule == RepeatRule.Never && t.ScheduledAt < now) == 1,
+                  "Una serie atrasada avanza a hoy y deja la ocurrencia perdida como tarea atrasada");
+            var nineAm = new FocusTask
+            {
+                Title = "A las 9",
+                ScheduledAt = FocusRules.FromLocal(new DateTime(2026, 10, 20, 9, 0, 0)),
+                RepeatRule = RepeatRule.Daily
+            };
+            var nextNine = nineAm.NextOccurrence(FocusRules.FromLocal(new DateTime(2026, 11, 3, 0, 0, 0)));
+            Check(nextNine != null && nextNine.ScheduledAt.LocalDateTime.TimeOfDay == TimeSpan.FromHours(9),
+                "Una repetición diaria mantiene las 09:00 aunque cambie el horario de verano");
+            var customDaysTask = new FocusTask { Title = "Lunes y jueves", RepeatRule = RepeatRule.CustomDays, RepeatDays = new HashSet<int> { 2, 5 } };
+            Check(customDaysTask.Valid, "«Días concretos» con días elegidos es una tarea válida");
+
+            // W-08: reiniciar un bloqueo protegido en marcha no puede acortarlo sin código.
+            using (var restartEngine = new AppEngine(Path.Combine(tempDir, "restart-sim"), enablePlatformWatchers: false))
+            {
+                var longBlock = new GeneralBlockRule
+                {
+                    Name = "Bloqueo largo",
+                    Kind = GeneralRuleKind.Countdown,
+                    Enabled = true,
+                    Domains = "youtube.com",
+                    Protection = SessionProtection.Challenge
+                };
+                longBlock.StartCountdown(180);
+                longBlock.CountdownMinutes = 60;
+                Check(restartEngine.RestartLoosening(longBlock, GeneralRuleKind.Countdown) != null,
+                    "«Activar» otra vez un bloqueo protegido con más tiempo del elegido pide código (no lo acorta gratis)");
             }
 
             // 4. Unlock Challenge & Emergency Code verification

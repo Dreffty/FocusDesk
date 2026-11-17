@@ -536,6 +536,18 @@ public partial class MainWindow : Window
             PageContent.Children.Add(Card(dock));
         }
 
+        // Overdue: an occurrence of an earlier day that was not completed (also what a series leaves behind when it rolls forward).
+        var sessionTaskId = _engine.Workspace.Session?.Task.Id;
+        var overdue = _engine.Workspace.Tasks
+            .Where(t => !t.Completed && t.IsScheduled && t.Id != sessionTaskId && t.ScheduledAt.LocalDateTime.Date < DateTime.Now.Date)
+            .OrderBy(t => t.ScheduledAt)
+            .ToList();
+        if (overdue.Count > 0)
+        {
+            PageContent.Children.Add(new TextBlock { Text = $"ATRASADAS ({overdue.Count})", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#F5B95F"), Margin = new Thickness(0, 12, 0, 10) });
+            foreach (var t in overdue) PageContent.Children.Add(OverdueRow(t));
+        }
+
         // Inbox tasks
         var inbox = _engine.Workspace.Tasks.Where(t => !t.Completed && !t.IsScheduled).ToList();
         if (inbox.Count > 0)
@@ -567,6 +579,37 @@ public partial class MainWindow : Window
         }
     }
 
+    private Border OverdueRow(FocusTask t)
+    {
+        var dock = new DockPanel();
+        var right = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var start = PrimaryButton("Iniciar");
+        start.Margin = new Thickness(0, 0, 6, 0);
+        start.Click += (_, _) => StartOrHandoffSession(t);
+        var snooze = new System.Windows.Controls.Button { Content = "+10m", Margin = new Thickness(0, 0, 6, 0) };
+        snooze.Click += (_, _) => ConfirmAndSnoozeTask(t);
+        var edit = new System.Windows.Controls.Button { Content = "Editar", Margin = new Thickness(0, 0, 6, 0) };
+        edit.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, t, this);
+        var del = new System.Windows.Controls.Button { Content = "Borrar" };
+        del.Click += (_, _) => ConfirmAndDeleteTask(t);
+        right.Children.Add(start);
+        right.Children.Add(snooze);
+        right.Children.Add(edit);
+        right.Children.Add(del);
+        DockPanel.SetDock(right, Dock.Right);
+        dock.Children.Add(right);
+
+        var left = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        left.Children.Add(new TextBlock { Text = t.Title, FontSize = 14.5, FontWeight = FontWeights.SemiBold });
+        var meta = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
+        meta.Children.Add(PillBadge($"{t.ScheduledAt.LocalDateTime:ddd d MMM · HH:mm}", "#F5B95F", "#251D10"));
+        meta.Children.Add(PillBadge(FocusRules.DurationText(t.Minutes)));
+        meta.Children.Add(PillBadge(t.Category));
+        left.Children.Add(meta);
+        dock.Children.Add(left);
+        return Card(dock, "#4A3A1E");
+    }
+
     private void BuildWeekPage()
     {
         var addBtn = PrimaryButton("+ Nueva tarea");
@@ -581,6 +624,20 @@ public partial class MainWindow : Window
             var dayTasks = _engine.Workspace.Tasks
                 .Where(t => !t.Completed && t.IsScheduled && t.ScheduledAt.LocalDateTime.Date == day)
                 .OrderBy(t => t.ScheduledAt).ToList();
+            // Future occurrences of recurring tasks, drawn (not stored) so the week shows what is coming.
+            var projected = new List<FocusTask>();
+            var windowStart = FocusRules.FromLocal(day);
+            var windowEnd = FocusRules.FromLocal(day.AddDays(1)).AddSeconds(-1);
+            foreach (var series in _engine.Workspace.Tasks.Where(t => !t.Completed && t.IsScheduled && t.RepeatRule != RepeatRule.Never))
+            {
+                var seriesKey = series.SeriesId ?? series.Id;
+                foreach (var occ in series.UpcomingOccurrences(windowStart, windowEnd, _engine.Workspace.Settings.Workdays))
+                {
+                    var alreadyReal = dayTasks.Any(r => r.Id != series.Id && r.SeriesId == seriesKey);
+                    if (!alreadyReal) projected.Add(occ);
+                }
+            }
+            projected = projected.OrderBy(t => t.ScheduledAt).ToList();
             var sp = new StackPanel();
             sp.Children.Add(new TextBlock
             {
@@ -589,10 +646,12 @@ public partial class MainWindow : Window
                 FontWeight = FontWeights.SemiBold,
                 Foreground = BrushHex(isToday ? "#64E3A1" : "#F2F5FA")
             });
-            if (dayTasks.Count == 0)
+            if (dayTasks.Count == 0 && projected.Count == 0)
                 sp.Children.Add(new TextBlock { Text = "Sin bloques programados", Foreground = BrushHex("#64748B"), FontSize = 12, Margin = new Thickness(0, 5, 0, 0) });
             foreach (var t in dayTasks)
                 sp.Children.Add(new TextBlock { Text = $"• {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min)", Foreground = BrushHex("#CBD5E1"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
+            foreach (var t in projected)
+                sp.Children.Add(new TextBlock { Text = $"↻ {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min) · repetición", Foreground = BrushHex("#94A3B8"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
             PageContent.Children.Add(Card(sp, isToday ? "#275943" : null));
         }
     }
@@ -641,13 +700,36 @@ public partial class MainWindow : Window
             if (rule.Kind == GeneralRuleKind.Pomodoro)
             {
                 var startP = new System.Windows.Controls.Button { Content = "Iniciar Pomodoro", Margin = new Thickness(0, 0, 6, 0) };
-                startP.Click += (_, _) => { rule.StartPomodoro(); _engine.Persist(); };
+                startP.Click += (_, _) =>
+                {
+                    var loosening = _engine.RestartLoosening(rule, GeneralRuleKind.Pomodoro);
+                    if (loosening != null)
+                    {
+                        if (!Dialogs.RequestUnlock(rule.Protection, rule.UnlockChars, rule.StopDelayMinutes, loosening, this))
+                            return;
+                        if (rule.Protection == SessionProtection.Forced)
+                            _engine.Workspace.RecordAudit("Salida de emergencia", $"Reinicio de Pomodoro protegido «{rule.Name}».");
+                    }
+                    _engine.StartRulePomodoro(rule);
+                };
                 actions.Children.Add(startP);
             }
             if (rule.Kind == GeneralRuleKind.Countdown)
             {
                 var startC = new System.Windows.Controls.Button { Content = $"Activar {rule.CountdownMinutes}m", Margin = new Thickness(0, 0, 6, 0) };
-                startC.Click += (_, _) => { rule.StartCountdown(); _engine.Persist(); _engine.EnsureWatcherIfNeeded(); };
+                startC.Click += (_, _) =>
+                {
+                    // Pressing it again on a protected block that is running must not shorten it without the code.
+                    var loosening = _engine.RestartLoosening(rule, GeneralRuleKind.Countdown);
+                    if (loosening != null)
+                    {
+                        if (!Dialogs.RequestUnlock(rule.Protection, rule.UnlockChars, rule.StopDelayMinutes, loosening, this))
+                            return;
+                        if (rule.Protection == SessionProtection.Forced)
+                            _engine.Workspace.RecordAudit("Salida de emergencia", $"Reinicio de bloqueo protegido «{rule.Name}».");
+                    }
+                    _engine.StartRuleCountdown(rule);
+                };
                 actions.Children.Add(startC);
             }
             var microLeft = Math.Max(0, rule.DailyMicroPausesAllowed - _engine.Workspace.MicroPausesUsedToday(rule.Id));
@@ -673,6 +755,15 @@ public partial class MainWindow : Window
                 {
                     rule.PomodoroPhase = PomodoroPhase.Idle;
                     rule.ActivePomodoroDeadline = null;
+                }
+                else if (rule.Enabled && rule.Kind == GeneralRuleKind.Countdown &&
+                         (rule.ActiveDeadline?.RemainingAfterPossibleReboot() ?? 0) <= 0)
+                {
+                    rule.StartCountdown();
+                }
+                else if (rule.Enabled && rule.Kind == GeneralRuleKind.Pomodoro && rule.PomodoroPhase == PomodoroPhase.Idle)
+                {
+                    rule.StartPomodoro();
                 }
                 _engine.Persist();
                 _engine.EnsureWatcherIfNeeded();
@@ -981,8 +1072,15 @@ public partial class MainWindow : Window
             try { _engine.ImportBackup(dlg.FileName); }
             catch (Exception ex) { _engine.Error = $"No se pudo importar la copia: {ex.Message}"; UpdateNoticeAndSidebar(); }
         };
+        var recoverBtn = new System.Windows.Controls.Button { Content = "Recuperar copia automática", Margin = new Thickness(10, 0, 0, 0) };
+        recoverBtn.Click += (_, _) =>
+        {
+            if (!RequireProtectionGateForSettings("recuperar la copia automática")) return;
+            _engine.RecoverFromAutoBackup();
+        };
         backupRow.Children.Add(expBtn);
         backupRow.Children.Add(impBtn);
+        backupRow.Children.Add(recoverBtn);
         backupPanel.Children.Add(backupRow);
         PageContent.Children.Add(Card(backupPanel));
     }
