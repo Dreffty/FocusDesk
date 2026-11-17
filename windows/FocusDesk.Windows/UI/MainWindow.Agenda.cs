@@ -257,26 +257,61 @@ public partial class MainWindow
 
     // MARK: - Semana
 
+    /// <summary>A colour mixed into the card background (the soft fill of a task block of that area).</summary>
+    private static string Tint(string hex, double amount)
+    {
+        var c = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
+        byte Mix(byte from, byte to) => (byte)Math.Round(from + (to - from) * amount);
+        return $"#{Mix(0x16, c.R):X2}{Mix(0x1B, c.G):X2}{Mix(0x21, c.B):X2}";
+    }
+
     private void BuildWeekPage()
     {
         var startOfWeek = _engine.SelectedDate.LocalDateTime.Date.AddDays(-(((int)_engine.SelectedDate.LocalDateTime.DayOfWeek + 6) % 7));
-        var header = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-        header.Children.Add(SmallButton("◀", () => _engine.SelectedDate = _engine.SelectedDate.AddDays(-7)));
-        header.Children.Add(SmallButton("Esta semana", () => _engine.SelectedDate = DateTimeOffset.Now));
-        header.Children.Add(SmallButton("▶", () => _engine.SelectedDate = _engine.SelectedDate.AddDays(7)));
-        header.Children.Add(SmallButton("Deshacer", () => _engine.UndoAgenda(), _engine.CanUndo));
-        header.Children.Add(SmallButton("Exportar al calendario (.ics)", ExportCalendarFile, true, 12));
-        var addBtn = PrimaryButton("+ Nueva tarea");
-        addBtn.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, null, this);
-        header.Children.Add(addBtn);
-        PageContent.Children.Add(PageHeader("Semana", $"{startOfWeek:d MMM} – {startOfWeek.AddDays(6):d MMM}. Una semana con intención.", header));
+        var endOfWeek = startOfWeek.AddDays(6);
+        PageContent.Children.Add(PageHeader("Semana", $"{startOfWeek.ToString("d MMM", Spanish)} – {endOfWeek.ToString("d MMM", Spanish)}. Una semana con intención.",
+            GlyphButton("", "Nueva tarea", () => Dialogs.ShowTaskEditor(_engine, null, this), primary: true)));
 
+        // Toolbar: ‹ range › «Esta semana» … undo and calendar export on the right
+        var bar = new DockPanel { Margin = new Thickness(0, 0, 0, 16) };
+        var right = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        var undo = IconButton("", "Deshacer (Ctrl+Z)", () => _engine.UndoAgenda());
+        undo.IsEnabled = _engine.CanUndo;
+        right.Children.Add(undo);
+        var ics = GlyphButton("", "Exportar al calendario (.ics)", ExportCalendarFile, plain: true);
+        ics.Margin = new Thickness(6, 0, 0, 0);
+        right.Children.Add(ics);
+        DockPanel.SetDock(right, Dock.Right);
+        bar.Children.Add(right);
+        var nav = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        var prev = IconButton("", "Semana anterior", () => _engine.SelectedDate = _engine.SelectedDate.AddDays(-7));
+        prev.Margin = new Thickness(0);
+        nav.Children.Add(prev);
+        nav.Children.Add(new TextBlock
+        {
+            Text = $"{startOfWeek.ToString("d MMM", Spanish)} – {endOfWeek.ToString("d MMM yyyy", Spanish)}",
+            FontSize = 17,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(14, 0, 8, 0)
+        });
+        nav.Children.Add(IconButton("", "Semana siguiente", () => _engine.SelectedDate = _engine.SelectedDate.AddDays(7)));
+        var thisWeek = GlyphButton("", "Esta semana", () => _engine.SelectedDate = DateTimeOffset.Now, plain: true);
+        thisWeek.Margin = new Thickness(8, 0, 0, 0);
+        nav.Children.Add(thisWeek);
+        bar.Children.Add(nav);
+        PageContent.Children.Add(bar);
+
+        // Seven columns, one per day, as on the Mac
+        var columns = new System.Windows.Controls.Primitives.UniformGrid { Columns = 7, Margin = new Thickness(0, 0, -8, 0) };
+        string[] abbreviations = { "LUN", "MAR", "MIÉ", "JUE", "VIE", "SÁB", "DOM" };
         for (var i = 0; i < 7; i++)
         {
             var day = startOfWeek.AddDays(i);
             var isToday = day == DateTime.Now.Date;
-            var dayTasks = _engine.Workspace.Tasks
-                .Where(t => !t.Completed && t.IsScheduled && t.ScheduledAt.LocalDateTime.Date == day)
+            var weekend = i >= 5;
+            var real = _engine.Workspace.Tasks
+                .Where(t => t.IsScheduled && t.ScheduledAt.LocalDateTime.Date == day)
                 .OrderBy(t => t.ScheduledAt).ToList();
             // Future occurrences of recurring tasks, drawn (not stored) so the week shows what is coming.
             var projected = new List<FocusTask>();
@@ -287,38 +322,96 @@ public partial class MainWindow
                 var seriesKey = series.SeriesId ?? series.Id;
                 foreach (var occ in series.UpcomingOccurrences(windowStart, windowEnd, _engine.Workspace.Settings.Workdays))
                 {
-                    var alreadyReal = dayTasks.Any(r => r.Id != series.Id && r.SeriesId == seriesKey);
+                    var alreadyReal = real.Any(r => r.Id != series.Id && r.SeriesId == seriesKey);
                     if (!alreadyReal) projected.Add(occ);
                 }
             }
-            projected = projected.OrderBy(t => t.ScheduledAt).ToList();
+            var blocks = real.Select(t => (Task: t, Projected: false))
+                .Concat(projected.Select(t => (Task: t, Projected: true)))
+                .OrderBy(x => x.Task.ScheduledAt).ToList();
 
-            var sp = new StackPanel();
-            var dayHeader = new DockPanel();
-            var openDay = SmallButton("Ver el día", () =>
+            var col = new StackPanel();
+            var head = new Grid { Margin = new Thickness(4, 2, 2, 10) };
+            head.Children.Add(new TextBlock { Text = Spaced(abbreviations[i]), FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(weekend ? "#FAC74D" : "#99A6AD"), VerticalAlignment = VerticalAlignment.Center });
+            var number = new TextBlock { Text = day.Day.ToString(), FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(isToday ? "#0D1014" : "#EDF2F5"), HorizontalAlignment = System.Windows.HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            UIElement numberView = isToday
+                ? new Border { Width = 34, Height = 34, CornerRadius = new CornerRadius(17), Background = BrushHex("#38A169"), Child = number, HorizontalAlignment = System.Windows.HorizontalAlignment.Right }
+                : new Border { Child = number, HorizontalAlignment = System.Windows.HorizontalAlignment.Right };
+            head.Children.Add(numberView);
+            col.Children.Add(head);
+            col.Children.Add(new Border { Height = 1, Background = BrushHex("#262A30"), Margin = new Thickness(2, 0, 2, 10) });
+
+            foreach (var (t, isProjected) in blocks)
             {
-                _engine.SelectedDate = FocusRules.FromLocal(day);
+                var color = CategoryHex(t.Category);
+                var inner = new StackPanel();
+                var top = new DockPanel();
+                if (isProjected || t.RepeatRule != RepeatRule.Never)
+                {
+                    var rep = Glyph("", 10.5, "#38A169");
+                    DockPanel.SetDock(rep, Dock.Right);
+                    top.Children.Add(rep);
+                }
+                top.Children.Add(new TextBlock { Text = t.ScheduledAt.LocalDateTime.ToString("HH:mm"), FontSize = 11.5, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), Foreground = BrushHex("#99A6AD") });
+                inner.Children.Add(top);
+                var title = new TextBlock { Text = t.Title, FontSize = 13, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 3), Foreground = BrushHex(t.Completed ? "#99A6AD" : "#EDF2F5") };
+                if (t.Completed) title.TextDecorations = TextDecorations.Strikethrough;
+                inner.Children.Add(title);
+                inner.Children.Add(new TextBlock { Text = FocusRules.DurationText(t.Minutes), FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(color) });
+                var block = new System.Windows.Controls.Button
+                {
+                    Content = new Border { BorderBrush = BrushHex(color), BorderThickness = new Thickness(3, 0, 0, 0), Padding = new Thickness(8, 6, 6, 6), Child = inner },
+                    Padding = new Thickness(0),
+                    Margin = new Thickness(0, 0, 0, 8),
+                    HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch,
+                    Background = BrushHex(isProjected ? "#161B21" : Tint(color, 0.14)),
+                    BorderBrush = BrushHex(isProjected ? "#3A3F46" : Tint(color, 0.28)),
+                    Opacity = isProjected ? 0.85 : 1,
+                    ToolTip = isProjected ? "Repetición prevista (se crea al llegar el día)" : "Editar la tarea"
+                };
+                var captured = t;
+                var capturedDay = day;
+                block.Click += (_, _) =>
+                {
+                    if (isProjected)
+                    {
+                        _engine.SelectedDate = FocusRules.FromLocal(capturedDay);
+                        _engine.ActivePage = "Hoy";
+                    }
+                    else Dialogs.ShowTaskEditor(_engine, captured, this);
+                };
+                col.Children.Add(block);
+            }
+
+            var add = new System.Windows.Controls.Button
+            {
+                Content = Glyph("", 13, "#99A6AD"),
+                Background = System.Windows.Media.Brushes.Transparent,
+                BorderBrush = System.Windows.Media.Brushes.Transparent,
+                MinHeight = 30,
+                ToolTip = "Ver y planificar este día"
+            };
+            var dayForAdd = day;
+            add.Click += (_, _) =>
+            {
+                _engine.SelectedDate = FocusRules.FromLocal(dayForAdd);
                 _engine.ActivePage = "Hoy";
-            }, true, 0);
-            DockPanel.SetDock(openDay, Dock.Right);
-            dayHeader.Children.Add(openDay);
-            dayHeader.Children.Add(new TextBlock
+            };
+            col.Children.Add(add);
+
+            columns.Children.Add(new Border
             {
-                Text = isToday ? $"{day:dddd d MMM} · Hoy" : day.ToString("dddd d MMM"),
-                FontSize = 14.5,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = BrushHex(isToday ? "#38A169" : "#EDF2F5"),
-                VerticalAlignment = VerticalAlignment.Center
+                Background = BrushHex("#13171C"),
+                BorderBrush = BrushHex(isToday ? "#2A5A3F" : "#22262C"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(14),
+                Padding = new Thickness(8, 10, 8, 8),
+                Margin = new Thickness(0, 0, 8, 0),
+                MinHeight = 420,
+                Child = col
             });
-            sp.Children.Add(dayHeader);
-            if (dayTasks.Count == 0 && projected.Count == 0)
-                sp.Children.Add(new TextBlock { Text = "Sin bloques programados", Foreground = BrushHex("#7C868C"), FontSize = 12, Margin = new Thickness(0, 5, 0, 0) });
-            foreach (var t in dayTasks)
-                sp.Children.Add(new TextBlock { Text = $"• {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min) · {t.Category}", Foreground = BrushHex("#D5DBDF"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
-            foreach (var t in projected)
-                sp.Children.Add(new TextBlock { Text = $"↻ {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min) · repetición", Foreground = BrushHex("#99A6AD"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
-            PageContent.Children.Add(Card(sp, isToday ? "#2A5A3F" : null));
         }
+        PageContent.Children.Add(columns);
     }
 
     private void ExportCalendarFile()
@@ -349,35 +442,94 @@ public partial class MainWindow
         return haystack.Contains(query, StringComparison.Ordinal);
     }
 
+    /// <summary>A Mac segmented control: one rounded strip, the chosen part filled in green.</summary>
+    private UIElement Segmented(string[] labels, int selected, Action<int> onPick)
+    {
+        var strip = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        for (var i = 0; i < labels.Length; i++)
+        {
+            var on = i == selected;
+            var index = i;
+            var b = new System.Windows.Controls.Button
+            {
+                Content = new TextBlock { Text = labels[i], Foreground = BrushHex(on ? "#0D1014" : "#D5DBDF"), FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal },
+                Padding = new Thickness(16, 0, 16, 0),
+                MinHeight = 32,
+                Margin = new Thickness(0),
+                Background = on ? BrushHex("#38A169") : System.Windows.Media.Brushes.Transparent,
+                BorderBrush = on ? BrushHex("#38A169") : System.Windows.Media.Brushes.Transparent
+            };
+            b.Click += (_, _) => onPick(index);
+            strip.Children.Add(b);
+        }
+        return new Border { Background = BrushHex("#1D2229"), CornerRadius = new CornerRadius(10), Padding = new Thickness(2), HorizontalAlignment = System.Windows.HorizontalAlignment.Left, Child = strip };
+    }
+
+    /// <summary>A summary tile: icon, big number, label (the four boxes over the Mac history).</summary>
+    private static Border StatTile(string glyph, string value, string label)
+    {
+        var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        var tile = IconTile(glyph, false, 36);
+        tile.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(tile);
+        var text = new StackPanel { Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(new TextBlock { Text = value, FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5") });
+        text.Children.Add(new TextBlock { Text = label, FontSize = 12, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap });
+        row.Children.Add(text);
+        return new Border
+        {
+            Background = BrushHex("#161B21"),
+            BorderBrush = BrushHex("#262A30"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(14, 12, 14, 12),
+            Margin = new Thickness(0, 0, 12, 14),
+            Child = row
+        };
+    }
+
     private void BuildHistoryPage()
     {
-        var switchBtn = new System.Windows.Controls.Button { Content = _auditView ? "Ver sesiones" : "Registro de auditoría" };
-        switchBtn.Click += (_, _) => { _auditView = !_auditView; RefreshUI(); };
-        PageContent.Children.Add(PageHeader(
-            _auditView ? "Registro de auditoría" : "Historial de sesiones",
-            "Lo que has hecho cuenta.",
-            switchBtn));
+        PageContent.Children.Add(PageHeader("Historial", "Lo que has hecho cuenta.",
+            GlyphButton("", "Nueva tarea", () => Dialogs.ShowTaskEditor(_engine, null, this), primary: true)));
+        var tabs = Segmented(new[] { "Sesiones", "Registro de bloqueo" }, _auditView ? 1 : 0, i => { _auditView = i == 1; RefreshUI(); });
+        ((FrameworkElement)tabs).Margin = new Thickness(0, 0, 0, 16);
+        PageContent.Children.Add(tabs);
 
         if (_auditView)
         {
-            var tools = Row(
-                SmallButton("Vaciar registro", () =>
-                {
-                    var answer = System.Windows.MessageBox.Show(this, "Se borrará todo el registro de auditoría. ¿Seguro?", "Vaciar registro · FocusDesk",
-                        MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                    if (answer == MessageBoxResult.Yes) _engine.ClearAuditLog();
-                }, _engine.Workspace.AuditLog.Count > 0));
-            tools.Margin = new Thickness(0, 0, 0, 8);
-            PageContent.Children.Add(tools);
+            var list = new StackPanel();
             foreach (var item in _engine.Workspace.AuditLog.Take(100))
-                PageContent.Children.Add(Card(new TextBlock { Text = $"{item.At.LocalDateTime:g} · [{item.Category}] {item.Summary}", TextWrapping = TextWrapping.Wrap, FontSize = 13 }));
+            {
+                var line = new DockPanel();
+                var when = new TextBlock { Text = item.At.LocalDateTime.ToString("d MMM · HH:mm", Spanish), FontSize = 12.5, Foreground = BrushHex("#99A6AD"), Width = 110, VerticalAlignment = VerticalAlignment.Center };
+                DockPanel.SetDock(when, Dock.Left);
+                line.Children.Add(when);
+                var chip = Chip(item.Category, "#FAC74D", "#2E2614");
+                chip.Margin = new Thickness(0, 0, 10, 0);
+                DockPanel.SetDock(chip, Dock.Left);
+                line.Children.Add(chip);
+                line.Children.Add(new TextBlock { Text = item.Summary, TextWrapping = TextWrapping.Wrap, FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
+                list.Children.Add(InnerRow(line, 6));
+            }
             if (_engine.Workspace.AuditLog.Count == 0)
-                PageContent.Children.Add(Card(new TextBlock { Text = "Sin eventos registrados todavía.", Foreground = BrushHex("#99A6AD") }));
+                list.Children.Add(MutedText("Sin eventos registrados todavía.", 13, 0));
+            var clear = GlyphButton("", "Vaciar registro", () =>
+            {
+                var answer = System.Windows.MessageBox.Show(this, "Se borrará todo el registro de auditoría. ¿Seguro?", "Vaciar registro · FocusDesk",
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (answer == MessageBoxResult.Yes) _engine.ClearAuditLog();
+            }, plain: true);
+            clear.IsEnabled = _engine.Workspace.AuditLog.Count > 0;
+            clear.MinHeight = 30;
+            PageContent.Children.Add(GroupCard("Registro de bloqueo", "", list, trailing: clear));
             return;
         }
 
-        // Search and filters
-        var searchBox = new System.Windows.Controls.TextBox { Text = _historySearch, Width = 260, Margin = new Thickness(0, 0, 10, 0) };
+        // Search and filters, in one card
+        var filterStack = new StackPanel();
+        var searchRow = new Grid();
+        var searchBox = new System.Windows.Controls.TextBox { Text = _historySearch, Padding = new Thickness(34, 8, 12, 8), MinHeight = 42, FontSize = 14 };
         searchBox.KeyDown += (_, e) =>
         {
             if (e.Key != Key.Enter) return;
@@ -385,107 +537,162 @@ public partial class MainWindow
             _historyVisible = 25;
             RefreshUI();
         };
-        var filters = new WrapPanel { Margin = new Thickness(0, 0, 0, 10) };
-        filters.Children.Add(Labeled("Buscar por tarea, nota, área o archivo (Enter)", searchBox, 0));
-        filters.Children.Add(Labeled("Estado", ChoiceBox(new[]
+        searchRow.Children.Add(searchBox);
+        var lens = Glyph("", 13, "#99A6AD");
+        lens.Margin = new Thickness(13, 0, 0, 0);
+        lens.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
+        lens.IsHitTestVisible = false;
+        searchRow.Children.Add(lens);
+        var hint = new TextBlock { Text = "Buscar por tarea, nota, área o archivo… (Intro)", Foreground = BrushHex("#7C868C"), FontSize = 14, Margin = new Thickness(35, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false,
+            Visibility = string.IsNullOrEmpty(_historySearch) ? Visibility.Visible : Visibility.Collapsed };
+        searchBox.TextChanged += (_, _) => hint.Visibility = string.IsNullOrEmpty(searchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+        searchRow.Children.Add(hint);
+        filterStack.Children.Add(searchRow);
+
+        var filters = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
+        filters.Children.Add(new TextBlock { Text = "Estado", FontSize = 13.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 10, 0) });
+        var state = ChoiceBox(new[]
         {
             new ComboOption<int>(0, "Todas"), new ComboOption<int>(1, "Completadas"),
             new ComboOption<int>(2, "Canceladas"), new ComboOption<int>(3, "Pendientes")
-        }, _historyState, v => { _historyState = v; _historyVisible = 25; RefreshUI(); }, 150), 0));
-        filters.Children.Add(Labeled("Periodo", ChoiceBox(new[]
+        }, _historyState, v => { _historyState = v; _historyVisible = 25; RefreshUI(); }, 160);
+        state.Margin = new Thickness(0, 0, 22, 0);
+        filters.Children.Add(state);
+        filters.Children.Add(new TextBlock { Text = "Periodo", FontSize = 13.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+        filters.Children.Add(Segmented(new[] { "Todo", "Esta semana", "Este mes" }, _historyPeriod, i => { _historyPeriod = i; _historyVisible = 25; RefreshUI(); }));
+        filterStack.Children.Add(filters);
+
+        var tools = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
+        var clearFilters = GlyphButton("", "Quitar filtros", () => { _historySearch = ""; _historyState = 0; _historyPeriod = 0; _historyVisible = 25; RefreshUI(); }, plain: true);
+        clearFilters.IsEnabled = _historySearch.Length > 0 || _historyState != 0 || _historyPeriod != 0;
+        tools.Children.Add(clearFilters);
+        var csv = GlyphButton("", "Exportar CSV…", ExportHistoryFile, plain: true);
+        csv.IsEnabled = _engine.Workspace.History.Count > 0;
+        tools.Children.Add(csv);
+        var detail = GlyphButton("", "Borrar detalle de actividad", () =>
         {
-            new ComboOption<int>(0, "Todo"), new ComboOption<int>(1, "Esta semana"), new ComboOption<int>(2, "Este mes")
-        }, _historyPeriod, v => { _historyPeriod = v; _historyVisible = 25; RefreshUI(); }, 150), 0));
-        PageContent.Children.Add(filters);
+            var answer = System.Windows.MessageBox.Show(this,
+                "Se borra el detalle de qué apps y webs usaste; se conservan los totales por app. ¿Seguro?",
+                "Borrar detalle · FocusDesk", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (answer == MessageBoxResult.Yes) _engine.RemoveActivityDetail();
+        }, plain: true);
+        detail.IsEnabled = _engine.Workspace.History.Count > 0;
+        tools.Children.Add(detail);
+        filterStack.Children.Add(tools);
+        PageContent.Children.Add(Card(filterStack));
 
         var all = _engine.Workspace.History.Where(HistoryMatches).ToList();
-        var tools2 = Row(
-            SmallButton("Quitar filtros", () => { _historySearch = ""; _historyState = 0; _historyPeriod = 0; _historyVisible = 25; RefreshUI(); },
-                _historySearch.Length > 0 || _historyState != 0 || _historyPeriod != 0),
-            SmallButton("Exportar CSV…", ExportHistoryFile, _engine.Workspace.History.Count > 0),
-            SmallButton("Borrar detalle de actividad", () =>
-            {
-                var answer = System.Windows.MessageBox.Show(this,
-                    "Se borra el detalle de qué apps y webs usaste; se conservan los totales por app. ¿Seguro?",
-                    "Borrar detalle · FocusDesk", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                if (answer == MessageBoxResult.Yes) _engine.RemoveActivityDetail();
-            }, _engine.Workspace.History.Count > 0));
-        tools2.Margin = new Thickness(0, 0, 0, 8);
-        PageContent.Children.Add(tools2);
-        PageContent.Children.Add(MutedText($"{all.Count} sesiones · {FocusRules.Clock(all.Sum(r => r.Session.Elapsed(r.Session.EndedAt ?? r.Session.StartedAt)))} trabajadas", 12, 0));
+        double Worked(SessionRecord r) => r.Session.Elapsed(r.Session.EndedAt ?? r.Session.StartedAt);
+        var stats = new System.Windows.Controls.Primitives.UniformGrid { Columns = 4, Margin = new Thickness(0, 0, -12, 0) };
+        stats.Children.Add(StatTile("", all.Count.ToString(), "Sesiones"));
+        stats.Children.Add(StatTile("", all.Count(r => r.Completed).ToString(), "Completadas"));
+        stats.Children.Add(StatTile("", FocusRules.DurationText((int)Math.Round(all.Sum(Worked) / 60)), "Tiempo de sesión"));
+        stats.Children.Add(StatTile("", all.Sum(r => r.Session.InterruptionCount).ToString(), "Interrupciones"));
+        PageContent.Children.Add(stats);
 
-        foreach (var rec in all.Take(_historyVisible))
+        // Sessions grouped by day («Hoy  1 sesión · 1 completada · 25 min»)
+        foreach (var group in all.Take(_historyVisible).GroupBy(r => r.Session.StartedAt.LocalDateTime.Date))
         {
-            var sp = new StackPanel();
-            var head = new DockPanel();
-            var open = _historyOpen.Contains(rec.Id);
-            var buttons = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-            buttons.Children.Add(SmallButton(open ? "Ocultar" : "Detalle", () =>
-            {
-                if (!_historyOpen.Add(rec.Id)) _historyOpen.Remove(rec.Id);
-                RefreshUI();
-            }));
-            buttons.Children.Add(SmallButton("Borrar sesión", () =>
-            {
-                var answer = System.Windows.MessageBox.Show(this, $"¿Borrar «{rec.Session.Task.Title}» del historial?", "Borrar sesión · FocusDesk",
-                    MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                if (answer == MessageBoxResult.Yes) _engine.DeleteHistoryRecord(rec.Id);
-            }, true, 0));
-            DockPanel.SetDock(buttons, Dock.Right);
-            head.Children.Add(buttons);
-            head.Children.Add(new TextBlock
-            {
-                Text = $"{rec.Session.Task.Title} · {(rec.Completed ? "Completada" : rec.Cancelled ? "Cancelada" : "Pendiente")}",
-                FontSize = 14.5,
-                FontWeight = FontWeights.SemiBold,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            sp.Children.Add(head);
-            sp.Children.Add(new TextBlock
-            {
-                Text = $"{rec.Session.StartedAt.LocalDateTime:g} · Trabajado: {FocusRules.Clock(rec.Session.Elapsed(rec.Session.EndedAt ?? rec.Session.StartedAt))} · Interrupciones: {rec.Session.InterruptionCount} · {rec.Session.Task.Category}",
-                Foreground = BrushHex("#99A6AD"),
-                FontSize = 12,
-                Margin = new Thickness(0, 4, 0, 0)
-            });
-            if (open)
-            {
-                if (!string.IsNullOrWhiteSpace(rec.Note)) sp.Children.Add(MutedText($"Nota: {rec.Note}", 12.5, 8));
-                var apps = rec.AppSummaries.Take(6).ToList();
-                if (apps.Count > 0)
-                {
-                    sp.Children.Add(SectionLabel("DÓNDE ESTUVO EL TIEMPO", 10));
-                    foreach (var app in apps)
-                        sp.Children.Add(new TextBlock { Text = $"{app.Name} · {FocusRules.Clock(app.Seconds)}", FontSize = 12.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
-                }
-                var steps = AppEngine.ChecklistSteps(rec.Session.Task.Checklist);
-                if (steps.Count > 0)
-                {
-                    sp.Children.Add(SectionLabel("CHECKLIST", 10));
-                    for (var i = 0; i < steps.Count; i++)
-                        sp.Children.Add(new TextBlock { Text = (rec.Session.Checked.Contains(i.ToString()) ? "☑ " : "☐ ") + steps[i], FontSize = 12.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
-                }
-                if (rec.ConfirmedFiles.Count > 0 || rec.ManualFiles.Count > 0)
-                {
-                    sp.Children.Add(SectionLabel("ARCHIVOS DEL RESULTADO", 10));
-                    foreach (var file in rec.ConfirmedFiles.Concat(rec.ManualFiles).Distinct().Take(12))
-                        sp.Children.Add(new TextBlock { Text = file, FontSize = 12, Foreground = BrushHex("#D5DBDF"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
-                }
-                if (rec.Session.BlocksApplied > 0)
-                    sp.Children.Add(MutedText($"Bloqueos aplicados: {rec.Session.BlocksApplied}", 12, 8));
-            }
-            PageContent.Children.Add(Card(sp));
+            var day = group.Key;
+            var name = day == DateTime.Today ? "Hoy" : day == DateTime.Today.AddDays(-1) ? "Ayer" : day.ToString("dddd d 'de' MMMM", Spanish);
+            var dayAll = all.Where(r => r.Session.StartedAt.LocalDateTime.Date == day).ToList();
+            var title = new TextBlock { Margin = new Thickness(0, 10, 0, 10) };
+            title.Inlines.Add(new System.Windows.Documents.Run(char.ToUpper(name[0]) + name[1..]) { FontSize = 17, FontWeight = FontWeights.SemiBold });
+            title.Inlines.Add(new System.Windows.Documents.Run($"   {dayAll.Count} {(dayAll.Count == 1 ? "sesión" : "sesiones")} · {dayAll.Count(r => r.Completed)} completada{(dayAll.Count(r => r.Completed) == 1 ? "" : "s")} · {FocusRules.DurationText((int)Math.Round(dayAll.Sum(Worked) / 60))}") { FontSize = 13.5, Foreground = BrushHex("#99A6AD") });
+            PageContent.Children.Add(title);
+            foreach (var rec in group) PageContent.Children.Add(HistoryCard(rec, Worked(rec)));
         }
         if (all.Count > _historyVisible)
-            PageContent.Children.Add(SmallButton($"Mostrar {Math.Min(50, all.Count - _historyVisible)} sesiones más", () =>
-            {
-                _historyVisible += 50;
-                RefreshUI();
-            }));
+        {
+            var more = GlyphButton("", $"Mostrar {Math.Min(50, all.Count - _historyVisible)} sesiones más", () => { _historyVisible += 50; RefreshUI(); }, plain: true);
+            PageContent.Children.Add(more);
+        }
         if (_engine.Workspace.History.Count == 0)
-            PageContent.Children.Add(Card(new TextBlock { Text = "Todavía no has completado ninguna sesión.", Foreground = BrushHex("#99A6AD") }));
+            PageContent.Children.Add(Card(MutedText("Todavía no has completado ninguna sesión.", 13, 0)));
         else if (all.Count == 0)
-            PageContent.Children.Add(Card(new TextBlock { Text = "Ninguna sesión coincide con estos filtros.", Foreground = BrushHex("#99A6AD") }));
+            PageContent.Children.Add(Card(MutedText("Ninguna sesión coincide con estos filtros.", 13, 0)));
+    }
+
+    /// <summary>One session of the history, as on the Mac: state icon, title and chip, details; the time on the right.</summary>
+    private Border HistoryCard(SessionRecord rec, double worked)
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var (glyph, fg, bg, label) = rec.Completed ? ("", "#0D1014", "#38A169", "Completada")
+            : rec.Cancelled ? ("", "#FF8080", "#2A161B", "Cancelada")
+            : ("", "#FAC74D", "#2E2614", "Pendiente");
+        var state = Glyph(glyph, 12, fg);
+        state.HorizontalAlignment = System.Windows.HorizontalAlignment.Center;
+        grid.Children.Add(new Border { Width = 26, Height = 26, CornerRadius = new CornerRadius(13), Background = BrushHex(bg), Child = state, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 14, 0) });
+
+        var open = _historyOpen.Contains(rec.Id);
+        var sp = new StackPanel();
+        var titleRow = new WrapPanel();
+        titleRow.Children.Add(new TextBlock { Text = rec.Session.Task.Title, FontSize = 17, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+        var chip = Chip(label, rec.Completed ? "#38A169" : fg, rec.Completed ? "#15291F" : bg);
+        chip.Margin = new Thickness(0, 2, 0, 0);
+        titleRow.Children.Add(chip);
+        sp.Children.Add(titleRow);
+        var start = rec.Session.StartedAt.LocalDateTime;
+        var end = (rec.Session.EndedAt ?? rec.Session.StartedAt).LocalDateTime;
+        sp.Children.Add(MutedText($"{start:HH:mm}–{end:HH:mm} · {FocusRules.DurationText((int)Math.Round(worked / 60))} · {rec.Session.Task.Category}", 12.5, 6));
+        if (!string.IsNullOrWhiteSpace(rec.Note))
+            sp.Children.Add(new TextBlock { Text = rec.Note, FontSize = 13.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
+        if (open)
+        {
+            var apps = rec.AppSummaries.Take(6).ToList();
+            if (apps.Count > 0)
+            {
+                sp.Children.Add(SectionLabel("Dónde estuvo el tiempo", 12));
+                foreach (var app in apps)
+                    sp.Children.Add(new TextBlock { Text = $"{app.Name} · {FocusRules.Clock(app.Seconds)}", FontSize = 12.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
+            }
+            var steps = AppEngine.ChecklistSteps(rec.Session.Task.Checklist);
+            if (steps.Count > 0)
+            {
+                sp.Children.Add(SectionLabel("Checklist", 12));
+                for (var i = 0; i < steps.Count; i++)
+                    sp.Children.Add(new TextBlock { Text = (rec.Session.Checked.Contains(i.ToString()) ? "☑ " : "☐ ") + steps[i], FontSize = 12.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
+            }
+            if (rec.ConfirmedFiles.Count > 0 || rec.ManualFiles.Count > 0)
+            {
+                sp.Children.Add(SectionLabel("Archivos del resultado", 12));
+                foreach (var file in rec.ConfirmedFiles.Concat(rec.ManualFiles).Distinct().Take(12))
+                    sp.Children.Add(new TextBlock { Text = file, FontSize = 12, Foreground = BrushHex("#D5DBDF"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+            }
+            if (rec.Session.BlocksApplied > 0)
+                sp.Children.Add(MutedText($"Bloqueos aplicados: {rec.Session.BlocksApplied}", 12, 8));
+        }
+        var toggle = GlyphButton(open ? "" : "", open ? "Ocultar detalle" : "Ver detalle", () =>
+        {
+            if (!_historyOpen.Add(rec.Id)) _historyOpen.Remove(rec.Id);
+            RefreshUI();
+        }, plain: true);
+        toggle.Margin = new Thickness(-12, 6, 0, 0);
+        toggle.MinHeight = 28;
+        toggle.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
+        sp.Children.Add(toggle);
+        Grid.SetColumn(sp, 1);
+        grid.Children.Add(sp);
+
+        var rightCol = new StackPanel { HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(12, 0, 0, 0) };
+        rightCol.Children.Add(new TextBlock { Text = FocusRules.DurationText((int)Math.Round(worked / 60)), FontSize = 22, FontWeight = FontWeights.SemiBold, HorizontalAlignment = System.Windows.HorizontalAlignment.Right });
+        rightCol.Children.Add(new TextBlock { Text = $"de {rec.Session.Task.Minutes} previstos", FontSize = 12.5, Foreground = BrushHex("#99A6AD"), HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 4, 0, 0) });
+        rightCol.Children.Add(new TextBlock { Text = $"{rec.Session.InterruptionCount} interrupciones", FontSize = 12.5, Foreground = BrushHex("#99A6AD"), HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 2, 0, 8) });
+        var del = IconButton("", "Borrar sesión del historial", () =>
+        {
+            var answer = System.Windows.MessageBox.Show(this, $"¿Borrar «{rec.Session.Task.Title}» del historial?", "Borrar sesión · FocusDesk",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (answer == MessageBoxResult.Yes) _engine.DeleteHistoryRecord(rec.Id);
+        }, "#FF8080", "#2A161B");
+        del.HorizontalAlignment = System.Windows.HorizontalAlignment.Right;
+        rightCol.Children.Add(del);
+        Grid.SetColumn(rightCol, 2);
+        grid.Children.Add(rightCol);
+        return Card(grid);
     }
 
     private void ExportHistoryFile()
