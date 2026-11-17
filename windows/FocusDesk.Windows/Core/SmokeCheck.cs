@@ -39,8 +39,8 @@ public static class SmokeCheck
             using (var engine = new AppEngine(tempDir, enablePlatformWatchers: false))
             {
                 Check(engine.Workspace.GeneralRules.All(r => r.CanBeDeleted && !r.Enabled), "Inicio limpio: reglas de ejemplo desactivadas y borrables");
-                Check(engine.Workspace.Settings.RelaunchGuard, "Vigilante de relanzado activo por defecto en Ajustes");
-                Check(engine.Workspace.Settings.ProtectClipboard, "Protección de portapapeles activa por defecto en Ajustes");
+                Check(!engine.Workspace.Settings.RelaunchGuard, "Vigilante de relanzado apagado por defecto en Ajustes (como en Mac)");
+                Check(!engine.Workspace.Settings.ProtectClipboard, "Protección de portapapeles apagada por defecto en Ajustes (como en Mac)");
 
                 // 2. Task creation, session start, pause, resume, +10m, completion & repeat series
                 var task = new FocusTask
@@ -267,6 +267,70 @@ public static class SmokeCheck
                     "«Activar» otra vez un bloqueo protegido con más tiempo del elegido pide código (no lo acorta gratis)");
             }
 
+            // W-10..W-30: más paridad con Mac (castigo, buscadores, espera persistente, horario, strict, URLs, palabras).
+            var punisher = new DistractionPunisher();
+            var earlyAttempts = punisher.Register(10) | punisher.Register(11) | punisher.Register(12);
+            Check(!earlyAttempts && punisher.Register(13) && punisher.IsActive(14),
+                "El castigo salta al 4.º intento seguido (no al 3.º), como en Mac");
+
+            Check(SearchMediaRules.Matches("www.google.com", "/search?q=gatos&udm=2") == "Google Imágenes" &&
+                  SearchMediaRules.Matches("search.brave.com", "/images?q=gatos") == "Brave Imágenes" &&
+                  SearchMediaRules.Matches("www.bing.com", "/videos/search?q=x") == "Bing Vídeos" &&
+                  SearchMediaRules.Matches("www.google.com", "/search?q=udm%3D2") == null,
+                "Imágenes y vídeos de buscadores: mismos buscadores y rutas que en Mac, sin falsos positivos");
+
+            Check(FocusRules.MatchesTitleKeyword("Vídeo de gatos", "video", false) != null &&
+                  FocusRules.MatchesTitleKeyword("C++ y mucho más", "C++", true) != null &&
+                  FocusRules.MatchesTitleKeyword("Shortstop", "Shorts", true) == null,
+                "Palabras de título: ignoran tildes y respetan «palabra completa»");
+
+            Check(FocusRules.NormalizeDomainEntry("https://www.reddit.com/r/programming") == "reddit.com" &&
+                  FocusRules.NormalizedRedirectUrl("notion.so")?.Host == "notion.so",
+                "Una URL pegada con ruta se queda en el dominio y la redirección sin https:// se normaliza, como en Mac");
+
+            Check(!FocusRules.AppAllowed("codeblocks", new[] { new AllowedApp("code", "VS Code", "") }, AppListMode.AllowListed) &&
+                  FocusRules.AppAllowed("code", new[] { new AllowedApp("code", "VS Code", "") }, AppListMode.AllowListed),
+                "Una app permitida es esa app, no «cualquiera que contenga el nombre»");
+
+            var nightRule = new GeneralBlockRule
+            {
+                Name = "Noche",
+                Kind = GeneralRuleKind.Schedule,
+                Enabled = true,
+                StartMinutes = 22 * 60 + 30,
+                EndMinutes = 7 * 60 + 30,
+                Domains = "youtube.com"
+            };
+            var elevenPm = FocusRules.FromLocal(new DateTime(2026, 11, 18, 23, 0, 0));
+            Check(Math.Abs(nightRule.RemainingLockSeconds(elevenPm) - 8.5 * 3600) < 1,
+                "Una regla por horario dice cuánto falta para que acabe su tramo (no «hasta medianoche»)");
+
+            using (var waitEngine = new AppEngine(Path.Combine(tempDir, "wait-sim"), enablePlatformWatchers: false))
+            {
+                var firstPress = waitEngine.EvaluateDelay("pausar «Prueba»", 5);
+                var secondPress = waitEngine.EvaluateDelay("pausar «Prueba»", 5);
+                Check(!firstPress && !secondPress && waitEngine.Workspace.PendingStopWaits.Count == 1,
+                    "La espera empieza al pedirla y sigue en marcha (guardada) al repetirla antes de tiempo");
+                waitEngine.Workspace.PendingStopWaits[0].Request.Deadline = new TrustedDeadline(0);
+                Check(waitEngine.EvaluateDelay("pausar «Prueba»", 5) && waitEngine.Workspace.PendingStopWaits.Count == 0,
+                    "Terminada la espera, repetir la acción la deja pasar");
+            }
+
+            var strict = new StrictRedirectTracker();
+            var noAllowedOpen = strict.EvaluateUnallowed(false, DateTimeOffset.UtcNow);
+            Check(noAllowedOpen.Kind == StrictDecisionKind.PauseSession,
+                "Modo estricto sin ninguna app permitida abierta: se rinde en vez de cerrar todo lo que enfocas");
+
+            var weeklyHead = new FocusTask
+            {
+                Title = "Semanal",
+                ScheduledAt = FocusRules.FromLocal(new DateTime(2026, 11, 2, 10, 0, 0)),
+                RepeatRule = RepeatRule.Weekly
+            };
+            var coming = weeklyHead.UpcomingOccurrences(FocusRules.FromLocal(new DateTime(2026, 11, 20, 0, 0, 0)), FocusRules.FromLocal(new DateTime(2026, 12, 10, 0, 0, 0)));
+            Check(coming.Count == 3 && coming.All(t => t.ScheduledAt.LocalDateTime.TimeOfDay == TimeSpan.FromHours(10)),
+                "Las repeticiones futuras se calculan a la misma hora de reloj (3 lunes entre el 20-nov y el 10-dic)");
+
             // 4. Unlock Challenge & Emergency Code verification
             var code24 = UnlockChallenge.Make(24);
             var code60 = UnlockChallenge.Make(60);
@@ -317,8 +381,8 @@ public static class SmokeCheck
             // 6. Windows Platform Guards (SystemSettingsGuard, ClipboardGuard, StudyVerifier, BlockPage)
             Check(SystemSettingsGuard.CheckGuardedPane(new ForegroundAppInfo(100, "Taskmgr", null, "Administrador de tareas", IntPtr.Zero)) != null,
                 "SystemSettingsGuard bloquea Administrador de tareas (Taskmgr)");
-            Check(SystemSettingsGuard.CheckGuardedPane(new ForegroundAppInfo(101, "ApplicationFrameHost", null, "Configuración - Aplicaciones instaladas", IntPtr.Zero)) != null,
-                "SystemSettingsGuard bloquea Configuración de Windows UWP (ApplicationFrameHost)");
+            Check(SystemSettingsGuard.CheckGuardedPane(new ForegroundAppInfo(101, "SystemSettings", null, "Configuración - Aplicaciones instaladas", IntPtr.Zero)) != null,
+                "SystemSettingsGuard bloquea Configuración de Windows (SystemSettings)");
             Check(SystemSettingsGuard.CheckGuardedPane(new ForegroundAppInfo(102, "powershell", null, "Windows PowerShell - taskkill /f /im FocusDesk.exe", IntPtr.Zero)) != null,
                 "SystemSettingsGuard bloquea intento de taskkill en Terminal");
 
@@ -339,10 +403,10 @@ public static class SmokeCheck
 
             // 7. Pass 2 checks: Defaults, Quick Block, Micro-Pauses, Vital Folders, Flexible .exe matching
             var defTask = new FocusTask();
-            Check(defTask.AppListMode == AppListMode.BlockListed && defTask.WebListMode == WebListMode.BlockListed,
-                "Nueva tarea usa modo lista negra por defecto para evitar bloquear el PC por error");
-            Check(FocusProfile.Defaults().All(p => p.WebBlockAction == WebBlockAction.Redirect && p.BlockGameLibraries),
-                "Perfiles por defecto de «Bloquear ahora» tienen bloqueo real de distracciones activo");
+            Check(defTask.AppListMode == AppListMode.AllowListed && defTask.WebListMode == WebListMode.AllowListed,
+                "Nueva tarea usa «solo las de la lista» por defecto, igual que en Mac");
+            Check(FocusProfile.Defaults().All(p => p.WebBlockAction == WebBlockAction.Warn && p.Protection == SessionProtection.None && !p.BlockGameLibraries),
+                "Perfiles por defecto arrancan sin bloqueo ni protección (versión pública, como en Mac)");
 
             Check(FolderGuard.ProblemWithFolder(@"C:\") != null &&
                   FolderGuard.ProblemWithFolder(@"C:\Windows") != null &&

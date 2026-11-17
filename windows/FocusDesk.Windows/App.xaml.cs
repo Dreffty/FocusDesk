@@ -55,6 +55,8 @@ public partial class App : System.Windows.Application
         }, null, -1, false);
 
         _engine = new AppEngine();
+        Dialogs.Host = _engine;
+        _engine.TickUpdated += UpdateTrayText;
         _engine.NotificationRequested += (title, body) =>
         {
             Dispatcher.BeginInvoke(() =>
@@ -103,13 +105,22 @@ public partial class App : System.Windows.Application
             if (s.Task.Protection != SessionProtection.None && s.Remaining(DateTimeOffset.Now) > 0)
             {
                 ShowMainWindow();
-                if (!Dialogs.RequestUnlock(s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"pausar «{s.Task.Title}»", _mainWindow))
+                if (!Dialogs.RequestSessionStop("pausar", s, _mainWindow))
                     return;
                 if (s.Task.Protection == SessionProtection.Forced)
                     _engine.Workspace.RecordAudit("Salida de emergencia", $"Pausa anticipada de «{s.Task.Title}» desde bandeja.");
             }
             _engine.PauseSession();
         }));
+        menu.Items.Add("Añadir 10 min a la sesión", null, (_, _) => Dispatcher.BeginInvoke(() => _engine?.AddSessionMinutes(10)));
+        menu.Items.Add("Terminar sesión (He terminado)", null, (_, _) => Dispatcher.BeginInvoke(() =>
+        {
+            if (_engine?.Workspace.Session is not { EndedAt: null } running) return;
+            ShowMainWindow();
+            if (!Dialogs.RequestSessionStop("terminar antes", running, _mainWindow)) return;
+            _engine.FinishSession();
+        }));
+        menu.Items.Add("Bloqueo rápido de 30 min", null, (_, _) => Dispatcher.BeginInvoke(() => _engine?.LaunchQuickBlock(30)));
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Salir", null, (_, _) => Dispatcher.BeginInvoke(TryQuitApp));
 
@@ -121,6 +132,19 @@ public partial class App : System.Windows.Application
             ContextMenuStrip = menu
         };
         _trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowMainWindow);
+    }
+
+    /// <summary>The icon's tooltip is the menu-bar countdown of macOS: what is running and how long is left.</summary>
+    private void UpdateTrayText()
+    {
+        if (_trayIcon == null || _engine == null) return;
+        var text = "FocusDesk";
+        if (_engine.Workspace.Session is { EndedAt: null } s)
+            text = $"FocusDesk · {(s.Paused ? "en pausa" : FocusRules.Clock(s.Remaining(DateTimeOffset.Now)))} · {s.Task.Title}";
+        else if (_engine.Workspace.GeneralRules.FirstOrDefault(r => _engine.IsRuleEnforcing(r)) is { } rule)
+            text = $"FocusDesk · bloqueando · {rule.Name}";
+        if (text.Length > 63) text = text.Substring(0, 62) + "…";
+        if (_trayIcon.Text != text) _trayIcon.Text = text;
     }
 
     public void ShowMainWindow()

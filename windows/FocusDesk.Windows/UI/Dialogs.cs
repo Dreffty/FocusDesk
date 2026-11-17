@@ -19,8 +19,11 @@ public sealed record ComboOption<T>(T Value, string Label)
     public override string ToString() => Label;
 }
 
-public static class Dialogs
+public static partial class Dialogs
 {
+    /// <summary>Set by the app at start-up: keeps waits («Espera») alive between presses and shows messages.</summary>
+    public static IStopGateHost? Host { get; set; }
+
     private static SolidColorBrush BrushHex(string hex) =>
         new((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex));
 
@@ -200,19 +203,13 @@ public static class Dialogs
     private static WrapPanel BuildPresetChips(System.Windows.Controls.TextBox domainsBox, System.Windows.Controls.TextBox keywordsBox, Action? onPresetApplied = null)
     {
         var wrap = new WrapPanel { Margin = new Thickness(0, 2, 0, 6) };
-        var presets = new (string Label, string[] Domains, string[] Keywords)[]
+        foreach (var preset in DistractionPreset.All)
         {
-            ("+ Redes sociales", new[] { "x.com", "instagram.com", "tiktok.com", "reddit.com", "threads.net" }, new[] { "Instagram", "TikTok", "Reddit" }),
-            ("+ Shorts y Reels", new[] { "youtube.com/shorts", "instagram.com/reels", "tiktok.com", "facebook.com/reel" }, new[] { "Shorts", "Reels", "TikTok" }),
-            ("+ Vídeo y series", new[] { "youtube.com", "netflix.com", "twitch.tv", "primevideo.com", "disneyplus.com" }, new[] { "Netflix", "Twitch", "Prime Video" }),
-            ("+ Juegos y tiendas", new[] { "store.steampowered.com", "steamcommunity.com", "epicgames.com", "roblox.com", "chess.com" }, new[] { "Steam", "Epic Games" })
-        };
-        foreach (var p in presets)
-        {
-            wrap.Children.Add(MakeChipButton(p.Label, () =>
+            var captured = preset;
+            wrap.Children.Add(MakeChipButton("+ " + captured.Label, () =>
             {
-                domainsBox.Text = CleanCsvMerge(domainsBox.Text, p.Domains, domainMode: true);
-                keywordsBox.Text = CleanCsvMerge(keywordsBox.Text, p.Keywords, domainMode: false);
+                domainsBox.Text = CleanCsvMerge(domainsBox.Text, captured.Domains, domainMode: true);
+                keywordsBox.Text = CleanCsvMerge(keywordsBox.Text, captured.TitleKeywords, domainMode: false);
                 onPresetApplied?.Invoke();
             }));
         }
@@ -253,6 +250,11 @@ public static class Dialogs
     public static bool RequestUnlock(SessionProtection protection, int unlockChars, int delayMinutes, string actionLabel, Window? owner)
     {
         if (protection == SessionProtection.None) return true;
+
+        // «Espera»: not a window you have to keep open. The wait is stored (it survives closing the app) and the
+        // action is repeated when it is over, as on macOS.
+        if (protection == SessionProtection.Delay && Host != null)
+            return Host.EvaluateDelay(actionLabel, delayMinutes);
 
         var isChallenge = protection is SessionProtection.Challenge or SessionProtection.Forced;
         var win = new Window
@@ -454,6 +456,21 @@ public static class Dialogs
         return unlocked;
     }
 
+    /// <summary>
+    /// Pausing or finishing early a protected session. «Hasta el final» refuses both (only the emergency exit, which
+    /// ends the session, gets through); the code or the wait apply to the rest. Time-up is never protected.
+    /// </summary>
+    public static bool RequestSessionStop(string verb, WorkSession s, Window? owner)
+    {
+        if (s.Task.Protection == SessionProtection.None || s.Remaining(DateTimeOffset.Now) <= 0) return true;
+        if (s.Task.Protection == SessionProtection.Forced)
+        {
+            Host?.Say($"«Hasta el final»: no se puede {verb} esta sesión. Le quedan {FocusRules.Clock(s.Remaining(DateTimeOffset.Now))}. Si de verdad pasa algo, usa «Salida de emergencia» (60 caracteres y queda anotada).");
+            return false;
+        }
+        return RequestUnlock(s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"{verb} «{s.Task.Title}»", owner);
+    }
+
     public static void ShowTaskEditor(AppEngine engine, FocusTask? existing, Window? owner)
     {
         var draft = existing?.Clone() ?? new FocusTask { ScheduledAt = DateTimeOffset.Now.AddMinutes(10) };
@@ -620,6 +637,13 @@ public static class Dialogs
             IsChecked = draft.IsFixedAppointment,
             Margin = new Thickness(0, 8, 0, 0)
         };
+        var leadBox = MakeTextBox(draft.LeadMinutes.ToString(CultureInfo.InvariantCulture));
+        var dueBox = MakeTextBox(draft.DueDate.HasValue ? draft.DueDate.Value.LocalDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "");
+        var folderBox = MakeTextBox(draft.Folder ?? "");
+        var wholeWordCheck = new System.Windows.Controls.CheckBox { Content = "Exigir palabra completa en las palabras bloqueadas (admite * y /regex/)", IsChecked = draft.WholeWordKeywords, Margin = new Thickness(0, 8, 0, 0) };
+        var guardPanesCheck = new System.Windows.Controls.CheckBox { Content = "Cerrar los paneles de Windows que acabarían con el bloqueo (Hora, Privacidad, Cuentas…)", IsChecked = draft.GuardSystemPanes, Margin = new Thickness(0, 8, 0, 0) };
+        var punisherCheck = new System.Windows.Controls.CheckBox { Content = "Endurecer el bloqueo tras varios intentos seguidos", IsChecked = draft.PunisherEnabled, Margin = new Thickness(0, 8, 0, 0) };
+        var similarityCombo = MakeCombo(Enum.GetValues<SimilarityProtectionLevel>().Select(l => new ComboOption<SimilarityProtectionLevel>(l, l.Label())), draft.SimilarityProtection);
 
         // «Días concretos» had no way to choose the days, so it could never be saved.
         var repeatDays = new HashSet<int>(draft.RepeatDays);
@@ -685,6 +709,10 @@ public static class Dialogs
             topMargin: 0));
         optionsBody.Children.Add(repeatDaysPanel);
         SyncRepeatDays();
+        optionsBody.Children.Add(TwoColGrid(
+            LabeledField("Avisar antes (minutos, 0–60)", leadBox, 0),
+            LabeledField("Fecha límite (aaaa-MM-dd; vacío = ninguna)", dueBox, 0),
+            topMargin: 10));
         optionsBody.Children.Add(autoStartCheck);
         optionsBody.Children.Add(fixedCheck);
 
@@ -756,11 +784,15 @@ public static class Dialogs
         blockingBody.Children.Add(LabeledField("Webs, subrutas o comodines (ej. youtube.com/shorts, github.com)", domainsBox, 6));
         blockingBody.Children.Add(searchMediaCheck);
         blockingBody.Children.Add(LabeledField("Palabras en título de ventana (ej. Shorts, Reels)", keywordsBox, 10));
+        blockingBody.Children.Add(wholeWordCheck);
         blockingBody.Children.Add(LabeledField("Carpetas bloqueadas del Explorador (rutas separadas por coma)", foldersBox, 10));
         blockingBody.Children.Add(TwoColGrid(
             LabeledField("Frase motivadora al bloquear (opcional)", motBox, 0),
             LabeledField("URL de redirección personalizada (opcional)", redirectBox, 0),
             topMargin: 10));
+        blockingBody.Children.Add(LabeledField("Protección de similitud para las excepciones", similarityCombo, 10));
+        blockingBody.Children.Add(guardPanesCheck);
+        blockingBody.Children.Add(punisherCheck);
         blockingBody.Children.Add(TwoColGrid(
             LabeledField("Protección si intentas parar antes", protCombo, 0),
             protParamWrap,
@@ -768,7 +800,19 @@ public static class Dialogs
 
         // Checklist card
         var checklistBox = MakeTextBox(draft.Checklist, multiline: true, height: 86);
-        var resultBody = LabeledField("Checklist de pasos (uno por línea)", checklistBox, 0);
+        var pickFolderButton = new System.Windows.Controls.Button { Content = "Carpeta…", Margin = new Thickness(8, 0, 0, 0) };
+        pickFolderButton.Click += (_, _) =>
+        {
+            using var folderDialog = new System.Windows.Forms.FolderBrowserDialog { Description = "Carpeta donde esperas ver el resultado de esta tarea" };
+            if (folderDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK) folderBox.Text = folderDialog.SelectedPath;
+        };
+        var folderRow = new DockPanel();
+        DockPanel.SetDock(pickFolderButton, Dock.Right);
+        folderRow.Children.Add(pickFolderButton);
+        folderRow.Children.Add(folderBox);
+        var resultBody = new StackPanel();
+        resultBody.Children.Add(LabeledField("Checklist de pasos (uno por línea)", checklistBox, 0));
+        resultBody.Children.Add(LabeledField("Carpeta del resultado (se miran los archivos que cambian durante la sesión)", folderRow, 12));
 
         // Quick Profile Strip (top card)
         if (engine.Workspace.Profiles.Count > 0)
@@ -886,6 +930,25 @@ public static class Dialogs
             draft.PomodoroWorkMinutes = int.TryParse(pomoBox.Text.Trim(), out var pm) ? Math.Clamp(pm, 0, 120) : 0;
             draft.AutoStart = autoStartCheck.IsChecked == true;
             draft.IsFixedAppointment = fixedCheck.IsChecked == true;
+            draft.LeadMinutes = int.TryParse(leadBox.Text.Trim(), out var leadParsed) ? Math.Clamp(leadParsed, 0, 60) : draft.LeadMinutes;
+            if (string.IsNullOrWhiteSpace(dueBox.Text))
+            {
+                draft.DueDate = null;
+            }
+            else if (DateTime.TryParseExact(dueBox.Text.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var dueParsed))
+            {
+                draft.DueDate = FocusRules.FromLocal(dueParsed.Date.AddHours(23).AddMinutes(59));
+            }
+            else
+            {
+                ShowInlineError("La fecha límite debe tener el formato aaaa-MM-dd (ej. 2026-12-01) o quedar vacía.");
+                return;
+            }
+            draft.Folder = string.IsNullOrWhiteSpace(folderBox.Text) ? null : folderBox.Text.Trim();
+            draft.WholeWordKeywords = wholeWordCheck.IsChecked == true;
+            draft.GuardSystemPanes = guardPanesCheck.IsChecked == true;
+            draft.PunisherEnabled = punisherCheck.IsChecked == true;
+            draft.SimilarityProtection = GetComboValue(similarityCombo, SimilarityProtectionLevel.Off);
 
             draft.Strict = strictCheck.IsChecked == true;
             draft.BlockGameLibraries = gameLibCheck.IsChecked == true;
@@ -895,7 +958,6 @@ public static class Dialogs
                 .Select(id => new AllowedApp(FocusRules.CleanAppId(id), id, ""))
                 .Where(a => !string.IsNullOrEmpty(a.Id))
                 .ToList();
-            if (draft.Apps.Count > 0) draft.Strict = true;
 
             draft.WebListMode = GetComboValue(webModeCombo, WebListMode.BlockListed);
             draft.WebBlockAction = GetComboValue(webActionCombo, WebBlockAction.Warn);
@@ -1200,6 +1262,10 @@ public static class Dialogs
         protParamWrap.Children.Add(protParamBox);
         var microPausesBox = MakeTextBox(draft.DailyMicroPausesAllowed.ToString(CultureInfo.InvariantCulture));
         var alwaysProtCheck = new System.Windows.Controls.CheckBox { Content = "Regla obligatoria 24/7 (siempre pide código para editarla, apagarla o cerrar FocusDesk)", IsChecked = draft.AlwaysProtected, Margin = new Thickness(0, 12, 0, 0) };
+        var ruleSimilarityCombo = MakeCombo(Enum.GetValues<SimilarityProtectionLevel>().Select(l => new ComboOption<SimilarityProtectionLevel>(l, l.Label())), draft.SimilarityProtection);
+        var ruleGuardCheck = new System.Windows.Controls.CheckBox { Content = "Cerrar los paneles de Windows que acabarían con el bloqueo (Hora, Privacidad, Cuentas…)", IsChecked = draft.GuardSystemPanes, Margin = new Thickness(0, 10, 0, 0) };
+        var rulePunisherCheck = new System.Windows.Controls.CheckBox { Content = "Endurecer el bloqueo tras varios intentos seguidos", IsChecked = draft.PunisherEnabled, Margin = new Thickness(0, 8, 0, 0) };
+        var extraIntervalsBox = MakeTextBox(string.Join(", ", draft.ExtraScheduleIntervals.Select(i => $"{i.StartMinutes / 60:D2}:{i.StartMinutes % 60:D2}-{i.EndMinutes / 60:D2}:{i.EndMinutes % 60:D2}")));
 
         void SyncProtParam()
         {
@@ -1252,6 +1318,7 @@ public static class Dialogs
             topMargin: 0));
         schedulePanel.Children.Add(new TextBlock { Text = "DÍAS ACTIVOS", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 12, 0, 2) });
         schedulePanel.Children.Add(daysWrap);
+        schedulePanel.Children.Add(LabeledField("Tramos extra (HH:mm-HH:mm separados por coma, ej. 15:30-17:00)", extraIntervalsBox, 12));
 
         var launchPanel = new StackPanel();
         launchPanel.Children.Add(ThreeColGrid(
@@ -1401,6 +1468,9 @@ public static class Dialogs
             LabeledField("Micro-pausas al día", microPausesBox, 0),
             topMargin: 0));
         protectionBody.Children.Add(alwaysProtCheck);
+        protectionBody.Children.Add(LabeledField("Protección de similitud para las excepciones", ruleSimilarityCombo, 12));
+        protectionBody.Children.Add(ruleGuardCheck);
+        protectionBody.Children.Add(rulePunisherCheck);
 
         root.Children.Add(BuildSectionCard("Nombre y temporizador", null, identityBody));
         root.Children.Add(BuildSectionCard("Qué bloquea esta regla", "Puedes combinar apps, juegos, webs, palabras en título de ventana y carpetas.", targetsBody));
@@ -1543,6 +1613,24 @@ public static class Dialogs
                 draft.StopDelayMinutes = Math.Clamp(dlp, 1, 120);
             draft.DailyMicroPausesAllowed = int.TryParse(microPausesBox.Text.Trim(), out var mp) ? Math.Clamp(mp, 0, 10) : draft.DailyMicroPausesAllowed;
             draft.AlwaysProtected = alwaysProtCheck.IsChecked == true;
+            draft.SimilarityProtection = GetComboValue(ruleSimilarityCombo, SimilarityProtectionLevel.Off);
+            draft.GuardSystemPanes = ruleGuardCheck.IsChecked == true;
+            draft.PunisherEnabled = rulePunisherCheck.IsChecked == true;
+            if (draft.Kind == GeneralRuleKind.Schedule)
+            {
+                var extras = new List<ScheduleInterval>();
+                foreach (var piece in extraIntervalsBox.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    var ends = piece.Split('-', StringSplitOptions.TrimEntries);
+                    if (ends.Length != 2 || !TryParseHourMinute(ends[0], out var extraStart) || !TryParseHourMinute(ends[1], out var extraEnd) || extraStart == extraEnd)
+                    {
+                        ShowInlineError($"El tramo extra «{piece}» no es válido: usa HH:mm-HH:mm (por ejemplo 15:30-17:00).");
+                        return;
+                    }
+                    extras.Add(new ScheduleInterval { StartMinutes = extraStart, EndMinutes = extraEnd });
+                }
+                draft.ExtraScheduleIntervals = extras;
+            }
 
             if (draft.Kind == GeneralRuleKind.Countdown && countStartCheck.IsChecked == true &&
                 (draft.ActiveDeadline == null || draft.ActiveDeadline.RemainingAfterPossibleReboot() <= 0 || (existing != null && draft.CountdownMinutes > existing.CountdownMinutes)))
@@ -1582,77 +1670,6 @@ public static class Dialogs
 
         win.Content = shell;
         win.Loaded += (_, _) => nameBox.Focus();
-        win.ShowDialog();
-    }
-
-    public static void ShowCompletionDialog(AppEngine engine, WorkSession session, Window? owner)
-    {
-        var saved = false;
-        var win = new Window
-        {
-            Title = "Confirmar resultado · FocusDesk",
-            Width = 480,
-            Height = 350,
-            WindowStartupLocation = owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
-            Owner = owner,
-            ResizeMode = ResizeMode.NoResize,
-            Background = BrushHex("#0B0E14"),
-            Foreground = BrushHex("#F2F5FA")
-        };
-
-        var root = new StackPanel { Margin = new Thickness(24) };
-        AnimateModalIn(root);
-
-        root.Children.Add(new TextBlock
-        {
-            Text = $"Sesión terminada: {session.Task.Title}",
-            FontSize = 18,
-            FontWeight = FontWeights.SemiBold,
-            TextWrapping = TextWrapping.Wrap
-        });
-        root.Children.Add(new TextBlock
-        {
-            Text = $"Tiempo trabajado: {FocusRules.Clock(session.Elapsed(DateTimeOffset.Now))} · Interrupciones: {session.InterruptionCount}",
-            Foreground = BrushHex("#94A3B8"),
-            FontSize = 12.5,
-            Margin = new Thickness(0, 6, 0, 16)
-        });
-
-        var noteBox = MakeTextBox("", multiline: true, height: 92);
-        root.Children.Add(LabeledField("Nota de resultado (opcional)", noteBox, 0));
-
-        var btns = new StackPanel
-        {
-            Orientation = System.Windows.Controls.Orientation.Horizontal,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
-            Margin = new Thickness(0, 18, 0, 0)
-        };
-        var pending = new System.Windows.Controls.Button { Content = "Sigue pendiente", Margin = new Thickness(0, 0, 10, 0) };
-        pending.Click += (_, _) =>
-        {
-            saved = true;
-            engine.ConfirmSession(false, noteBox.Text);
-            win.Close();
-        };
-        var done = MakePrimaryButton("Completada");
-        done.Click += (_, _) =>
-        {
-            saved = true;
-            engine.ConfirmSession(true, noteBox.Text);
-            win.Close();
-        };
-        btns.Children.Add(pending);
-        btns.Children.Add(done);
-        root.Children.Add(btns);
-
-        // If dismissed with X or Alt+F4, save as pending so the finished session never remains stuck in Workspace.Session.
-        win.Closed += (_, _) =>
-        {
-            if (!saved) engine.ConfirmSession(false, noteBox.Text);
-        };
-
-        win.Content = root;
-        win.Loaded += (_, _) => noteBox.Focus();
         win.ShowDialog();
     }
 }

@@ -26,8 +26,9 @@ y una parte de «Huecos»: lista de **Atrasadas** en «Hoy», repeticiones dibuj
 | W-07 | `SeriesRoller` (port de Mac) al abrir, a medianoche y al confirmar/cancelar; `UpcomingOccurrences` para «Semana»; selector de días en «Días concretos»; error propio si no hay ningún día. |
 | W-08 | «Activar Nm» e «Iniciar Pomodoro» pasan por `RestartLoosening` (el mismo trinquete que editar la regla) y piden código si acortan; el interruptor «Activar» ahora también arranca la cuenta atrás/Pomodoro como en Mac. |
 
-Pendiente de la lista (no tocado): W-10 a W-30 salvo lo indicado, y los huecos de la sección 3.
-
+Segunda tanda (también hecha, también sin compilar): W-10 a W-30 y los huecos de la sección 3, salvo **No molestar** (Windows no
+permite activarlo desde una app) y la cuadrícula de horas con arrastrar y soltar (la agenda de Windows es una lista por día y semana con botones
+«Mañana», «Bandeja» y «Programar hoy»). El calendario de Apple se sustituye por exportar un archivo `.ics`.
 ---
 
 ## 1. Lo grave (arreglar primero)

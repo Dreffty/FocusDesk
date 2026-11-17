@@ -10,7 +10,7 @@ using FocusDesk.Windows.Platform;
 
 namespace FocusDesk.Windows.Core;
 
-public sealed class AppEngine : INotifyPropertyChanged, IDisposable
+public sealed partial class AppEngine : INotifyPropertyChanged, IDisposable, IStopGateHost
 {
     public WorkspaceStore Store { get; }
     public Workspace Workspace { get; private set; }
@@ -315,7 +315,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             (Workspace.Session is { EndedAt: null } s && s.Task.Protection != SessionProtection.None) ||
             Workspace.GeneralRules.Any(r => r.Enabled && r.Protection != SessionProtection.None);
 
-        if (Workspace.Settings.RelaunchGuard && !RelaunchGuard.IsInstalled())
+        if (Workspace.Settings.RelaunchGuard && !RelaunchGuard.IsInstalledForThisExe())
             RelaunchGuard.Install();
         else if (needsWatcher)
             RelaunchGuard.StartWatcherProcessIfMissing();
@@ -361,6 +361,34 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         {
             Workspace.RecordAudit("Testigo", "Cambio externo detectado en reglas protegidas.");
         }
+
+        // A protected rule that the data file lost or softened while FocusDesk was closed comes back as it was
+        // (macOS: the witness in the Keychain restores it).
+        if (w.ProtectedRules is { Count: > 0 })
+        {
+            var restored = new List<string>();
+            var launchNow = DateTimeOffset.Now;
+            foreach (var witnessed in w.ProtectedRules)
+            {
+                if (!IsRuleProtected(witnessed, launchNow)) continue;
+                var index = Workspace.GeneralRules.FindIndex(r => r.Id == witnessed.Id);
+                if (index < 0)
+                {
+                    Workspace.GeneralRules.Add(witnessed);
+                    restored.Add($"«{witnessed.Name}»");
+                }
+                else if (GeneralBlockRule.Loosening(witnessed, Workspace.GeneralRules[index], launchNow) != null)
+                {
+                    Workspace.GeneralRules[index] = witnessed;
+                    restored.Add($"«{witnessed.Name}»");
+                }
+            }
+            if (restored.Count > 0)
+            {
+                Workspace.RecordAudit("Testigo", $"Se restauraron reglas protegidas: {string.Join(", ", restored)}.");
+                Notice = $"Se {(restored.Count == 1 ? "ha restaurado la regla protegida" : "han restaurado las reglas protegidas")} {string.Join(", ", restored)} desde el testigo de seguridad.";
+            }
+        }
     }
 
     public void RefreshWitness()
@@ -377,6 +405,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 : null,
             ProtectedRuleCount = Workspace.GeneralRules.Count(r => r.Enabled && r.Protection != SessionProtection.None),
             RulesFingerprint = DpapiWitness.Fingerprint(Workspace.GeneralRules),
+            ProtectedRules = Workspace.GeneralRules.Where(r => IsRuleProtected(r)).Select(r => r.Clone()).ToList(),
             SavedAt = DateTimeOffset.UtcNow
         };
         DpapiWitness.Save(payload);
@@ -538,6 +567,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         _ticks++;
 
         DetectSleepGap(now);
+        TickStopWaits(now);
 
         if (now.LocalDateTime.Date != _lastPrunedDay)
         {
@@ -1112,6 +1142,13 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     private void ObserveForeground(DateTimeOffset now)
     {
+        // Nothing to watch (no running session, no rule switched on): do not even look at the foreground window.
+        if (!(Workspace.Session is { Paused: false, EndedAt: null }) && !Workspace.GeneralRules.Any(r => r.Enabled))
+        {
+            _lastQuotaAt = null;
+            return;
+        }
+
         var delta = _lastQuotaAt.HasValue ? Math.Clamp((now - _lastQuotaAt.Value).TotalSeconds, 0, 8) : 0;
         _lastQuotaAt = now;
 
@@ -1122,7 +1159,10 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         var cont = TrustedClock.ContinuousSeconds();
 
         if (_ticks % 6 == 0)
+        {
             SweepBackgroundWindows(fg.ProcessId, now, cont);
+            SweepBackgroundBrowsers(fg.ProcessId);
+        }
 
         // Guard Task Manager, Regedit, and sensitive Windows Settings panes before SystemExempt short-circuits.
         var sessionGuardsPanes = Workspace.Session is { Paused: false, EndedAt: null } gs &&
@@ -1141,11 +1181,14 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             }
         }
 
+        // Explorer is exempt as a distraction, but not the folders a session or rule closes (macOS: guardBlockedFolders).
+        EnforceBlockedFolders(now, cont);
+
         if (FocusRules.SystemExemptProcesses.Contains(procClean) || FocusRules.IsOwnProcess(fg.ProcessId))
             return;
 
         // Read browser URL off the UI thread so UIAutomation never freezes the WPF window.
-        if (StudyActivityVerifier.IsBrowser(procClean) && !_webReadBusy && (now - _lastWebReadAt).TotalSeconds >= 2.5)
+        if (StudyActivityVerifier.IsBrowser(procClean) && !_webReadBusy && (now - _lastWebReadAt).TotalSeconds >= 2.5 && NeedsBrowserRead())
         {
             _lastWebReadAt = now;
             _webReadBusy = true;
@@ -1183,18 +1226,31 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             if (FocusRules.MatchesTitleKeyword(fg.WindowTitle, s.Task.BlockedTitleKeywords, s.Task.WholeWordKeywords) != null)
                 allowed = false;
 
-            s.ObserveForeground(procClean, fg.ProcessName, fg.WindowTitle, allowed, now);
-            if (!allowed && (s.Task.Strict || gameHit != null || FocusRules.MatchesTitleKeyword(fg.WindowTitle, s.Task.BlockedTitleKeywords, s.Task.WholeWordKeywords) != null))
+            var isNewInterruption = s.ObserveForeground(procClean, fg.ProcessName, fg.WindowTitle, allowed, now);
+            if (allowed)
             {
-                var verb = WindowsActivity.ApplyBlockAction(fg, s.Punisher.IsActive(cont) ? s.Task.BlockAction.Escalated() : s.Task.BlockAction);
-                s.BlocksApplied++;
-                if (s.Task.PunisherEnabled) s.Punisher.Register(cont);
-                Notice = $"{fg.ProcessName} bloqueada en «{s.Task.Title}»: {verb}.";
+                _strictTracker.RegisterAllowedAppObserved();
+                _strictLaunchAttempts = 0;
             }
-            if (s.Task.BlockedFolders.Count > 0)
+            var titleHit = FocusRules.MatchesTitleKeyword(fg.WindowTitle, s.Task.BlockedTitleKeywords, s.Task.WholeWordKeywords);
+            if (!allowed)
             {
-                var hits = FolderGuard.EnforceBlockedExplorerFolders(s.Task.BlockedFolders);
-                if (hits.Count > 0) Notice = $"Carpeta bloqueada cerrada: {string.Join(", ", hits)}.";
+                if (titleHit != null || (gameHit != null && !s.Task.Strict))
+                {
+                    var verb = WindowsActivity.ApplyBlockAction(fg, SessionBlockAction(s, cont));
+                    var punisherMessage = RegisterSessionBlock(s, cont);
+                    Notice = punisherMessage ?? (titleHit != null
+                        ? $"«{titleHit}» está bloqueada por título de ventana en «{s.Task.Title}»: {fg.ProcessName} {verb}."
+                        : $"{fg.ProcessName} ({gameHit}) está bloqueada por la protección de juegos en «{s.Task.Title}»: {verb}.");
+                }
+                else if (s.Task.Strict)
+                {
+                    EnforceStrictApp(s, fg, isNewInterruption, now, cont);
+                }
+                else if (isNewInterruption)
+                {
+                    NotifyDistraction($"{fg.ProcessName} está fuera del perfil de esta tarea.", s);
+                }
             }
         }
 
@@ -1218,30 +1274,23 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 continue;
             }
 
-            if (delta > 0 && MatchesRuleAppOrTitle(rule, fg, now))
+            if (rule.Kind == GeneralRuleKind.LaunchLimit && rule.ActiveLaunchDeadline != null)
             {
-                if (rule.Kind == GeneralRuleKind.DailyLimit)
-                {
-                    Workspace.AddUsedSeconds(delta, rule.Id, rule.LimitPeriodUnit, now);
-                }
-                else if (rule.Kind == GeneralRuleKind.WorkGoal && rule.GoalRewardMinutes > 0 && rule.IsTrackingQuota(now, Workspace.UsedSecondsToday(rule.Id, now: now), EffectiveWorkedSeconds(rule, now)))
-                {
-                    Workspace.AddUsedSeconds(delta, rule.Id, now: now);
-                }
+                var visitLeft = rule.LaunchVisitRemainingSeconds(now, cont);
+                if (visitLeft > 0) CheckPreBlockWarning(rule, visitLeft, FocusRules.DayKey(now, Workspace.Settings.DayRolloverHour));
             }
 
+            if (delta > 0 && MatchesRuleAppOrTitle(rule, fg, now))
+                AccumulateUsage(rule, delta, now);
+
             if (!IsRuleEnforcing(rule, now)) continue;
+            // An app let through on purpose for a while (temporary exception) is not blocked by any rule.
+            if (Workspace.IsTemporarilyAllowedApp(procClean, now, cont)) continue;
 
             if (rule.GuardSystemPanes && rule.Protection != SessionProtection.None)
             {
                 var sys = SystemSettingsGuard.CheckGuardedPane(fg);
                 if (sys != null) { WindowsActivity.CloseWindow(fg.Hwnd); Notice = $"Cerrado {sys} mientras «{rule.Name}» está activa."; return; }
-            }
-
-            if (rule.BlockedFolders.Count > 0)
-            {
-                var hits = FolderGuard.EnforceBlockedExplorerFolders(rule.BlockedFolders);
-                if (hits.Count > 0) Notice = $"Carpeta bloqueada por «{rule.Name}»: {string.Join(", ", hits)}.";
             }
 
             if (FocusRules.MatchesTitleKeyword(fg.WindowTitle, rule.BlockedTitleKeywords, rule.WholeWordKeywords) is string kw)
@@ -1333,7 +1382,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
         if (Workspace.Session is { Paused: false, EndedAt: null } s &&
             s.Task.PomodoroPhase(s.Elapsed(now, cont))?.IsBreak != true &&
-            (s.Task.WebBlockAction != WebBlockAction.Warn || s.Task.BlockSearchMedia))
+            (s.Task.WebBlockAction != WebBlockAction.Warn || s.Task.BlockSearchMedia || Workspace.Settings.ObserveBrowserSites))
         {
             var searchHit = s.Task.BlockSearchMedia ? SearchMediaRules.Matches(host, path) : null;
             var allowed = searchHit == null && (s.Task.WebBlockAction == WebBlockAction.Warn || FocusRules.WebAllowed(host, path, s.Task.Domains, s.Task.WebListMode));
@@ -1343,8 +1392,12 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 if (_lastWebBlockHost == visitKey && (now - _lastWebBlockAt).TotalSeconds < 2.5) return;
                 _lastWebBlockHost = visitKey;
                 _lastWebBlockAt = now;
-                s.BlocksApplied++;
-                ActOnBlockedTab(fg.Hwnd, visitKey, s.Task.Title, s.Remaining(now), s.Task.MotivationalMessage, s.Task.WebBlockAction == WebBlockAction.CloseTab, s.Task.CustomRedirectURL);
+                var webPunisher = RegisterSessionBlock(s, cont);
+                // Harder for a while after several attempts in a row: the tab is closed instead of redirected.
+                var sessionCloseTab = s.Task.WebBlockAction == WebBlockAction.CloseTab ||
+                                      (s.Task.PunisherEnabled && s.Punisher.IsActive(cont) && s.Task.WebBlockAction == WebBlockAction.Redirect);
+                ActOnBlockedTab(fg.Hwnd, visitKey, s.Task.Title, s.Remaining(now), s.Task.MotivationalMessage, sessionCloseTab, s.Task.CustomRedirectURL);
+                if (webPunisher != null) Notice = webPunisher;
                 return;
             }
         }
@@ -1383,11 +1436,12 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         string? redirect = null;
         if (!closeTab)
         {
-            redirect = !string.IsNullOrWhiteSpace(customRedirect) && Uri.TryCreate(customRedirect, UriKind.Absolute, out _)
-                ? customRedirect
+            var custom = FocusRules.NormalizedRedirectUrl(customRedirect);
+            redirect = custom != null
+                ? custom.AbsoluteUri
                 : BlockPageGenerator.Write(title, host, remSeconds, msg, Array.Empty<string>(), Store.DirectoryPath);
         }
-        if (BrowserInspector.RedirectOrCloseTab(hwnd, closeTab, redirect))
+        if (BrowserInspector.RedirectOrCloseTab(hwnd, closeTab, redirect, host))
             Notice = closeTab ? $"{host} bloqueada: pestaña cerrada." : $"{host} bloqueada: redirigida.";
     }
 
@@ -1447,6 +1501,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             if (reason != null) { Error = $"Protegida: no se puede {reason} sin desbloquear."; return; }
         }
 
+        RememberUndo();
         if (idx >= 0) Workspace.Tasks[idx] = task; else Workspace.Tasks.Add(task);
         if (Workspace.Session is { EndedAt: null } s && s.Task.Id == task.Id)
         {
@@ -1470,6 +1525,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             Error = $"«{task.Title}» está dentro de su margen de protección previo al inicio.";
             return;
         }
+        RememberUndo();
         Workspace.Tasks.RemoveAll(t => t.Id == task.Id);
         Error = "";
         Persist();
@@ -1490,7 +1546,9 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         }
         _sessionFinishedNotifiedId = null;
         _lastTaskPomodoroKey = null;
+        ResetStrictState();
         Workspace.Session = new WorkSession(task, DateTimeOffset.Now);
+        BeginFolderBaseline(Workspace.Session);
         Error = "";
         Notice = $"«{task.Title}» en marcha ({task.Minutes} min).";
         Persist();
@@ -1554,17 +1612,31 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         Notice = $"Micro-pausa de {rule.MicroPauseMinutes} min activada en «{rule.Name}» ({n}/{rule.DailyMicroPausesAllowed} hoy).";
     }
 
-    public void LaunchQuickBlock(int minutes, SessionProtection protection = SessionProtection.Challenge)
+    /// <summary>
+    /// One-click countdown block (macOS: startQuickBlock). With no preset it blocks social networks and short videos.
+    /// A quick block that already exists is only ever extended and hardened, never shortened or softened.
+    /// </summary>
+    public void LaunchQuickBlock(int minutes, SessionProtection protection = SessionProtection.Challenge, DistractionPreset? preset = null)
     {
-        var clamped = Math.Clamp(minutes, 5, 720);
+        var clamped = Math.Clamp(minutes, 5, 1440);
+        var presetDomains = preset != null
+            ? preset.Domains.ToList()
+            : DistractionPreset.Social.Domains.Concat(DistractionPreset.ShortVideos.Domains).Distinct().ToList();
+        var presetKeywords = preset != null
+            ? preset.TitleKeywords.ToList()
+            : DistractionPreset.Social.TitleKeywords.Concat(DistractionPreset.ShortVideos.TitleKeywords).Distinct().ToList();
+        var label = preset?.Label ?? "Redes y vídeos cortos";
+
         var existing = Workspace.GeneralRules.FirstOrDefault(r => r.Kind == GeneralRuleKind.Countdown && r.Name.StartsWith("Bloqueo rápido", StringComparison.OrdinalIgnoreCase));
         if (existing != null)
         {
-            var curRem = existing.ActiveDeadline?.RemainingAfterPossibleReboot() ?? 0;
+            var curRem = existing.Enabled && existing.ActiveDeadline != null ? existing.ActiveDeadline.RemainingAfterPossibleReboot() : 0;
             var newSec = Math.Max(curRem, clamped * 60.0);
-            existing.CountdownMinutes = Math.Max(existing.CountdownMinutes, clamped);
+            existing.CountdownMinutes = Math.Clamp(Math.Max(existing.CountdownMinutes, clamped), 5, 720);
             if (protection.Strength() > existing.Protection.Strength())
                 existing.Protection = protection;
+            existing.Domains = FocusRules.NormalizeDomains(string.Join(", ", FocusRules.ParseDomains(existing.Domains).Valid.Concat(presetDomains)));
+            existing.BlockedTitleKeywords = FocusRules.NormalizeTitleKeywords(string.Join(", ", FocusRules.ParseTitleKeywords(existing.BlockedTitleKeywords).Concat(presetKeywords)));
             existing.Enabled = true;
             existing.ActiveMicroPauseDeadline = null;
             existing.ActiveDeadline = new TrustedDeadline(newSec);
@@ -1576,16 +1648,14 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
         var quick = new GeneralBlockRule
         {
-            Name = "Bloqueo rápido antidistracción",
+            Name = $"Bloqueo rápido · {label}",
             Kind = GeneralRuleKind.Countdown,
-            CountdownMinutes = clamped,
+            CountdownMinutes = Math.Min(720, clamped),
             Enabled = true,
-            BlockGameLibraries = true,
-            BlockApps = true,
             WebListMode = WebListMode.BlockListed,
             WebBlockAction = WebBlockAction.Redirect,
-            Domains = "youtube.com/shorts, instagram.com, tiktok.com, x.com, reddit.com, twitch.tv, netflix.com",
-            BlockedTitleKeywords = "Shorts, Reels, TikTok",
+            Domains = string.Join(", ", presetDomains),
+            BlockedTitleKeywords = string.Join(", ", presetKeywords),
             Protection = protection,
             DailyMicroPausesAllowed = 1
         };
@@ -1607,6 +1677,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
     public void ResumeSession()
     {
         if (Workspace.Session == null || !Workspace.Session.Paused) return;
+        ResetStrictState();
         Workspace.Session.Resume(DateTimeOffset.Now);
         Persist();
         Notice = "Sesión reanudada.";
@@ -1625,15 +1696,31 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         if (Workspace.Session == null) return;
         Workspace.Session.Finish(DateTimeOffset.Now);
         Persist();
-        SessionCompletionRequested?.Invoke(Workspace.Session);
+        AskResultAfterEvidence(Workspace.Session);
     }
 
-    public void ConfirmSession(bool completed, string note)
+    public void ConfirmSession(bool completed, string note, IEnumerable<string>? confirmedFiles = null,
+        IEnumerable<string>? manualFiles = null, NextTransition transition = NextTransition.KeepSchedule)
     {
         var s = Workspace.Session;
         if (s == null) return;
         if (s.EndedAt == null) s.Finish(DateTimeOffset.Now);
-        Workspace.History.Insert(0, new SessionRecord { Id = s.Id, Session = s, Completed = completed, Note = note });
+        var changed = s.FinalChangedFiles ?? new List<string>();
+        var confirmed = (confirmedFiles ?? s.SelectedFiles).Distinct().OrderBy(f => f).ToList();
+        var manual = (manualFiles ?? s.ManualFiles).Distinct().ToList();
+        s.Baseline = new Dictionary<string, FileStamp>();   // only needed while the session ran
+        var record = new SessionRecord
+        {
+            Id = s.Id,
+            Session = s,
+            Completed = completed,
+            Note = note,
+            ChangedFiles = changed,
+            ConfirmedFiles = confirmed,
+            ManualFiles = manual
+        };
+        record.PreserveSummary();
+        Workspace.History.Insert(0, record);
         var idx = Workspace.Tasks.FindIndex(t => t.Id == s.Task.Id);
         if (idx >= 0)
         {
@@ -1646,6 +1733,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         SeriesRoller.Roll(Workspace.Tasks, null, DateTimeOffset.Now, Workspace.Settings.Workdays);
         Persist();
         Notice = completed ? "Tarea completada y guardada en historial." : "Sesión guardada.";
+        ApplyTransition(transition, s.Task.Id, completed);
     }
 
     public void CancelSession()

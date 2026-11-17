@@ -166,29 +166,55 @@ public static class SearchMediaRules
     public static string? Matches(string host, string pathAndQuery)
     {
         var h = host.ToLowerInvariant().Trim('.');
-        var pq = pathAndQuery.ToLowerInvariant();
-        if (h.Contains("google."))
+        var isGoogle = h == "google.com" || h.EndsWith(".google.com", StringComparison.Ordinal) || h.Contains("google.");
+        var isBing = h == "bing.com" || h.EndsWith(".bing.com", StringComparison.Ordinal);
+        var isDuck = h == "duckduckgo.com" || h.EndsWith(".duckduckgo.com", StringComparison.Ordinal);
+        var isBrave = h == "search.brave.com";
+        var isYahoo = h == "yahoo.com" || h.EndsWith(".yahoo.com", StringComparison.Ordinal);
+        var isEcosia = h == "ecosia.org" || h.EndsWith(".ecosia.org", StringComparison.Ordinal);
+        var isYandex = h.Contains("yandex.");
+
+        // The real path and the real parameters: «udm=28» is Shopping, and «?q=udm=2» is what somebody searched for.
+        var address = pathAndQuery.ToLowerInvariant();
+        var hash = address.IndexOf('#');
+        if (hash >= 0) address = address[..hash];
+        var qIdx = address.IndexOf('?');
+        var path = qIdx >= 0 ? address[..qIdx] : address;
+        var parameters = qIdx >= 0 ? address[(qIdx + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries) : Array.Empty<string>();
+        bool Has(string parameter) => parameters.Contains(parameter);
+
+        if (isGoogle)
         {
-            if (pq.StartsWith("/imghp", StringComparison.Ordinal)) return "Google Imágenes";
-            var qIdx = pq.IndexOf('?');
-            if (qIdx >= 0)
-            {
-                var query = pq[(qIdx + 1)..];
-                var hash = query.IndexOf('#');
-                if (hash >= 0) query = query[..hash];
-                var pairs = query.Split('&');
-                foreach (var p in pairs)
-                {
-                    if (p is "udm=2" or "tbm=isch") return "Google Imágenes";
-                    if (p is "udm=7" or "udm=39" or "tbm=vid") return "Google Vídeos";
-                }
-            }
+            if (Has("tbm=isch") || Has("udm=2") || path.StartsWith("/imghp", StringComparison.Ordinal) || path.StartsWith("/images", StringComparison.Ordinal))
+                return "Google Imágenes";
+            if (Has("tbm=vid") || Has("udm=7") || Has("udm=39") || path.StartsWith("/videohp", StringComparison.Ordinal) || path.StartsWith("/videos", StringComparison.Ordinal))
+                return "Google Vídeos";
         }
-        if (h.Contains("duckduckgo.com") && pq.Contains("iax=images", StringComparison.Ordinal)) return "DuckDuckGo Imágenes";
-        if (h.Contains("duckduckgo.com") && pq.Contains("iax=videos", StringComparison.Ordinal)) return "DuckDuckGo Vídeos";
-        if (h.Contains("bing.com") && pq.Contains("/images/search", StringComparison.Ordinal)) return "Bing Imágenes";
-        if (h.Contains("bing.com") && pq.Contains("/videos/search", StringComparison.Ordinal)) return "Bing Vídeos";
-        if (h.Contains("search.yahoo.com") && pq.Contains("/search/images", StringComparison.Ordinal)) return "Yahoo Imágenes";
+        if (isBing)
+        {
+            if (path.StartsWith("/images", StringComparison.Ordinal) || Has("ia=images")) return "Bing Imágenes";
+            if (path.StartsWith("/videos", StringComparison.Ordinal) || Has("ia=videos")) return "Bing Vídeos";
+        }
+        if (isDuck)
+        {
+            if (Has("iax=images") || Has("ia=images")) return "DuckDuckGo Imágenes";
+            if (Has("iax=videos") || Has("ia=videos")) return "DuckDuckGo Vídeos";
+        }
+        if (isBrave)
+        {
+            if (path.StartsWith("/images", StringComparison.Ordinal)) return "Brave Imágenes";
+            if (path.StartsWith("/videos", StringComparison.Ordinal)) return "Brave Vídeos";
+        }
+        if (isYahoo)
+        {
+            if (h.StartsWith("images.search.", StringComparison.Ordinal) || path.Contains("/search/images", StringComparison.Ordinal)) return "Yahoo Imágenes";
+            if (h.StartsWith("video.search.", StringComparison.Ordinal) || path.Contains("/search/video", StringComparison.Ordinal)) return "Yahoo Vídeos";
+        }
+        if (isEcosia || isYandex)
+        {
+            if (path.StartsWith("/images", StringComparison.Ordinal)) return "Buscador de Imágenes";
+            if (path.StartsWith("/videos", StringComparison.Ordinal) || path.StartsWith("/video", StringComparison.Ordinal)) return "Buscador de Vídeos";
+        }
         return null;
     }
 }
@@ -571,8 +597,36 @@ public sealed class GeneralBlockRule
             GeneralRuleKind.Countdown => ActiveDeadline?.RemainingAfterPossibleReboot(now, cont) ?? 0,
             GeneralRuleKind.Pomodoro => ActivePomodoroDeadline?.RemainingAfterPossibleReboot(now, cont) ?? Math.Max(1, PomodoroWorkMinutes) * 60.0,
             GeneralRuleKind.LaunchLimit when LaunchCooldownRemainingSeconds(now, cont) > 0 && launchesToday < MaxDailyLaunches => LaunchCooldownRemainingSeconds(now, cont),
+            GeneralRuleKind.Schedule => ScheduleRemainingSeconds(now),
+            GeneralRuleKind.DailyLimit when LimitPeriodUnit == LimitPeriodUnit.Hour =>
+                Math.Max(60, 3600 - (now.LocalDateTime.Minute * 60 + now.LocalDateTime.Second)),
             _ => Math.Max(60, (now.LocalDateTime.Date.AddDays(1) - now.LocalDateTime).TotalSeconds)
         };
+    }
+
+    /// <summary>All the windows of the schedule: the main one plus the extra ones.</summary>
+    public List<ScheduleInterval> AllScheduleIntervals()
+    {
+        var list = new List<ScheduleInterval> { new() { StartMinutes = StartMinutes, EndMinutes = EndMinutes } };
+        list.AddRange(ExtraScheduleIntervals);
+        return list;
+    }
+
+    /// <summary>Seconds until the window of the schedule that is active now ends (overnight windows included).</summary>
+    private double ScheduleRemainingSeconds(DateTimeOffset now)
+    {
+        var local = now.LocalDateTime;
+        var weekday = FocusRules.AppleWeekday(now);
+        var nowMinutes = local.Hour * 60 + local.Minute;
+        var nowSeconds = nowMinutes * 60 + local.Second;
+        foreach (var interval in AllScheduleIntervals())
+        {
+            if (!interval.IsActive(nowMinutes, weekday, ScheduleDays)) continue;
+            var endSeconds = interval.EndMinutes * 60;
+            return endSeconds > nowSeconds ? endSeconds - nowSeconds : 86400 - nowSeconds + endSeconds;
+        }
+        var fallbackEnd = EndMinutes * 60;
+        return fallbackEnd > nowSeconds ? fallbackEnd - nowSeconds : 86400 - nowSeconds + fallbackEnd;
     }
 
     public void StartCountdown(int? minutes = null, DateTimeOffset? wall = null)
@@ -637,6 +691,16 @@ public sealed class GeneralBlockRule
             default:
                 return "";
         }
+    }
+
+    /// <summary>Ends the focus block now and starts the break (macOS: skipPomodoroToBreak).</summary>
+    public void SkipPomodoroToBreak(DateTimeOffset? wall = null)
+    {
+        if (Kind != GeneralRuleKind.Pomodoro || PomodoroPhase != PomodoroPhase.Work) return;
+        var isLong = PomodoroCurrentCycle % Math.Max(2, PomodoroLongBreakEvery) == 0;
+        PomodoroPhase = isLong ? PomodoroPhase.LongBreak : PomodoroPhase.ShortBreak;
+        var breakMinutes = isLong ? PomodoroLongBreakMinutes : PomodoroShortBreakMinutes;
+        ActivePomodoroDeadline = new TrustedDeadline(Math.Max(1, breakMinutes) * 60.0, wall);
     }
 
     public bool ApplyPomodoroPenaltyIfNeeded(DateTimeOffset? wall = null)
@@ -838,6 +902,7 @@ public sealed class GeneralBlockRule
             StartMinutes = 22 * 60 + 30,
             EndMinutes = 7 * 60 + 30,
             Domains = "youtube.com, netflix.com, twitch.tv, x.com, instagram.com, tiktok.com",
+            BlockedTitleKeywords = "Netflix, Twitch, Shorts",
             MotivationalMessage = "Hora de descansar: mañana rendirás el doble.",
             Protection = SessionProtection.Delay
         },
@@ -850,7 +915,21 @@ public sealed class GeneralBlockRule
             GoalMinutesRequired = 60,
             GoalRewardMinutes = 30,
             Domains = "youtube.com, reddit.com, twitch.tv, x.com",
-            MotivationalMessage = "Completa primero tu bloque de enfoque de hoy.",
+            BlockedTitleKeywords = "YouTube, Reddit, Twitch",
+            MotivationalMessage = "Completa primero tu bloque de enfoque de hoy para desbloquear tu recompensa.",
+            Protection = SessionProtection.Challenge
+        },
+        new()
+        {
+            Id = Guid.Parse("22222222-2222-2222-2222-222222222204"),
+            Name = "X y Reddit · máx. 4 visitas de 5 min (30 min enfriamiento)",
+            Enabled = false,
+            Kind = GeneralRuleKind.LaunchLimit,
+            MaxDailyLaunches = 4,
+            MaxLaunchDurationMinutes = 5,
+            LaunchCooldownMinutes = 30,
+            Domains = "x.com, twitter.com, reddit.com",
+            MotivationalMessage = "Evita abrir pestañas por impulso cada pocos minutos.",
             Protection = SessionProtection.Challenge
         },
         new()

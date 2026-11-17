@@ -49,6 +49,45 @@ public static class WindowsActivity
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc enumProc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    private const int SW_RESTORE = 9;
+
+    /// <summary>Brings a window to the front (an allowed app the person is sent back to).</summary>
+    public static void ActivateWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd);
+    }
+
+    /// <summary>
+    /// Store apps (Netflix, Xbox, Calculator…) live inside «ApplicationFrameHost»: the window belongs to the host and the
+    /// real app is a child window with another process. Without this every Store app looked exempt.
+    /// </summary>
+    private static int FindHostedAppPid(IntPtr frameHwnd, int framePid)
+    {
+        var found = 0;
+        EnumChildWindows(frameHwnd, (child, _) =>
+        {
+            GetWindowThreadProcessId(child, out var childPid);
+            if (childPid != 0 && (int)childPid != framePid)
+            {
+                found = (int)childPid;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -128,6 +167,20 @@ public static class WindowsActivity
             var sb = new StringBuilder(512);
             GetWindowText(hwnd, sb, sb.Capacity);
             var name = p.ProcessName;
+            if (name.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase))
+            {
+                var hostedPid = FindHostedAppPid(hwnd, (int)pid);
+                if (hostedPid != 0)
+                {
+                    try
+                    {
+                        using var hosted = Process.GetProcessById(hostedPid);
+                        name = hosted.ProcessName;
+                        pid = (uint)hostedPid;
+                    }
+                    catch { }
+                }
+            }
             var exe = QueryExePath((int)pid, name);
             return new ForegroundAppInfo((int)pid, name, exe, sb.ToString(), hwnd);
         }
@@ -166,8 +219,19 @@ public static class WindowsActivity
             {
                 using var p = Process.GetProcessById((int)pid);
                 var name = p.ProcessName;
-                var exe = QueryExePath((int)pid, name);
-                result.Add(new ForegroundAppInfo((int)pid, name, exe, sb.ToString(), hwnd));
+                var realPid = (int)pid;
+                if (name.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase))
+                {
+                    var hostedPid = FindHostedAppPid(hwnd, realPid);
+                    if (hostedPid != 0)
+                    {
+                        using var hosted = Process.GetProcessById(hostedPid);
+                        name = hosted.ProcessName;
+                        realPid = hostedPid;
+                    }
+                }
+                var exe = QueryExePath(realPid, name);
+                result.Add(new ForegroundAppInfo(realPid, name, exe, sb.ToString(), hwnd));
             }
             catch { }
             return true;
@@ -369,12 +433,19 @@ public static class BrowserInspector
         return null;
     }
 
-    public static bool RedirectOrCloseTab(IntPtr hwnd, bool closeTab, string? redirectUrl)
+    public static bool RedirectOrCloseTab(IntPtr hwnd, bool closeTab, string? redirectUrl, string? expectedPageKey = null)
     {
         try
         {
             var current = WindowsActivity.GetForegroundApp();
             if (current == null || current.Hwnd != hwnd) return false;
+            // The address was read a moment ago. If the person changed tab since, do not touch the new one:
+            // Ctrl+W would close a page that was never blocked.
+            if (!string.IsNullOrEmpty(expectedPageKey))
+            {
+                var now = ReadActiveUrl(hwnd, current.ProcessName.ToLowerInvariant());
+                if (!now.HasValue || $"{now.Value.Host}{now.Value.Path}" != expectedPageKey) return false;
+            }
             if (closeTab)
             {
                 System.Windows.Forms.SendKeys.SendWait("^w");
@@ -490,20 +561,43 @@ public static class FolderGuard
 
 public static class SystemSettingsGuard
 {
+    // The panes that would end the block: date and time, privacy, accounts and the apps that start with Windows.
     private static readonly string[] GuardedTokens =
     {
-        "aplicaciones", "apps", "hora", "fecha", "time", "date", "inicio", "startup", "privacidad", "privacy"
+        "hora e idioma", "fecha y hora", "time & language", "date & time", "privacidad", "privacy",
+        "cuentas", "accounts", "aplicaciones", "apps", "inicio de sesión", "startup"
     };
+
+    /// <summary>Name of the category selected in the left list of the Settings app (the window title does not change).</summary>
+    private static string? SelectedCategory(IntPtr hwnd)
+    {
+        try
+        {
+            var root = AutomationElement.FromHandle(hwnd);
+            if (root == null) return null;
+            var items = root.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem));
+            foreach (AutomationElement item in items)
+            {
+                if (item.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var pattern) &&
+                    pattern is SelectionItemPattern selection && selection.Current.IsSelected)
+                    return item.Current.Name;
+            }
+        }
+        catch { }
+        return null;
+    }
 
     public static string? CheckGuardedPane(ForegroundAppInfo app)
     {
         var proc = app.ProcessName.ToLowerInvariant().Replace(".exe", "");
         if (proc == "taskmgr") return "Administrador de tareas";
         if (proc == "regedit") return "Editor del Registro";
-        if (proc is "systemsettings" or "applicationframehost")
+        if (proc == "systemsettings")
         {
             var title = app.WindowTitle.ToLowerInvariant();
             if (GuardedTokens.Any(t => title.Contains(t))) return "Configuración de Windows";
+            var category = SelectedCategory(app.Hwnd)?.ToLowerInvariant();
+            if (category != null && GuardedTokens.Any(t => category.Contains(t))) return "Configuración de Windows";
         }
         if (proc is "cmd" or "powershell" or "pwsh" or "windowsterminal")
         {
@@ -595,6 +689,8 @@ public static class DpapiWitness
         public TrustedDeadline? SessionDeadline { get; set; }
         public int ProtectedRuleCount { get; set; }
         public string RulesFingerprint { get; set; } = "";
+        /// <summary>The rules that were protected when the data was last saved (restored if the file loses or softens them).</summary>
+        public List<GeneralBlockRule> ProtectedRules { get; set; } = new();
         public DateTimeOffset SavedAt { get; set; }
     }
 
@@ -651,6 +747,19 @@ public static class RelaunchGuard
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
             return key?.GetValue(ValueName) is string s && !string.IsNullOrEmpty(s);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>The start-up entry exists AND points at the .exe that is running now (moved or updated files leave a stale path).</summary>
+    public static bool IsInstalledForThisExe()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
+            if (key?.GetValue(ValueName) is not string registered || registered.Length == 0) return false;
+            var exe = Environment.ProcessPath;
+            return string.IsNullOrEmpty(exe) || registered.Contains(exe, StringComparison.OrdinalIgnoreCase);
         }
         catch { return false; }
     }

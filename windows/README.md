@@ -37,4 +37,8 @@ El ejecutable queda en `dist-win\FocusDesk.exe`.
 - Los datos se guardan en `%APPDATA%\FocusDesk\workspace.json`, historial en `workspace.history.json` y copias diarias en `backups\`.
 - El testigo antimanipulación se cifra con DPAPI del usuario en `%LOCALAPPDATA%\FocusDesk\witness.dat`.
 - El vigilante (`--watcher` en `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) reabre FocusDesk si se cierra a la fuerza durante una regla o sesión protegida.
-- Atajos globales: `Ctrl+Alt+Win+F` (abrir), `Ctrl+Alt+Win+P` (pausar/reanudar), `Ctrl+Alt+Win+T` (terminar).
+- Atajos globales: `Ctrl+Alt+Win+F` (abrir; se puede cambiar o apagar en Ajustes), `Ctrl+Alt+Win+P` (pausar/reanudar), `Ctrl+Alt+Win+T` (terminar).
+- Dentro de la ventana: `Ctrl+K` busca cualquier acción, `Ctrl+N` crea una tarea, `Ctrl+Z` / `Ctrl+Y` deshacen y rehacen la agenda.
+- La sesión se pausa sola al bloquear la pantalla, suspender o cambiar de usuario (el rato fuera no cuenta); una sesión protegida se reanuda sola al volver.
+- Si los datos no se pueden leer, la app arranca en solo lectura y no escribe encima del archivo; en Ajustes puedes recuperar la copia automática.
+- «Exportar al calendario (.ics)» en Semana es el equivalente del Calendario de macOS.

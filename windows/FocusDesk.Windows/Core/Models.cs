@@ -187,6 +187,28 @@ public enum SimilarityProtectionLevel
 public static class TrustedClock
 {
     public static double ContinuousSeconds() => Environment.TickCount64 / 1000.0;
+
+    /// <summary>
+    /// Names this start of the computer (macOS: kern.bootsessionuuid). It lives in a VOLATILE registry key, which Windows
+    /// deletes on restart, shutdown (also «Inicio rápido») and log-off, so it cannot be wound back like the clock.
+    /// The tick counter alone cannot tell a restart once it has grown past its old value.
+    /// </summary>
+    public static readonly string? BootId = ReadBootId();
+
+    private static string? ReadBootId()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
+                @"Software\FocusDesk\BootSession", true, Microsoft.Win32.RegistryOptions.Volatile);
+            if (key == null) return null;
+            if (key.GetValue("id") is string existing && existing.Length > 0) return existing;
+            var created = Guid.NewGuid().ToString("N");
+            key.SetValue("id", created);
+            return created;
+        }
+        catch { return null; }
+    }
 }
 
 public sealed class TrustedDeadline
@@ -195,6 +217,8 @@ public sealed class TrustedDeadline
     public DateTimeOffset WallAnchor { get; set; }
     public double ContinuousAnchor { get; set; }
     public double DurationSeconds { get; set; }
+    /// <summary>The start of the computer this deadline was set in (missing in data saved before it existed).</summary>
+    public string? AnchorBootId { get; set; }
 
     public TrustedDeadline() { }
 
@@ -206,6 +230,25 @@ public sealed class TrustedDeadline
         WallAnchor = now;
         ContinuousAnchor = cont;
         EndsAt = now.AddSeconds(DurationSeconds);
+        AnchorBootId = TrustedClock.BootId;
+    }
+
+    /// <summary>The computer was restarted since this deadline was set: the tick counter started again and its anchor means nothing.</summary>
+    public bool Rebooted(double? continuous = null, string? bootId = null)
+    {
+        var cont = continuous ?? TrustedClock.ContinuousSeconds();
+        var boot = bootId ?? TrustedClock.BootId;
+        if (AnchorBootId != null && boot != null && AnchorBootId != boot) return true;
+        return cont < ContinuousAnchor;
+    }
+
+    /// <summary>Seconds since this deadline passed (0 while it has not).</summary>
+    public double ElapsedSincePassed(DateTimeOffset? wall = null, double? continuous = null)
+    {
+        var now = wall ?? DateTimeOffset.UtcNow;
+        var cont = continuous ?? TrustedClock.ContinuousSeconds();
+        if (Rebooted(cont)) return Math.Max(0, (now - EndsAt).TotalSeconds);
+        return Math.Max(0, cont - (ContinuousAnchor + DurationSeconds));
     }
 
     public double RemainingSeconds(DateTimeOffset? wall = null, double? continuous = null)
@@ -224,8 +267,8 @@ public sealed class TrustedDeadline
     {
         var now = wall ?? DateTimeOffset.UtcNow;
         var cont = continuous ?? TrustedClock.ContinuousSeconds();
-        // If system rebooted, TickCount64 restarted from 0 (< ContinuousAnchor)
-        if (cont < ContinuousAnchor)
+        // If the computer restarted, TickCount64 started again and the anchor means nothing.
+        if (Rebooted(cont))
         {
             return Math.Max(0, (EndsAt - now).TotalSeconds);
         }
@@ -296,8 +339,8 @@ public sealed class FocusProfile
     public bool GuardSystemPanes { get; set; } = true;
     public bool PunisherEnabled { get; set; } = true;
     public List<string> BlockedFolders { get; set; } = new();
-    public AppListMode AppListMode { get; set; } = AppListMode.BlockListed;
-    public WebListMode WebListMode { get; set; } = WebListMode.BlockListed;
+    public AppListMode AppListMode { get; set; } = AppListMode.AllowListed;
+    public WebListMode WebListMode { get; set; } = WebListMode.AllowListed;
     public string BlockedTitleKeywords { get; set; } = "";
     public bool WholeWordKeywords { get; set; }
     public string CustomRedirectURL { get; set; } = "";
@@ -315,12 +358,7 @@ public sealed class FocusProfile
             Category = "Trabajo",
             Minutes = 60,
             LeadMinutes = 10,
-            BlockGameLibraries = true,
-            WebListMode = WebListMode.BlockListed,
-            WebBlockAction = WebBlockAction.Redirect,
-            Domains = "youtube.com/shorts, instagram.com, tiktok.com, x.com, reddit.com, twitch.tv, netflix.com",
-            BlockedTitleKeywords = "Shorts, Reels, TikTok",
-            Protection = SessionProtection.Challenge,
+            Domains = "github.com, stackoverflow.com, claude.ai, chatgpt.com",
             Checklist = "Definir el objetivo del bloque\nCompletar la implementación\nVerificar el resultado"
         },
         new()
@@ -330,12 +368,6 @@ public sealed class FocusProfile
             Category = "Estudio",
             Minutes = 45,
             LeadMinutes = 10,
-            BlockGameLibraries = true,
-            WebListMode = WebListMode.BlockListed,
-            WebBlockAction = WebBlockAction.Redirect,
-            Domains = "youtube.com, instagram.com, tiktok.com, x.com, reddit.com, twitch.tv, netflix.com",
-            BlockedTitleKeywords = "Shorts, Reels, TikTok, Twitch, Netflix",
-            Protection = SessionProtection.Challenge,
             Checklist = "Repasar el tema\nResolver ejercicios\nAnotar las dudas"
         },
         new()
@@ -345,12 +377,6 @@ public sealed class FocusProfile
             Category = "Proyecto",
             Minutes = 45,
             LeadMinutes = 10,
-            BlockGameLibraries = true,
-            WebListMode = WebListMode.BlockListed,
-            WebBlockAction = WebBlockAction.Redirect,
-            Domains = "youtube.com, instagram.com, tiktok.com, x.com, reddit.com, twitch.tv, netflix.com",
-            BlockedTitleKeywords = "Shorts, Reels, TikTok",
-            Protection = SessionProtection.Challenge,
             Checklist = "Leer y subrayar ideas clave\nRedactar el borrador\nRevisar el texto"
         }
     };
@@ -392,8 +418,8 @@ public sealed class FocusTask
     public bool GuardSystemPanes { get; set; } = true;
     public bool PunisherEnabled { get; set; } = true;
     public List<string> BlockedFolders { get; set; } = new();
-    public AppListMode AppListMode { get; set; } = AppListMode.BlockListed;
-    public WebListMode WebListMode { get; set; } = WebListMode.BlockListed;
+    public AppListMode AppListMode { get; set; } = AppListMode.AllowListed;
+    public WebListMode WebListMode { get; set; } = WebListMode.AllowListed;
     public string BlockedTitleKeywords { get; set; } = "";
     public bool WholeWordKeywords { get; set; }
     public string CustomRedirectURL { get; set; } = "";
@@ -672,9 +698,13 @@ public sealed class Activity
 
 public sealed class StopRequest
 {
+    public const double DefaultConfirmWindowSeconds = 180;
+
     public string Reason { get; set; } = "cancel";
     public DateTimeOffset AvailableAt { get; set; }
     public TrustedDeadline? Deadline { get; set; }
+    /// <summary>Once the wait is over, how long the person has to confirm before the request expires and the lock re-arms.</summary>
+    public double ConfirmWindowSeconds { get; set; } = DefaultConfirmWindowSeconds;
 
     public StopRequest() { }
     public StopRequest(string reason, int delayMinutes, DateTimeOffset? now = null)
@@ -692,37 +722,116 @@ public sealed class StopRequest
         return Math.Max(0, (AvailableAt - (now ?? DateTimeOffset.UtcNow)).TotalSeconds);
     }
 
-    public bool IsReady(DateTimeOffset? now = null) => RemainingSeconds(now) <= 0;
+    /// <summary>The wait finished and the confirmation window ran out without the person doing it.</summary>
+    public bool IsExpired(DateTimeOffset? now = null)
+    {
+        if (RemainingSeconds(now) > 0) return false;
+        var since = Deadline != null
+            ? Deadline.ElapsedSincePassed(now)
+            : Math.Max(0, ((now ?? DateTimeOffset.UtcNow) - AvailableAt).TotalSeconds);
+        return since > Math.Max(30, ConfirmWindowSeconds);
+    }
+
+    public bool IsReady(DateTimeOffset? now = null) => RemainingSeconds(now) <= 0 && !IsExpired(now);
+
+    public double ConfirmWindowRemaining(DateTimeOffset? now = null)
+    {
+        if (RemainingSeconds(now) > 0) return Math.Max(30, ConfirmWindowSeconds);
+        var since = Deadline != null ? Deadline.ElapsedSincePassed(now) : 0;
+        return Math.Max(0, Math.Max(30, ConfirmWindowSeconds) - since);
+    }
+}
+
+/// <summary>A wait for a protected change that is running (kept on disk, so closing the app does not clear it).</summary>
+public sealed class PendingStopWait
+{
+    public string Key { get; set; } = "";
+    public StopRequest Request { get; set; } = new();
 }
 
 public sealed class DistractionPunisher
 {
-    public int Attempts { get; set; }
-    public double FirstAttemptContinuous { get; set; }
-    public double EscalatedUntilContinuous { get; set; }
+    /// <summary>Attempts inside `Window` that set it off.</summary>
+    public int MaxAttempts { get; set; } = 4;
+    public double Window { get; set; } = 180;
+    /// <summary>How long the harder block lasts.</summary>
+    public double Duration { get; set; } = 600;
+    /// <summary>Continuous-clock instants of the recent attempts.</summary>
+    public List<double> Recent { get; set; } = new();
+    public double? ActiveUntil { get; set; }
+    /// <summary>How many times it has gone off (for the history).</summary>
+    public int TimesTriggered { get; set; }
 
     public bool IsActive(double? continuous = null)
     {
+        if (ActiveUntil == null) return false;
         var c = continuous ?? TrustedClock.ContinuousSeconds();
-        return c < EscalatedUntilContinuous;
+        // A value saved before a restart can lie far in the future: it never outlasts its own duration.
+        return c < ActiveUntil.Value && ActiveUntil.Value - c <= Duration + 1;
     }
 
+    public double Remaining(double? continuous = null)
+    {
+        if (!IsActive(continuous)) return 0;
+        var c = continuous ?? TrustedClock.ContinuousSeconds();
+        return Math.Max(0, ActiveUntil!.Value - c);
+    }
+
+    /// <summary>Records one blocked attempt. Returns true the moment the punisher switches on.</summary>
     public bool Register(double? continuous = null)
     {
         var c = continuous ?? TrustedClock.ContinuousSeconds();
-        if (c - FirstAttemptContinuous > 180)
-        {
-            Attempts = 0;
-            FirstAttemptContinuous = c;
-        }
-        Attempts++;
-        if (Attempts >= 3 && !IsActive(c))
-        {
-            EscalatedUntilContinuous = c + 600;
-            return true;
-        }
-        return false;
+        Recent.RemoveAll(x => c - x > Window || x > c);
+        Recent.Add(c);
+        if (Recent.Count > 50) Recent.RemoveRange(0, Recent.Count - 50);
+        if (IsActive(c) || Recent.Count < Math.Max(2, MaxAttempts)) return false;
+        ActiveUntil = c + Math.Max(60, Duration);
+        TimesTriggered++;
+        Recent.Clear();
+        return true;
     }
+
+    public void Clear()
+    {
+        Recent.Clear();
+        ActiveUntil = null;
+    }
+}
+
+public enum StrictDecisionKind { None, Cooldown, Redirect, PauseSession }
+
+/// <summary>
+/// Strict mode «solo estas apps»: how often to send the person back to an allowed app and when to give up (port of
+/// `StrictRedirectTracker`). Without it the block fought forever, closing every app that was focused.
+/// </summary>
+public sealed class StrictRedirectTracker
+{
+    public int ConsecutiveFailures { get; set; }
+    public DateTimeOffset LastRedirectAt { get; set; } = DateTimeOffset.MinValue;
+    public int MaxConsecutiveFailures { get; set; } = 3;
+    public double CooldownSeconds { get; set; } = 1.5;
+
+    public void RegisterAllowedAppObserved() => ConsecutiveFailures = 0;
+
+    public (StrictDecisionKind Kind, string? Reason) EvaluateUnallowed(bool hasRunningAllowedApp, DateTimeOffset now)
+    {
+        if (!hasRunningAllowedApp)
+        {
+            ConsecutiveFailures = 0;
+            return (StrictDecisionKind.PauseSession, "Sesión pausada: no hay ninguna app permitida abierta. Abre una y reanuda.");
+        }
+        if (ConsecutiveFailures >= MaxConsecutiveFailures)
+        {
+            ConsecutiveFailures = 0;
+            return (StrictDecisionKind.PauseSession, "Sesión pausada: no se pudo volver a la app permitida tras varios intentos. Así conservas siempre el control.");
+        }
+        if ((now - LastRedirectAt).TotalSeconds < CooldownSeconds) return (StrictDecisionKind.Cooldown, null);
+        LastRedirectAt = now;
+        return (StrictDecisionKind.Redirect, null);
+    }
+
+    /// <summary>Counts even when Windows says it worked: only seeing an allowed app really in front brings it back to 0.</summary>
+    public void RecordRedirectAttempt() => ConsecutiveFailures++;
 }
 
 public sealed class AppUsageSummary
@@ -730,6 +839,13 @@ public sealed class AppUsageSummary
     public string AppId { get; set; } = "";
     public string Name { get; set; } = "";
     public double Seconds { get; set; }
+}
+
+/// <summary>A file as it was when a session started (to tell afterwards what changed in the result folder).</summary>
+public sealed class FileStamp
+{
+    public DateTimeOffset Modified { get; set; }
+    public long Bytes { get; set; }
 }
 
 public sealed class WorkSession
@@ -752,6 +868,14 @@ public sealed class WorkSession
     public DistractionPunisher Punisher { get; set; } = new();
     public int BlocksApplied { get; set; }
     public DateTimeOffset? ResumeOnLaunchUntil { get; set; }
+
+    // Evidence in the task's result folder (macOS: baseline + finalChangedFiles + selectedFiles + manualFiles).
+    public Dictionary<string, FileStamp> Baseline { get; set; } = new();
+    public bool BaselineValid { get; set; }
+    public List<string>? FinalChangedFiles { get; set; }
+    public string? FinalEvidenceMessage { get; set; }
+    public List<string> SelectedFiles { get; set; } = new();
+    public List<string> ManualFiles { get; set; } = new();
 
     public WorkSession() { }
     public WorkSession(FocusTask task, DateTimeOffset? now = null, double? uptime = null)
@@ -851,6 +975,17 @@ public sealed class WorkSession
         EndedAt = now;
     }
 
+    /// <summary>Undoes «He terminado»: the session runs again from where it stopped. Worked time is kept.</summary>
+    public void Reopen(DateTimeOffset now, double? uptime = null)
+    {
+        if (EndedAt == null) return;
+        EndedAt = null;
+        FinalChangedFiles = null;
+        FinalEvidenceMessage = null;
+        SelectedFiles = new List<string>();
+        Resume(now, uptime);
+    }
+
     public void AddMinutes(int minutes) => Budget += Math.Max(0, minutes) * 60.0;
 
     public bool ObserveForeground(string appId, string name, string? title, bool allowed, DateTimeOffset now, double? uptime = null)
@@ -929,6 +1064,8 @@ public sealed class SessionRecord
     public bool Cancelled { get; set; }
     public string Note { get; set; } = "";
     public List<string> ChangedFiles { get; set; } = new();
+    public List<string> ConfirmedFiles { get; set; } = new();
+    public List<string> ManualFiles { get; set; } = new();
     public List<AppUsageSummary>? SavedSummaries { get; set; }
     public double? SavedObservedSeconds { get; set; }
 
@@ -1030,6 +1167,7 @@ public sealed class TemporaryAllowEntry
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Target { get; set; } = "";
     public bool IsAppBundleId { get; set; }
+    public string Label { get; set; } = "";
     public TrustedDeadline Deadline { get; set; } = new();
 
     public bool IsActive(DateTimeOffset now, double continuous) => Deadline.RemainingAfterPossibleReboot(now, continuous) > 0;
@@ -1054,7 +1192,7 @@ public sealed class Settings
     {
         new() { Title = "Descanso / Comida", StartHour = 14, StartMinute = 0, DurationMinutes = 60 }
     };
-    public bool RelaunchGuard { get; set; } = true;
+    public bool RelaunchGuard { get; set; }
     public int RunUpMinutes { get; set; } = 10;
     public bool EnforceBreaks { get; set; } = true;
     public bool PreBlockRemindersEnabled { get; set; } = true;
@@ -1070,8 +1208,18 @@ public sealed class Settings
         "Suelta el teclado un momento para volver con la mente despejada."
     };
     public int DayRolloverHour { get; set; }
-    public bool ProtectClipboard { get; set; } = true;
+    public bool ProtectClipboard { get; set; }
     public bool ProtectActivityHistory { get; set; }
+    /// <summary>Also reads the address of the page in front during a session to list the sites visited (not only to block them).</summary>
+    public bool ObserveBrowserSites { get; set; }
+    /// <summary>Text size multiplier (1, 1.15, 1.3).</summary>
+    public double TextScale { get; set; } = 1;
+    /// <summary>Global shortcut Ctrl+Alt+Win + letter to open FocusDesk.</summary>
+    public bool HotKeyEnabled { get; set; } = true;
+    /// <summary>0 = F, 1 = Espacio, 2 = J, 3 = K (the same four that macOS offers).</summary>
+    public int HotKeyChoice { get; set; }
+    /// <summary>Starts FocusDesk when the user signs in to Windows.</summary>
+    public bool LaunchAtLogin { get; set; }
     public List<StudySource> StudySources { get; set; } = Core.StudySources.Defaults();
 }
 
@@ -1102,6 +1250,9 @@ public sealed class Workspace
     [JsonConverter(typeof(LossyListConverter<RuleAuditEntry>))]
     public List<RuleAuditEntry> AuditLog { get; set; } = new();
     public DateTimeOffset? ClosedBySystemAt { get; set; }
+    /// <summary>Waits («Espera») for protected changes that are running; they survive closing the app.</summary>
+    [JsonConverter(typeof(LossyListConverter<PendingStopWait>))]
+    public List<PendingStopWait> PendingStopWaits { get; set; } = new();
 
     public void RecordAudit(string category, string summary, DateTimeOffset? at = null)
     {
@@ -1239,7 +1390,7 @@ public sealed class Workspace
     }
 }
 
-public static class FocusRules
+public static partial class FocusRules
 {
     /// <summary>
     /// Name of THIS process. The released file is called «FocusDesk-Windows-x64.exe», and a Windows process is named after
@@ -1350,8 +1501,6 @@ public static class FocusRules
         if (token.Contains("://", StringComparison.Ordinal) && Uri.TryCreate(token, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
         {
             hostCandidate = uri.Host;
-            var p = uri.AbsolutePath.Trim('/');
-            if (!string.IsNullOrEmpty(p)) pathCandidate = "/" + p.ToLowerInvariant();
         }
         else if (token.Contains('/') && !token.Contains("://", StringComparison.Ordinal))
         {
@@ -1497,16 +1646,26 @@ public static class FocusRules
         return p1.Path == p2.Path || p1.Path.StartsWith(p2.Path + "/") || p2.Path.StartsWith(p1.Path + "/");
     }
 
+    /// <summary>«notion.so» becomes https://notion.so; anything that is not an http(s) address becomes null.</summary>
+    public static Uri? NormalizedRedirectUrl(string? raw)
+    {
+        var trimmed = (raw ?? "").Trim();
+        if (trimmed.Length == 0) return null;
+        var candidate = trimmed.Contains("://", StringComparison.Ordinal) ? trimmed : "https://" + trimmed;
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)) return null;
+        if (uri.Scheme is not ("http" or "https") || string.IsNullOrEmpty(uri.Host)) return null;
+        return uri;
+    }
+
     public static string? IsRedirectDestinationBlocked(string? redirectUrl, string list, WebListMode mode, bool blockSearchMedia)
     {
         if (string.IsNullOrWhiteSpace(redirectUrl)) return null;
-        if (!Uri.TryCreate(redirectUrl.Trim(), UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host))
-            return null;
-        if (uri.Scheme is not ("http" or "https")) return null;
+        var uri = NormalizedRedirectUrl(redirectUrl);
+        if (uri == null) return $"La URL de redirección «{redirectUrl.Trim()}» no es válida.";
         if (blockSearchMedia && SearchMediaRules.Matches(uri.Host, uri.PathAndQuery) != null)
-            return "La URL de redirección coincide con imágenes/vídeos de buscadores bloqueados.";
+            return "La URL de redirección apunta a una búsqueda de imágenes/vídeos que esta misma regla bloquea.";
         if (!WebAllowed(uri.Host, uri.AbsolutePath, list, mode))
-            return "La URL de redirección coincide con una web bloqueada y causaría un bucle.";
+            return "La URL de redirección está bloqueada por esta misma regla y causaría un bucle de redirección.";
         return null;
     }
 
@@ -1557,21 +1716,36 @@ public static class FocusRules
         {
             var id = CleanAppId(a.Id);
             if (string.IsNullOrEmpty(id)) return false;
+            // The same program, or the same name followed by a separator («chrome» and «chrome_proxy»); never a plain
+            // «contains»: «code» used to let through «codeblocks».
             return string.Equals(id, clean, StringComparison.OrdinalIgnoreCase) ||
-                   (id.Length >= 4 && clean.Contains(id, StringComparison.OrdinalIgnoreCase));
+                   (clean.Length > id.Length && clean.StartsWith(id, StringComparison.OrdinalIgnoreCase) &&
+                    clean[id.Length] is '.' or '-' or '_' or ' ');
         });
         return mode == AppListMode.AllowListed ? inList : !inList;
+    }
+
+    /// <summary>Lower-cased and without accents («Vídeo» and «video» are the same word).</summary>
+    public static string Fold(string text)
+    {
+        var decomposed = (text ?? "").Normalize(System.Text.NormalizationForm.FormD);
+        var sb = new System.Text.StringBuilder(decomposed.Length);
+        foreach (var ch in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark) sb.Append(ch);
+        }
+        return sb.ToString().Normalize(System.Text.NormalizationForm.FormC).ToLowerInvariant();
     }
 
     public static List<string> ParseTitleKeywords(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return new();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         var result = new List<string>();
         foreach (var part in raw.Split(new[] { ',', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
         {
             var t = part.Trim();
-            if (!string.IsNullOrEmpty(t) && seen.Add(t)) result.Add(t);
+            if (!string.IsNullOrEmpty(t) && seen.Add(Fold(t))) result.Add(t);
         }
         return result;
     }
@@ -1594,21 +1768,29 @@ public static class FocusRules
                 catch { }
                 continue;
             }
-            if (kw.Contains('*') || kw.Contains('?'))
+            var foldedTitle = Fold(title);
+            var foldedKw = Fold(kw);
+            if (foldedKw.Length == 0) continue;
+            if (foldedKw.Contains('*') || foldedKw.Contains('?'))
             {
                 try
                 {
-                    if (Regex.IsMatch(title, WildcardRegexPattern(kw, anchored: false), RegexOptions.IgnoreCase, RegexTimeout)) return kw;
+                    if (Regex.IsMatch(foldedTitle, WildcardRegexPattern(foldedKw, anchored: false), RegexOptions.IgnoreCase, RegexTimeout)) return kw;
                 }
                 catch { }
                 continue;
             }
             if (wholeWord)
             {
-                var pattern = $@"\b{Regex.Escape(kw)}\b";
-                if (Regex.IsMatch(title, pattern, RegexOptions.IgnoreCase, RegexTimeout)) return kw;
+                // Whole word: not glued to a letter, digit or underscore on either side (also for words like «C++»).
+                var pattern = @"(?:^|[^\p{L}\p{N}_])" + Regex.Escape(foldedKw) + @"(?:$|[^\p{L}\p{N}_])";
+                try
+                {
+                    if (Regex.IsMatch(foldedTitle, pattern, RegexOptions.IgnoreCase, RegexTimeout)) return kw;
+                }
+                catch { }
             }
-            else if (title.Contains(kw, StringComparison.OrdinalIgnoreCase))
+            else if (foldedTitle.Contains(foldedKw, StringComparison.Ordinal))
             {
                 return kw;
             }
@@ -1676,9 +1858,44 @@ public static class FocusRules
 
     public static FocusTask? NextSuggestedTask(IEnumerable<FocusTask> tasks, Guid? sessionTaskId, DateTimeOffset now)
     {
-        var pending = tasks.Where(t => !t.Completed && t.Id != sessionTaskId && t.IsScheduled)
+        var pending = tasks.Where(t => !t.Completed && t.Id != sessionTaskId).ToList();
+        if (pending.Count == 0) return null;
+        var scheduled = pending.Where(t => t.IsScheduled).ToList();
+        var unscheduled = pending.Where(t => !t.IsScheduled).ToList();
+
+        // 1. Imminent or recently due scheduled tasks (from 2 hours ago up to 90 minutes ahead)
+        var imminent = scheduled
+            .Where(t => t.ScheduledAt >= now.AddHours(-2) && t.ScheduledAt <= now.AddMinutes(90))
             .OrderBy(t => t.ScheduledAt)
-            .ToList();
-        return pending.FirstOrDefault(t => t.End >= now) ?? pending.FirstOrDefault();
+            .FirstOrDefault();
+        if (imminent != null) return imminent;
+
+        // 2. Other tasks scheduled for today (future today first, then earlier today)
+        var todayScheduled = scheduled.Where(t => t.ScheduledAt.LocalDateTime.Date == now.LocalDateTime.Date).ToList();
+        var nextToday = todayScheduled.Where(t => t.ScheduledAt > now).OrderBy(t => t.ScheduledAt).FirstOrDefault();
+        if (nextToday != null) return nextToday;
+        var earlierToday = todayScheduled.OrderByDescending(t => t.ScheduledAt).FirstOrDefault();
+        if (earlierToday != null) return earlierToday;
+
+        // 3. Unscheduled tasks with a due date today or overdue
+        var endOfToday = FromLocal(now.LocalDateTime.Date.AddDays(1));
+        var urgent = unscheduled
+            .Where(t => t.DueDate.HasValue && t.DueDate.Value < endOfToday)
+            .OrderBy(t => t.DueDate)
+            .FirstOrDefault();
+        if (urgent != null) return urgent;
+
+        // 4. Future scheduled tasks within the next 24 hours
+        var upcoming = scheduled
+            .Where(t => t.ScheduledAt > now && t.ScheduledAt <= now.AddHours(24))
+            .OrderBy(t => t.ScheduledAt)
+            .FirstOrDefault();
+        if (upcoming != null) return upcoming;
+
+        // 5. Fallback: earliest scheduled task or first unscheduled task
+        var earliest = scheduled.OrderBy(t => t.ScheduledAt).FirstOrDefault();
+        if (earliest != null) return earliest;
+        return unscheduled.OrderBy(t => t.DueDate ?? DateTimeOffset.MaxValue).FirstOrDefault();
     }
+
 }
