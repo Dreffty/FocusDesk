@@ -261,8 +261,8 @@ public static class WindowsActivity
 
 public static class BrowserInspector
 {
-    private const int MaxVisitedNodes = 320;
-    private const int MaxTreeDepth = 6;
+    private const int MaxVisitedNodes = 480;
+    private const int MaxTreeDepth = 9;
 
     private static (AutomationElement? Edit, string? Url) FindAddressBar(IntPtr hwnd)
     {
@@ -303,11 +303,13 @@ public static class BrowserInspector
                             aid.Contains("urlbar") || aid.Contains("address") || aid.Contains("omnibox");
 
                         var hasFocus = cur.Current.HasKeyboardFocus;
+                        var isUrl = LooksLikeUrl(val);
                         if (isNamedAddressBar)
                         {
-                            return (cur, hasFocus ? null : val);
+                            // If the bar already holds a valid URL, never hide it just because the user clicked the omnibox.
+                            return (cur, isUrl ? val : (hasFocus ? null : val));
                         }
-                        if (fallbackEdit == null && !hasFocus && LooksLikeUrl(val))
+                        if (fallbackEdit == null && isUrl)
                         {
                             fallbackEdit = cur;
                             fallbackRaw = val;
@@ -377,14 +379,21 @@ public static class BrowserInspector
             }
             if (!string.IsNullOrEmpty(redirectUrl))
             {
-                var (edit, _) = FindAddressBar(hwnd);
-                if (edit != null && edit.TryGetCurrentPattern(ValuePattern.Pattern, out var patObj) && patObj is ValuePattern vp)
+                try
                 {
-                    edit.SetFocus();
-                    vp.SetValue(redirectUrl);
-                    System.Windows.Forms.SendKeys.SendWait("{ENTER}");
-                    return true;
+                    var (edit, _) = FindAddressBar(hwnd);
+                    if (edit != null && edit.TryGetCurrentPattern(ValuePattern.Pattern, out var patObj) && patObj is ValuePattern vp)
+                    {
+                        edit.SetFocus();
+                        vp.SetValue(redirectUrl);
+                        System.Windows.Forms.SendKeys.SendWait("{ENTER}");
+                        return true;
+                    }
                 }
+                catch { }
+                // Fallback when the browser is in full-screen or hides its address bar: close the blocked tab so it never stays open.
+                System.Windows.Forms.SendKeys.SendWait("^w");
+                return true;
             }
         }
         catch { }
@@ -394,10 +403,40 @@ public static class BrowserInspector
 
 public static class FolderGuard
 {
+    public static string? ProblemWithFolder(string rawPath)
+    {
+        var clean = (rawPath ?? "").Trim().Trim('"').Replace('/', '\\').TrimEnd('\\');
+        if (string.IsNullOrEmpty(clean)) return "Escribe una ruta de carpeta válida.";
+        if (clean.Length <= 3 && clean.EndsWith(':'))
+            return $"«{clean}\\» es una unidad completa y no se puede bloquear.";
+
+        var lower = clean.ToLowerInvariant();
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile).TrimEnd('\\').ToLowerInvariant();
+        var windowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd('\\').ToLowerInvariant();
+        var progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles).TrimEnd('\\').ToLowerInvariant();
+        var progFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86).TrimEnd('\\').ToLowerInvariant();
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData).TrimEnd('\\').ToLowerInvariant();
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData).TrimEnd('\\').ToLowerInvariant();
+
+        var vital = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            @"c:", @"c:\windows", @"c:\users", @"c:\program files", @"c:\program files (x86)",
+            userProfile, windowsDir, progFiles, progFilesX86, appData, localAppData
+        };
+        if (vital.Contains(lower))
+            return $"«{clean}» es una carpeta esencial de Windows y no se puede bloquear.";
+        if (!string.IsNullOrEmpty(userProfile) && userProfile.StartsWith(lower + "\\", StringComparison.Ordinal))
+            return $"«{clean}» contiene tu carpeta de usuario: bloquearla cerraría todo el Explorador.";
+        return null;
+    }
+
     public static List<string> EnforceBlockedExplorerFolders(IEnumerable<string> blockedFolders)
     {
         var hits = new List<string>();
-        var list = blockedFolders.Select(f => f.Trim().TrimEnd('\\', '/').ToLowerInvariant()).Where(f => !string.IsNullOrEmpty(f)).ToList();
+        var list = blockedFolders
+            .Select(f => f.Trim().Trim('"').Replace('/', '\\').TrimEnd('\\').ToLowerInvariant())
+            .Where(f => !string.IsNullOrEmpty(f) && ProblemWithFolder(f) == null)
+            .ToList();
         if (list.Count == 0) return hits;
 
         // Avoid waking COM Shell.Application when no Explorer window is even open.

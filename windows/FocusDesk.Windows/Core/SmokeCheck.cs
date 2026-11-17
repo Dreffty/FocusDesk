@@ -234,6 +234,33 @@ public static class SmokeCheck
             var blockUri = BlockPageGenerator.Write("Estudiar", "youtube.com", 1200, "Sigue con el foco", new[] { "Paso 1" }, tempDir);
             Check(blockUri.StartsWith("file://", StringComparison.OrdinalIgnoreCase) && File.Exists(Path.Combine(tempDir, "bloqueada.html")),
                 "Generador de página de bloqueo web crea bloqueada.html");
+
+            // 7. Pass 2 checks: Defaults, Quick Block, Micro-Pauses, Vital Folders, Flexible .exe matching
+            var defTask = new FocusTask();
+            Check(defTask.AppListMode == AppListMode.BlockListed && defTask.WebListMode == WebListMode.BlockListed,
+                "Nueva tarea usa modo lista negra por defecto para evitar bloquear el PC por error");
+            Check(FocusProfile.Defaults().All(p => p.WebBlockAction == WebBlockAction.Redirect && p.BlockGameLibraries),
+                "Perfiles por defecto de «Bloquear ahora» tienen bloqueo real de distracciones activo");
+
+            Check(FolderGuard.ProblemWithFolder(@"C:\") != null &&
+                  FolderGuard.ProblemWithFolder(@"C:\Windows") != null &&
+                  FolderGuard.ProblemWithFolder(@"C:\Juegos\Riot") == null,
+                "FolderGuard protege carpetas críticas de Windows (C:\\, C:\\Windows) y permite carpetas de juegos");
+
+            Check(!FocusRules.AppAllowed("VALORANT-Win64-Shipping.exe", new[] { new AllowedApp("valorant", "Valorant", "") }, AppListMode.BlockListed),
+                "AppAllowed reconoce procesos compuestos de juegos (VALORANT-Win64-Shipping) al indicar 'valorant'");
+
+            using (var engine3 = new AppEngine(Path.Combine(tempDir, "quick-sim"), enablePlatformWatchers: false))
+            {
+                engine3.LaunchQuickBlock(30, SessionProtection.Challenge);
+                var qb = engine3.Workspace.GeneralRules.FirstOrDefault(r => r.Kind == GeneralRuleKind.Countdown);
+                Check(qb != null && engine3.IsRuleEnforcing(qb) && engine3.IsRuleProtected(qb),
+                    "Bloqueo rápido inmediato de 30 min se activa y queda protegido por código");
+
+                engine3.UseMicroPause(qb!);
+                Check(!engine3.IsRuleEnforcing(qb!) && engine3.Workspace.MicroPausesUsedToday(qb!.Id) == 1,
+                    "Micro-pausa suspende temporalmente el bloqueo y descuenta del límite diario");
+            }
         }
         finally
         {

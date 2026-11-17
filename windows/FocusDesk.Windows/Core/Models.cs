@@ -153,9 +153,9 @@ public static class AppListModeExtensions
 {
     public static string Label(this AppListMode m) => m switch
     {
-        AppListMode.AllowListed => "Solo estas apps",
-        AppListMode.BlockListed => "Todas menos estas",
-        _ => "Todas menos estas"
+        AppListMode.AllowListed => "Permitir solo las apps de la lista",
+        AppListMode.BlockListed => "Bloquear las apps de la lista",
+        _ => "Bloquear las apps de la lista"
     };
 }
 
@@ -170,10 +170,10 @@ public static class WebListModeExtensions
 {
     public static string Label(this WebListMode m) => m switch
     {
-        WebListMode.AllowListed => "Solo estas webs",
-        WebListMode.BlockListed => "Todas menos estas",
-        WebListMode.BlockAll => "Ninguna web",
-        _ => "Todas menos estas"
+        WebListMode.AllowListed => "Permitir solo las webs de la lista",
+        WebListMode.BlockListed => "Bloquear las webs de la lista",
+        WebListMode.BlockAll => "Bloquear todas las webs",
+        _ => "Bloquear las webs de la lista"
     };
 }
 
@@ -296,8 +296,8 @@ public sealed class FocusProfile
     public bool GuardSystemPanes { get; set; } = true;
     public bool PunisherEnabled { get; set; } = true;
     public List<string> BlockedFolders { get; set; } = new();
-    public AppListMode AppListMode { get; set; } = AppListMode.AllowListed;
-    public WebListMode WebListMode { get; set; } = WebListMode.AllowListed;
+    public AppListMode AppListMode { get; set; } = AppListMode.BlockListed;
+    public WebListMode WebListMode { get; set; } = AppListMode.BlockListed;
     public string BlockedTitleKeywords { get; set; } = "";
     public bool WholeWordKeywords { get; set; }
     public string CustomRedirectURL { get; set; } = "";
@@ -315,7 +315,12 @@ public sealed class FocusProfile
             Category = "Trabajo",
             Minutes = 60,
             LeadMinutes = 10,
-            Domains = "github.com, stackoverflow.com, claude.ai, chatgpt.com",
+            BlockGameLibraries = true,
+            WebListMode = WebListMode.BlockListed,
+            WebBlockAction = WebBlockAction.Redirect,
+            Domains = "youtube.com/shorts, instagram.com, tiktok.com, x.com, reddit.com, twitch.tv, netflix.com",
+            BlockedTitleKeywords = "Shorts, Reels, TikTok",
+            Protection = SessionProtection.Challenge,
             Checklist = "Definir el objetivo del bloque\nCompletar la implementación\nVerificar el resultado"
         },
         new()
@@ -325,6 +330,12 @@ public sealed class FocusProfile
             Category = "Estudio",
             Minutes = 45,
             LeadMinutes = 10,
+            BlockGameLibraries = true,
+            WebListMode = WebListMode.BlockListed,
+            WebBlockAction = WebBlockAction.Redirect,
+            Domains = "youtube.com, instagram.com, tiktok.com, x.com, reddit.com, twitch.tv, netflix.com",
+            BlockedTitleKeywords = "Shorts, Reels, TikTok, Twitch, Netflix",
+            Protection = SessionProtection.Challenge,
             Checklist = "Repasar el tema\nResolver ejercicios\nAnotar las dudas"
         },
         new()
@@ -334,6 +345,12 @@ public sealed class FocusProfile
             Category = "Proyecto",
             Minutes = 45,
             LeadMinutes = 10,
+            BlockGameLibraries = true,
+            WebListMode = WebListMode.BlockListed,
+            WebBlockAction = WebBlockAction.Redirect,
+            Domains = "youtube.com, instagram.com, tiktok.com, x.com, reddit.com, twitch.tv, netflix.com",
+            BlockedTitleKeywords = "Shorts, Reels, TikTok",
+            Protection = SessionProtection.Challenge,
             Checklist = "Leer y subrayar ideas clave\nRedactar el borrador\nRevisar el texto"
         }
     };
@@ -375,8 +392,8 @@ public sealed class FocusTask
     public bool GuardSystemPanes { get; set; } = true;
     public bool PunisherEnabled { get; set; } = true;
     public List<string> BlockedFolders { get; set; } = new();
-    public AppListMode AppListMode { get; set; } = AppListMode.AllowListed;
-    public WebListMode WebListMode { get; set; } = WebListMode.AllowListed;
+    public AppListMode AppListMode { get; set; } = AppListMode.BlockListed;
+    public WebListMode WebListMode { get; set; } = WebListMode.BlockListed;
     public string BlockedTitleKeywords { get; set; } = "";
     public bool WholeWordKeywords { get; set; }
     public string CustomRedirectURL { get; set; } = "";
@@ -1412,11 +1429,20 @@ public static class FocusRules
         return mode == WebListMode.AllowListed ? hit : !hit;
     }
 
+    public static string CleanAppId(string raw) =>
+        (raw ?? "").Trim().Replace(".exe", "", StringComparison.OrdinalIgnoreCase).ToLowerInvariant();
+
     public static bool AppAllowed(string processName, IReadOnlyCollection<AllowedApp> apps, AppListMode mode)
     {
-        var clean = processName.Replace(".exe", "", StringComparison.OrdinalIgnoreCase);
+        var clean = CleanAppId(processName);
         if (SystemExemptProcesses.Contains(clean)) return true;
-        var inList = apps.Any(a => string.Equals(a.Id.Replace(".exe", "", StringComparison.OrdinalIgnoreCase), clean, StringComparison.OrdinalIgnoreCase));
+        var inList = apps.Any(a =>
+        {
+            var id = CleanAppId(a.Id);
+            if (string.IsNullOrEmpty(id)) return false;
+            return string.Equals(id, clean, StringComparison.OrdinalIgnoreCase) ||
+                   (id.Length >= 4 && clean.Contains(id, StringComparison.OrdinalIgnoreCase));
+        });
         return mode == AppListMode.AllowListed ? inList : !inList;
     }
 
@@ -1503,8 +1529,8 @@ public static class FocusRules
         if (proposed.BlockAction.Strength() < current.BlockAction.Strength()) return $"suavizar el cierre de apps en «{current.Title}»";
         if (proposed.WebBlockAction.Strength() < current.WebBlockAction.Strength()) return $"suavizar el bloqueo web en «{current.Title}»";
         if (current.Strict && AppListOpens(
-                current.AppListMode, current.Apps.Select(a => a.Id.ToLowerInvariant()).ToHashSet(),
-                proposed.AppListMode, proposed.Apps.Select(a => a.Id.ToLowerInvariant()).ToHashSet()))
+                current.AppListMode, current.Apps.Select(a => CleanAppId(a.Id)).Where(x => !string.IsNullOrEmpty(x)).ToHashSet(),
+                proposed.AppListMode, proposed.Apps.Select(a => CleanAppId(a.Id)).Where(x => !string.IsNullOrEmpty(x)).ToHashSet()))
             return $"suavizar la lista de apps en «{current.Title}»";
         if (current.WebBlockAction != WebBlockAction.Warn)
         {

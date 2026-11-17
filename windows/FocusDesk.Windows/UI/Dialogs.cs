@@ -10,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using FocusDesk.Windows.Core;
+using FocusDesk.Windows.Platform;
 
 namespace FocusDesk.Windows.UI;
 
@@ -196,7 +197,7 @@ public static class Dialogs
         return string.Join(", ", merged);
     }
 
-    private static WrapPanel BuildPresetChips(System.Windows.Controls.TextBox domainsBox, System.Windows.Controls.TextBox keywordsBox)
+    private static WrapPanel BuildPresetChips(System.Windows.Controls.TextBox domainsBox, System.Windows.Controls.TextBox keywordsBox, Action? onPresetApplied = null)
     {
         var wrap = new WrapPanel { Margin = new Thickness(0, 2, 0, 6) };
         var presets = new (string Label, string[] Domains, string[] Keywords)[]
@@ -212,8 +213,40 @@ public static class Dialogs
             {
                 domainsBox.Text = CleanCsvMerge(domainsBox.Text, p.Domains, domainMode: true);
                 keywordsBox.Text = CleanCsvMerge(keywordsBox.Text, p.Keywords, domainMode: false);
+                onPresetApplied?.Invoke();
             }));
         }
+        return wrap;
+    }
+
+    private static WrapPanel BuildRunningAppChips(System.Windows.Controls.TextBox appsBox, System.Windows.Controls.CheckBox? autoCheck = null)
+    {
+        var wrap = new WrapPanel { Margin = new Thickness(0, 4, 0, 2) };
+        try
+        {
+            var openApps = WindowsActivity.VisibleWindows()
+                .Select(w => FocusRules.CleanAppId(w.ProcessName))
+                .Where(n => !string.IsNullOrEmpty(n) && !FocusRules.SystemExemptProcesses.Contains(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(10)
+                .ToList();
+            foreach (var proc in openApps)
+            {
+                var captured = proc;
+                wrap.Children.Add(MakeChipButton($"+ {captured}", () =>
+                {
+                    var cur = appsBox.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Select(FocusRules.CleanAppId)
+                        .Where(x => !string.IsNullOrEmpty(x))
+                        .ToList();
+                    if (!cur.Contains(captured, StringComparer.OrdinalIgnoreCase))
+                        cur.Add(captured);
+                    appsBox.Text = string.Join(", ", cur);
+                    if (autoCheck != null) autoCheck.IsChecked = true;
+                }));
+            }
+        }
+        catch { }
         return wrap;
     }
 
@@ -353,7 +386,10 @@ public static class Dialogs
         }
         else
         {
-            var secondsLeft = Math.Clamp(delayMinutes, 1, 120) * 60;
+            var waitSeconds = Math.Clamp(delayMinutes, 1, 120) * 60.0;
+            var waitDeadline = new TrustedDeadline(waitSeconds);
+            TrustedDeadline? confirmDeadline = null;
+
             root.Children.Add(new TextBlock
             {
                 Text = "Mantén esta ventana abierta hasta completar el tiempo de espera:",
@@ -364,11 +400,12 @@ public static class Dialogs
 
             var label = new TextBlock
             {
-                Text = $"Espera obligatoria: {FocusRules.Clock(secondsLeft)}",
+                Text = $"Espera obligatoria: {FocusRules.Clock(waitSeconds)}",
                 FontFamily = new System.Windows.Media.FontFamily("Consolas"),
-                FontSize = 24,
+                FontSize = 22,
                 FontWeight = FontWeights.Bold,
                 Foreground = BrushHex("#F5B95F"),
+                TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 4, 0, 20)
             };
             root.Children.Add(label);
@@ -380,17 +417,25 @@ public static class Dialogs
             var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += (_, _) =>
             {
-                secondsLeft--;
-                if (secondsLeft <= 0)
+                var left = waitDeadline.RemainingAfterPossibleReboot();
+                if (left <= 0)
                 {
-                    timer.Stop();
-                    label.Text = "Espera completada. Ya puedes continuar.";
+                    confirmDeadline ??= new TrustedDeadline(120);
+                    var confirmLeft = confirmDeadline.RemainingAfterPossibleReboot();
+                    if (confirmLeft <= 0)
+                    {
+                        timer.Stop();
+                        unlocked = false;
+                        win.Close();
+                        return;
+                    }
+                    label.Text = $"Espera completada · confirma en {FocusRules.Clock(confirmLeft)}";
                     label.Foreground = BrushHex("#64E3A1");
                     confirmBtn.IsEnabled = true;
                 }
                 else
                 {
-                    label.Text = $"Espera obligatoria: {FocusRules.Clock(secondsLeft)}";
+                    label.Text = $"Espera obligatoria: {FocusRules.Clock(left)}";
                 }
             };
             timer.Start();
@@ -638,12 +683,17 @@ public static class Dialogs
             LabeledField("Acción con apps", appActionCombo, 0),
             topMargin: 10));
         blockingBody.Children.Add(LabeledField("Apps (.exe separados por coma, ej. discord, spotify)", appsBox, 10));
+        blockingBody.Children.Add(BuildRunningAppChips(appsBox, strictCheck));
         blockingBody.Children.Add(TwoColGrid(
             LabeledField("Modo lista web", webModeCombo, 0),
             LabeledField("Si abres web no permitida", webActionCombo, 0),
             topMargin: 12));
         blockingBody.Children.Add(new TextBlock { Text = "LOTES RÁPIDOS PARA BLOQUEAR", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 12, 0, 2) });
-        blockingBody.Children.Add(BuildPresetChips(domainsBox, keywordsBox));
+        blockingBody.Children.Add(BuildPresetChips(domainsBox, keywordsBox, () =>
+        {
+            if (GetComboValue(webActionCombo, WebBlockAction.Warn) == WebBlockAction.Warn)
+                webActionCombo.SelectedIndex = webActionCombo.Items.OfType<ComboOption<WebBlockAction>>().ToList().FindIndex(o => o.Value == WebBlockAction.Redirect);
+        }));
         blockingBody.Children.Add(LabeledField("Webs, subrutas o comodines (ej. youtube.com/shorts, github.com)", domainsBox, 6));
         blockingBody.Children.Add(searchMediaCheck);
         blockingBody.Children.Add(LabeledField("Palabras en título de ventana (ej. Shorts, Reels)", keywordsBox, 10));
@@ -770,17 +820,30 @@ public static class Dialogs
 
             draft.Strict = strictCheck.IsChecked == true;
             draft.BlockGameLibraries = gameLibCheck.IsChecked == true;
-            draft.AppListMode = GetComboValue(appModeCombo, AppListMode.AllowListed);
+            draft.AppListMode = GetComboValue(appModeCombo, AppListMode.BlockListed);
             draft.BlockAction = GetComboValue(appActionCombo, AppBlockAction.Hide);
             draft.Apps = appsBox.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(id => new AllowedApp(id, id, "")).ToList();
+                .Select(id => new AllowedApp(FocusRules.CleanAppId(id), id, ""))
+                .Where(a => !string.IsNullOrEmpty(a.Id))
+                .ToList();
+            if (draft.Apps.Count > 0) draft.Strict = true;
 
-            draft.WebListMode = GetComboValue(webModeCombo, WebListMode.AllowListed);
+            draft.WebListMode = GetComboValue(webModeCombo, WebListMode.BlockListed);
             draft.WebBlockAction = GetComboValue(webActionCombo, WebBlockAction.Warn);
             draft.Domains = domainsBox.Text;
             draft.BlockSearchMedia = searchMediaCheck.IsChecked == true;
+            if ((FocusRules.ParseDomains(draft.Domains).Valid.Count > 0 || draft.BlockSearchMedia) && draft.WebBlockAction == WebBlockAction.Warn && existing == null)
+                draft.WebBlockAction = WebBlockAction.Redirect;
             draft.BlockedTitleKeywords = keywordsBox.Text;
             draft.BlockedFolders = foldersBox.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            foreach (var f in draft.BlockedFolders)
+            {
+                if (FolderGuard.ProblemWithFolder(f) is string folderProb)
+                {
+                    ShowInlineError(folderProb);
+                    return;
+                }
+            }
             draft.MotivationalMessage = motBox.Text.Trim();
             draft.CustomRedirectURL = redirectBox.Text.Trim();
 
@@ -1255,6 +1318,7 @@ public static class Dialogs
             LabeledField("Acción al abrir app", appActionCombo, 0),
             topMargin: 10));
         targetsBody.Children.Add(LabeledField("Procesos / ejecutables (sin ruta completa, ej. LeagueClientUx, discord)", appsBox, 10));
+        targetsBody.Children.Add(BuildRunningAppChips(appsBox, blockAppsCheck));
         targetsBody.Children.Add(LabeledField("Carpetas bloqueadas del Explorador (rutas separadas por coma)", foldersBox, 10));
         targetsBody.Children.Add(TwoColGrid(
             LabeledField("Mensaje motivador (página de bloqueo)", motBox, 0),
@@ -1373,7 +1437,9 @@ public static class Dialogs
             draft.AppListMode = GetComboValue(appModeCombo, AppListMode.BlockListed);
             draft.BlockAction = GetComboValue(appActionCombo, AppBlockAction.Hide);
             draft.Apps = appsBox.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(id => new AllowedApp(id, id, "")).ToList();
+                .Select(id => new AllowedApp(FocusRules.CleanAppId(id), id, ""))
+                .Where(a => !string.IsNullOrEmpty(a.Id))
+                .ToList();
             if (draft.Apps.Count > 0 || draft.BlockGameLibraries) draft.BlockApps = true;
 
             draft.WebListMode = GetComboValue(webModeCombo, WebListMode.BlockListed);
@@ -1383,6 +1449,14 @@ public static class Dialogs
             draft.BlockedTitleKeywords = keywordsBox.Text;
             draft.WholeWordKeywords = wholeWordCheck.IsChecked == true;
             draft.BlockedFolders = foldersBox.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            foreach (var f in draft.BlockedFolders)
+            {
+                if (FolderGuard.ProblemWithFolder(f) is string folderProb)
+                {
+                    ShowInlineError(folderProb);
+                    return;
+                }
+            }
             draft.MotivationalMessage = motBox.Text.Trim();
             draft.CustomRedirectURL = redirectBox.Text.Trim();
 
@@ -1401,10 +1475,16 @@ public static class Dialogs
             draft.DailyMicroPausesAllowed = int.TryParse(microPausesBox.Text.Trim(), out var mp) ? Math.Clamp(mp, 0, 10) : draft.DailyMicroPausesAllowed;
             draft.AlwaysProtected = alwaysProtCheck.IsChecked == true;
 
-            if (draft.Kind == GeneralRuleKind.Countdown && countStartCheck.IsChecked == true && draft.ActiveDeadline == null)
+            if (draft.Kind == GeneralRuleKind.Countdown && countStartCheck.IsChecked == true &&
+                (draft.ActiveDeadline == null || draft.ActiveDeadline.RemainingAfterPossibleReboot() <= 0 || (existing != null && draft.CountdownMinutes > existing.CountdownMinutes)))
+            {
                 draft.StartCountdown(draft.CountdownMinutes);
-            else if (draft.Kind == GeneralRuleKind.Pomodoro && pStartCheck.IsChecked == true && draft.ActivePomodoroDeadline == null)
+            }
+            else if (draft.Kind == GeneralRuleKind.Pomodoro && pStartCheck.IsChecked == true &&
+                     (draft.ActivePomodoroDeadline == null || draft.ActivePomodoroDeadline.RemainingAfterPossibleReboot() <= 0 || draft.PomodoroPhase == PomodoroPhase.Idle))
+            {
                 draft.StartPomodoro();
+            }
 
             if (!draft.Valid)
             {

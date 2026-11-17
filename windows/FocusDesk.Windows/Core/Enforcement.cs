@@ -724,8 +724,8 @@ public sealed class GeneralBlockRule
         }
         if (current.BlockApps && !proposed.BlockApps) return $"quitar el bloqueo de apps en «{current.Name}»";
         if (current.BlockApps && FocusRules.AppListOpens(
-                current.AppListMode, current.Apps.Select(a => a.Id.ToLowerInvariant()).ToHashSet(),
-                proposed.AppListMode, proposed.Apps.Select(a => a.Id.ToLowerInvariant()).ToHashSet()))
+                current.AppListMode, current.Apps.Select(a => FocusRules.CleanAppId(a.Id)).Where(x => !string.IsNullOrEmpty(x)).ToHashSet(),
+                proposed.AppListMode, proposed.Apps.Select(a => FocusRules.CleanAppId(a.Id)).Where(x => !string.IsNullOrEmpty(x)).ToHashSet()))
             return $"suavizar la lista de apps de «{current.Name}»";
         if (current.BlockGameLibraries && !proposed.BlockGameLibraries)
             return $"quitar el bloqueo de bibliotecas de juegos en «{current.Name}»";

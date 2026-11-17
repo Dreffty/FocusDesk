@@ -975,10 +975,15 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 try
                 {
                     var url = BrowserInspector.ReadActiveUrl(hwnd, procClean);
-                    if (_disposed || !url.HasValue) return;
+                    if (_disposed) return;
                     System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
                     {
                         if (_disposed) return;
+                        if (!url.HasValue)
+                        {
+                            _lastBrowserPages.Remove(procClean);
+                            return;
+                        }
                         var readAt = DateTimeOffset.Now;
                         _lastBrowserPages[procClean] = (url.Value.Host, url.Value.Path, readAt);
                         EvaluateWebRules(capturedFg, url.Value.Host, url.Value.Path, readAt);
@@ -1292,7 +1297,16 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     public void StartSession(FocusTask task)
     {
-        if (Workspace.Session != null) { Error = "Ya hay una sesión en marcha."; return; }
+        if (Workspace.Session is { EndedAt: null } cur)
+        {
+            if (cur.Task.Id == task.Id && cur.Paused)
+            {
+                ResumeSession();
+                return;
+            }
+            Error = "Ya hay una sesión en marcha.";
+            return;
+        }
         _sessionFinishedNotifiedId = null;
         _lastTaskPomodoroKey = null;
         Workspace.Session = new WorkSession(task, DateTimeOffset.Now);
@@ -1300,6 +1314,77 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         Notice = $"«{task.Title}» en marcha ({task.Minutes} min).";
         Persist();
         EnsureWatcherIfNeeded();
+    }
+
+    public void SnoozeTask(FocusTask task, int minutes = 10, bool bypassProtection = false)
+    {
+        var now = DateTimeOffset.Now;
+        var baseTime = task.IsScheduled && task.ScheduledAt > now ? task.ScheduledAt : now;
+        var updated = task.Clone();
+        updated.IsScheduled = true;
+        updated.ScheduledAt = baseTime.AddMinutes(Math.Clamp(minutes, 1, 240));
+        SaveTask(updated, bypassProtection: bypassProtection);
+        if (string.IsNullOrEmpty(Error))
+            Notice = $"«{updated.Title}» pospuesta a las {updated.ScheduledAt.LocalDateTime:HH:mm}.";
+    }
+
+    public void UseMicroPause(GeneralBlockRule rule)
+    {
+        var now = DateTimeOffset.Now;
+        var used = Workspace.MicroPausesUsedToday(rule.Id, now);
+        if (rule.DailyMicroPausesAllowed <= 0 || used >= rule.DailyMicroPausesAllowed)
+        {
+            Error = $"Ya has agotado las micro-pausas de hoy en «{rule.Name}».";
+            return;
+        }
+        var n = Workspace.IncrementMicroPauses(rule.Id, now);
+        rule.StartMicroPause(now);
+        Workspace.RecordAudit("Micro-pausa", $"«{rule.Name}» ({rule.MicroPauseMinutes} min · {n}/{rule.DailyMicroPausesAllowed})", now);
+        Error = "";
+        Persist();
+        Notice = $"Micro-pausa de {rule.MicroPauseMinutes} min activada en «{rule.Name}» ({n}/{rule.DailyMicroPausesAllowed} hoy).";
+    }
+
+    public void LaunchQuickBlock(int minutes, SessionProtection protection = SessionProtection.Challenge)
+    {
+        var clamped = Math.Clamp(minutes, 5, 720);
+        var existing = Workspace.GeneralRules.FirstOrDefault(r => r.Kind == GeneralRuleKind.Countdown && r.Name.StartsWith("Bloqueo rápido", StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            var curRem = existing.ActiveDeadline?.RemainingAfterPossibleReboot() ?? 0;
+            var newSec = Math.Max(curRem, clamped * 60.0);
+            existing.CountdownMinutes = Math.Max(existing.CountdownMinutes, clamped);
+            if (protection.Strength() > existing.Protection.Strength())
+                existing.Protection = protection;
+            existing.Enabled = true;
+            existing.ActiveMicroPauseDeadline = null;
+            existing.ActiveDeadline = new TrustedDeadline(newSec);
+            Persist();
+            EnsureWatcherIfNeeded();
+            Notice = $"Bloqueo rápido activo ({FocusRules.DurationText((int)Math.Round(newSec / 60.0))}).";
+            return;
+        }
+
+        var quick = new GeneralBlockRule
+        {
+            Name = "Bloqueo rápido antidistracción",
+            Kind = GeneralRuleKind.Countdown,
+            CountdownMinutes = clamped,
+            Enabled = true,
+            BlockGameLibraries = true,
+            BlockApps = true,
+            WebListMode = WebListMode.BlockListed,
+            WebBlockAction = WebBlockAction.Redirect,
+            Domains = "youtube.com/shorts, instagram.com, tiktok.com, x.com, reddit.com, twitch.tv, netflix.com",
+            BlockedTitleKeywords = "Shorts, Reels, TikTok",
+            Protection = protection,
+            DailyMicroPausesAllowed = 1
+        };
+        quick.StartCountdown(clamped);
+        Workspace.GeneralRules.Insert(0, quick);
+        Persist();
+        EnsureWatcherIfNeeded();
+        Notice = $"Bloqueo rápido de {FocusRules.DurationText(clamped)} en marcha.";
     }
 
     public void PauseSession()

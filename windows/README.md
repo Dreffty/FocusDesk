@@ -2,10 +2,12 @@
 
 Versión nativa en C# / .NET 8 WPF con el mismo motor de reglas, estudio verificado y detectores de juego que FocusDesk para macOS.
 
+- **Descarga directa para Windows (10 / 11 x64)**: [**Pulsa aquí para descargar FocusDesk-Windows-x64.exe**](https://github.com/Dreffty/FocusDesk/releases/latest/download/FocusDesk-Windows-x64.exe)
+
 ## Requisitos
 
 - Windows 10 o Windows 11 (x64).
-- Si usas el binario publicado (`FocusDesk-Windows-x64.exe`), no necesitas instalar .NET ni dependencias adicionales.
+- Si descargas el ejecutable publicado ([`FocusDesk-Windows-x64.exe`](https://github.com/Dreffty/FocusDesk/releases/latest/download/FocusDesk-Windows-x64.exe)), **no necesitas instalar .NET ni dependencias adicionales**: guárdalo en una carpeta fija y ábrelo con doble clic.
 - Para compilar desde código fuente: [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ## Compilar en Windows

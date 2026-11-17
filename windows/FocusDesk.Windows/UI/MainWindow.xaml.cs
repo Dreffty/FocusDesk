@@ -327,6 +327,50 @@ public partial class MainWindow : Window
         _engine.DeleteTask(task, bypassProtection: bypass);
     }
 
+    private void StartOrHandoffSession(FocusTask task)
+    {
+        if (_engine.Workspace.Session is { EndedAt: null } cur)
+        {
+            if (cur.Task.Id == task.Id)
+            {
+                if (cur.Paused) _engine.ResumeSession();
+                return;
+            }
+            var confirm = System.Windows.MessageBox.Show(
+                this,
+                $"Tienes «{cur.Task.Title}» en marcha. ¿Quieres terminarla ahora y empezar «{task.Title}»?",
+                "Cambiar de tarea · FocusDesk",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes) return;
+
+            if (cur.Remaining(DateTimeOffset.Now) > 0 && cur.Task.Protection != SessionProtection.None)
+            {
+                if (!Dialogs.RequestUnlock(cur.Task.Protection, cur.Task.UnlockChars, cur.Task.StopDelayMinutes, $"terminar antes «{cur.Task.Title}»", this))
+                    return;
+                if (cur.Task.Protection == SessionProtection.Forced)
+                    _engine.Workspace.RecordAudit("Salida de emergencia", $"Cambio anticipado de «{cur.Task.Title}» a «{task.Title}».");
+            }
+            _engine.FinishSession();
+            if (_engine.Workspace.Session != null) return;
+        }
+        _engine.StartSession(task);
+    }
+
+    private void ConfirmAndSnoozeTask(FocusTask task)
+    {
+        var bypass = false;
+        if (_engine.IsTaskProtected(task))
+        {
+            if (!Dialogs.RequestUnlock(task.Protection, task.UnlockChars, task.StopDelayMinutes, $"posponer «{task.Title}»", this))
+                return;
+            if (task.Protection == SessionProtection.Forced)
+                _engine.Workspace.RecordAudit("Salida de emergencia", $"Pospuesta tarea protegida «{task.Title}».");
+            bypass = true;
+        }
+        _engine.SnoozeTask(task, 10, bypassProtection: bypass);
+    }
+
     private void BuildTodayPage()
     {
         var addBtn = PrimaryButton("+ Nueva tarea");
@@ -465,12 +509,15 @@ public partial class MainWindow : Window
             var right = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             var start = PrimaryButton("Iniciar");
             start.Margin = new Thickness(0, 0, 6, 0);
-            start.Click += (_, _) => _engine.StartSession(t);
+            start.Click += (_, _) => StartOrHandoffSession(t);
+            var snooze = new System.Windows.Controls.Button { Content = "+10m", Margin = new Thickness(0, 0, 6, 0) };
+            snooze.Click += (_, _) => ConfirmAndSnoozeTask(t);
             var edit = new System.Windows.Controls.Button { Content = "Editar", Margin = new Thickness(0, 0, 6, 0) };
             edit.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, t, this);
             var del = new System.Windows.Controls.Button { Content = "Borrar" };
             del.Click += (_, _) => ConfirmAndDeleteTask(t);
             right.Children.Add(start);
+            right.Children.Add(snooze);
             right.Children.Add(edit);
             right.Children.Add(del);
             DockPanel.SetDock(right, Dock.Right);
@@ -483,7 +530,7 @@ public partial class MainWindow : Window
             meta.Children.Add(PillBadge(FocusRules.DurationText(t.Minutes)));
             meta.Children.Add(PillBadge(t.Category));
             if (t.Protection != SessionProtection.None)
-                meta.Children.Add(PillBadge(t.Protection.Label(), "#F5B95F", "#251D10"));
+                meta.Children.Add(PillBadge(_engine.IsTaskProtected(t) ? $"Ya protegida · {t.Protection.Label()}" : t.Protection.Label(), "#F5B95F", "#251D10"));
             left.Children.Add(meta);
             dock.Children.Add(left);
             PageContent.Children.Add(Card(dock));
@@ -500,7 +547,7 @@ public partial class MainWindow : Window
                 var right = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
                 var start = PrimaryButton("Iniciar");
                 start.Margin = new Thickness(0, 0, 6, 0);
-                start.Click += (_, _) => _engine.StartSession(t);
+                start.Click += (_, _) => StartOrHandoffSession(t);
                 var edit = new System.Windows.Controls.Button { Content = "Editar", Margin = new Thickness(0, 0, 6, 0) };
                 edit.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, t, this);
                 var del = new System.Windows.Controls.Button { Content = "Borrar" };
@@ -600,8 +647,15 @@ public partial class MainWindow : Window
             if (rule.Kind == GeneralRuleKind.Countdown)
             {
                 var startC = new System.Windows.Controls.Button { Content = $"Activar {rule.CountdownMinutes}m", Margin = new Thickness(0, 0, 6, 0) };
-                startC.Click += (_, _) => { rule.StartCountdown(); _engine.Persist(); };
+                startC.Click += (_, _) => { rule.StartCountdown(); _engine.Persist(); _engine.EnsureWatcherIfNeeded(); };
                 actions.Children.Add(startC);
+            }
+            var microLeft = Math.Max(0, rule.DailyMicroPausesAllowed - _engine.Workspace.MicroPausesUsedToday(rule.Id));
+            if (_engine.IsRuleEnforcing(rule) && microLeft > 0)
+            {
+                var microBtn = new System.Windows.Controls.Button { Content = $"Micro-pausa ({rule.MicroPauseMinutes}m · {microLeft})", Margin = new Thickness(0, 0, 6, 0) };
+                microBtn.Click += (_, _) => _engine.UseMicroPause(rule);
+                actions.Children.Add(microBtn);
             }
 
             var toggle = new System.Windows.Controls.Button { Content = rule.Enabled ? "Apagar" : "Activar", Margin = new Thickness(0, 0, 6, 0) };
@@ -680,7 +734,51 @@ public partial class MainWindow : Window
 
     private void BuildBlockingPage()
     {
-        PageContent.Children.Add(PageHeader("Bloquear ahora", "Inicia un perfil al instante sin rellenar formularios."));
+        PageContent.Children.Add(PageHeader("Bloquear ahora", "Activa un bloqueo inmediato o inicia un perfil reutilizable con un clic."));
+
+        var quickStack = new StackPanel();
+        quickStack.Children.Add(new TextBlock { Text = "BLOQUEO RÁPIDO INMEDIATO (REDES, VÍDEOS CORTOS Y JUEGOS)", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#64E3A1") });
+        quickStack.Children.Add(new TextBlock { Text = "Activa una cuenta atrás protegida por código sin necesidad de crear una tarea en la agenda:", FontSize = 12, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 4, 0, 10) });
+        var quickBtns = new WrapPanel();
+        foreach (var (mins, label) in new[] { (15, "15 min"), (30, "30 min"), (45, "45 min"), (60, "1 hora"), (120, "2 horas"), (240, "4 horas") })
+        {
+            var captured = mins;
+            var b = new System.Windows.Controls.Button { Content = $"Bloquear {label}", Margin = new Thickness(0, 0, 8, 8) };
+            b.Click += (_, _) => _engine.LaunchQuickBlock(captured, SessionProtection.Challenge);
+            quickBtns.Children.Add(b);
+        }
+        var restOfDayMins = Math.Max(15, (int)(DateTime.Now.Date.AddDays(1) - DateTime.Now).TotalMinutes);
+        var restBtn = PrimaryButton("Resto del día");
+        restBtn.Margin = new Thickness(0, 0, 8, 8);
+        restBtn.Click += (_, _) => _engine.LaunchQuickBlock(restOfDayMins, SessionProtection.Challenge);
+        quickBtns.Children.Add(restBtn);
+        quickStack.Children.Add(quickBtns);
+        PageContent.Children.Add(Card(quickStack, "#275943"));
+
+        var activeRules = _engine.Workspace.GeneralRules.Where(r => _engine.IsRuleEnforcing(r)).ToList();
+        if (activeRules.Count > 0)
+        {
+            PageContent.Children.Add(new TextBlock { Text = $"BLOQUEANDO AHORA ({activeRules.Count})", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 8, 0, 10) });
+            foreach (var r in activeRules)
+            {
+                var dock = new DockPanel();
+                var microLeft = Math.Max(0, r.DailyMicroPausesAllowed - _engine.Workspace.MicroPausesUsedToday(r.Id));
+                if (microLeft > 0)
+                {
+                    var mpBtn = new System.Windows.Controls.Button { Content = $"Micro-pausa ({r.MicroPauseMinutes}m · {microLeft})", VerticalAlignment = VerticalAlignment.Center };
+                    mpBtn.Click += (_, _) => _engine.UseMicroPause(r);
+                    DockPanel.SetDock(mpBtn, Dock.Right);
+                    dock.Children.Add(mpBtn);
+                }
+                var sp = new StackPanel();
+                sp.Children.Add(new TextBlock { Text = r.Name, FontSize = 14.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#64E3A1") });
+                sp.Children.Add(new TextBlock { Text = $"{r.Kind.GalleryTitle()} · Protección: {r.Protection.Label()}", FontSize = 12, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 3, 0, 0) });
+                dock.Children.Add(sp);
+                PageContent.Children.Add(Card(dock, "#275943"));
+            }
+        }
+
+        PageContent.Children.Add(new TextBlock { Text = "PERFILES REUTILIZABLES", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 8, 0, 10) });
         foreach (var profile in _engine.Workspace.Profiles)
         {
             var dock = new DockPanel();
@@ -691,14 +789,14 @@ public partial class MainWindow : Window
                 var t = new FocusTask { Title = profile.Name, ScheduledAt = DateTimeOffset.Now };
                 t.Apply(profile);
                 _engine.SaveTask(t);
-                _engine.StartSession(t);
+                StartOrHandoffSession(t);
                 _engine.ActivePage = "Hoy";
             };
             DockPanel.SetDock(launch, Dock.Right);
             dock.Children.Add(launch);
             var sp = new StackPanel();
             sp.Children.Add(new TextBlock { Text = profile.Name, FontSize = 15, FontWeight = FontWeights.SemiBold });
-            sp.Children.Add(new TextBlock { Text = $"{profile.Category} · {profile.Minutes} min · {(string.IsNullOrEmpty(profile.Domains) ? "sin lista web" : profile.Domains)}", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap });
+            sp.Children.Add(new TextBlock { Text = $"{profile.Category} · {profile.Minutes} min · {profile.Protection.Label()} · {(string.IsNullOrEmpty(profile.Domains) ? "sin lista web" : profile.Domains)}", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap });
             dock.Children.Add(sp);
             PageContent.Children.Add(Card(dock));
         }

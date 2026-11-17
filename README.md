@@ -1,12 +1,17 @@
-# FocusDesk
+# FocusDesk (macOS y Windows)
 
-Tu plan del día y el tiempo de cada tarea, accesibles desde la barra de menús de macOS y el Dock.
+Tu plan del día, el bloqueo de distracciones y las reglas «primero estudio, luego partida», disponibles de forma nativa tanto para **macOS** como para **Windows**.
+
+- **Para instalarlo en Mac (macOS 14 o posterior)**: [**Pulsa aquí para descargar FocusDesk-macOS.dmg**](https://github.com/Dreffty/FocusDesk/releases/latest/download/FocusDesk-macOS.dmg)
+- **Para instalarlo en Windows (Windows 10 / 11 x64)**: [**Pulsa aquí para descargar FocusDesk-Windows-x64.exe**](https://github.com/Dreffty/FocusDesk/releases/latest/download/FocusDesk-Windows-x64.exe) *(ejecutable único autocontenido: no requiere instalar .NET ni instaladores adicionales)*.
+- Todas las versiones y notas de lanzamiento están en [**GitHub Releases**](https://github.com/Dreffty/FocusDesk/releases/latest).
 
 ## Abrir
 
-Abre `/Applications/FocusDesk.app` con doble clic, búscala en Spotlight escribiendo **FocusDesk** (todo junto: «Focus Desk» con espacio no la encuentra) o usa su icono del Dock. La copia compilada también está en `dist.noindex/FocusDesk.app`. Cerrar su ventana deja la app funcionando en la barra. El atajo global (**Control + Opción + Comando + F** por defecto, configurable en **Ajustes**, que se abren con `⌘,` en su propia ventana) vuelve a abrir el planificador o el panel compacto. Para cerrarla completamente, usa **Salir** en su menú.
+- **En Windows**: guarda `FocusDesk-Windows-x64.exe` en una carpeta fija (por ejemplo, en el Escritorio o en `C:\Programas\FocusDesk\`) y ábrelo con doble clic. *(Si la primera vez aparece el aviso azul de Windows SmartScreen, pulsa en **«Más información» → «Ejecutar de todas formas»**)*. Cerrar la ventana con la `X` deja FocusDesk funcionando en la bandeja del sistema (junto al reloj); el atajo global **`Ctrl + Alt + Win + F`** vuelve a traer la ventana al frente, **`Ctrl + Alt + Win + P`** pausa/reanuda y **`Ctrl + Alt + Win + T`** termina la tarea. Para cerrarla por completo, usa **Salir** en la bandeja o en **Ajustes**.
+- **En macOS**: abre el `.dmg`, arrastra **FocusDesk** a `/Applications` y ábrela con doble clic, desde Spotlight escribiendo **FocusDesk** (todo junto) o desde el Dock. Cerrar su ventana deja la app funcionando en la barra de menús. El atajo global (**Control + Opción + Comando + F** por defecto, configurable en **Ajustes**, que se abren con `⌘,`) vuelve a abrir el planificador o el panel compacto. Para cerrarla completamente, usa **Salir** en su menú.
 
-Requiere macOS 14 o posterior. La compilación para Apple Silicon utiliza firma estable local (`Apple Development`) cuando está disponible en el llavero (con respaldo ad-hoc `-`), conservando los permisos de macOS entre recompilaciones.
+Requiere **Windows 10/11 (x64)** o **macOS 14 o posterior**. En macOS, la compilación local utiliza firma estable (`Developer ID Application` o `Apple Development`) cuando está disponible en el llavero (con respaldo ad-hoc `-`), conservando los permisos de macOS entre recompilaciones.
 
 ## Primer uso
 
