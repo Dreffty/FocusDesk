@@ -44,15 +44,18 @@ public static partial class Dialogs
         };
     }
 
+    private static string Spaced(string text) =>
+        string.Join("\u200A", text.ToUpper(new CultureInfo("es-ES")).Replace(" ", "\u2002").ToCharArray().Select(c => c.ToString()));
+
     private static UIElement BuildSectionCard(string heading, string? subtitle, UIElement content)
     {
         var inner = new StackPanel();
         inner.Children.Add(new TextBlock
         {
-            Text = heading.ToUpperInvariant(),
-            FontSize = 10.5,
+            Text = Spaced(heading),
+            FontSize = 11,
             FontWeight = FontWeights.SemiBold,
-            Foreground = BrushHex("#38A169"),
+            Foreground = BrushHex("#99A6AD"),
             Margin = new Thickness(0, 0, 0, subtitle == null ? 10 : 3)
         });
         if (!string.IsNullOrEmpty(subtitle))
@@ -72,8 +75,8 @@ public static partial class Dialogs
             Background = BrushHex("#161B21"),
             BorderBrush = BrushHex("#262A30"),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(14),
-            Padding = new Thickness(18),
+            CornerRadius = new CornerRadius(16),
+            Padding = new Thickness(20),
             Margin = new Thickness(0, 0, 0, 14),
             Child = inner
         };
@@ -84,7 +87,7 @@ public static partial class Dialogs
         var panel = new StackPanel { Margin = new Thickness(0, topMargin, 0, 0) };
         panel.Children.Add(new TextBlock
         {
-            Text = label.ToUpperInvariant(),
+            Text = Spaced(label),
             FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
             Foreground = BrushHex("#99A6AD"),
@@ -159,10 +162,10 @@ public static partial class Dialogs
         var btn = new System.Windows.Controls.Button
         {
             Content = text,
-            Padding = new Thickness(10, 4, 10, 4),
-            MinHeight = 26,
-            FontSize = 11.5,
-            Margin = new Thickness(0, 6, 6, 0),
+            Padding = new Thickness(14, 4, 14, 4),
+            MinHeight = 30,
+            FontSize = 12.5,
+            Margin = new Thickness(0, 8, 8, 0),
             Background = BrushHex("#1D2229"),
             Foreground = BrushHex("#E4E9EC"),
             BorderBrush = BrushHex("#30353C")
@@ -504,7 +507,8 @@ public static partial class Dialogs
         headerStack.Children.Add(new TextBlock
         {
             Text = existing == null ? "Dale un espacio." : $"Editar «{existing.Title}»",
-            FontSize = 21,
+            FontSize = 30,
+            FontFamily = new System.Windows.Media.FontFamily("Segoe UI Variable Display, Segoe UI"),
             FontWeight = FontWeights.SemiBold,
             Foreground = BrushHex("#EDF2F5")
         });
@@ -568,9 +572,11 @@ public static partial class Dialogs
 
         var schedCheck = new System.Windows.Controls.CheckBox
         {
-            Content = "Reservar horario en agenda",
+            Content = "En agenda (reservar horario)",
             IsChecked = draft.IsScheduled,
-            Margin = new Thickness(0, 12, 0, 0)
+            Margin = new Thickness(0, 12, 0, 0),
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+            Style = (Style)System.Windows.Application.Current.FindResource("Switch")
         };
         var dateBox = MakeTextBox(draft.ScheduledAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture));
         var minBox = MakeTextBox(draft.Minutes.ToString(CultureInfo.InvariantCulture));
@@ -1060,7 +1066,8 @@ public static partial class Dialogs
         headerStack.Children.Add(new TextBlock
         {
             Text = existing == null ? "Nueva regla de bloqueo" : "Editar regla de bloqueo",
-            FontSize = 21,
+            FontSize = 30,
+            FontFamily = new System.Windows.Media.FontFamily("Segoe UI Variable Display, Segoe UI"),
             FontWeight = FontWeights.SemiBold,
             Foreground = BrushHex("#EDF2F5")
         });
