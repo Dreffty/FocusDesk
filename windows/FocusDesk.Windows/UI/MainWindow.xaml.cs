@@ -281,18 +281,49 @@ public partial class MainWindow : Window
 
     private UIElement PageHeader(string title, string subtitle, UIElement? trailingButton = null)
     {
-        var dock = new DockPanel { Margin = new Thickness(0, 0, 0, 18) };
-        if (trailingButton != null)
-        {
-            DockPanel.SetDock(trailingButton, Dock.Right);
-            if (trailingButton is FrameworkElement fe) fe.VerticalAlignment = VerticalAlignment.Center;
-            dock.Children.Add(trailingButton);
-        }
+        // Title on the left, buttons on the right — and the buttons drop below the title when the window is too
+        // narrow for both (they used to slide over the title on a 1024-px-wide laptop window).
+        var grid = new Grid { Margin = new Thickness(0, 0, 0, 18) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
         var stack = new StackPanel();
         stack.Children.Add(new TextBlock { Text = title, FontSize = 24, FontWeight = FontWeights.Bold, Foreground = BrushHex("#F2F5FA") });
-        stack.Children.Add(new TextBlock { Text = subtitle, FontSize = 12.5, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 3, 0, 0) });
-        dock.Children.Add(stack);
-        return dock;
+        stack.Children.Add(new TextBlock { Text = subtitle, FontSize = 12.5, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 3, 0, 0), TextWrapping = TextWrapping.Wrap });
+        grid.Children.Add(stack);
+
+        if (trailingButton is FrameworkElement trailing)
+        {
+            // A row of buttons wraps onto several lines instead of running off the edge.
+            if (trailing is StackPanel row && row.Orientation == System.Windows.Controls.Orientation.Horizontal)
+            {
+                var wrap = new WrapPanel();
+                var kids = row.Children.Cast<UIElement>().ToList();
+                row.Children.Clear();
+                foreach (var kid in kids) wrap.Children.Add(kid);
+                trailing = wrap;
+            }
+            grid.Children.Add(trailing);
+            void Relayout()
+            {
+                var unbounded = new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity);
+                stack.Measure(unbounded);
+                trailing.Measure(unbounded);
+                var fits = grid.ActualWidth <= 0 || stack.DesiredSize.Width + trailing.DesiredSize.Width + 24 <= grid.ActualWidth;
+                Grid.SetRow(trailing, fits ? 0 : 1);
+                Grid.SetColumn(trailing, fits ? 1 : 0);
+                Grid.SetColumnSpan(trailing, fits ? 1 : 2);
+                trailing.HorizontalAlignment = fits ? System.Windows.HorizontalAlignment.Right : System.Windows.HorizontalAlignment.Left;
+                trailing.VerticalAlignment = VerticalAlignment.Center;
+                trailing.Margin = fits ? new Thickness(0) : new Thickness(0, 12, 0, 0);
+            }
+            grid.SizeChanged += (_, _) => Relayout();
+            grid.Loaded += (_, _) => Relayout();
+            Relayout();
+        }
+        return grid;
     }
 
     private static System.Windows.Controls.Button PrimaryButton(string label) => new()

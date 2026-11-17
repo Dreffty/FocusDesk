@@ -132,7 +132,8 @@ public partial class MainWindow
     private static System.Windows.Controls.ComboBox ChoiceBox<T>(IEnumerable<ComboOption<T>> options, T selected, Action<T> onChange, double width = 220)
     {
         var list = options.ToList();
-        var box = new System.Windows.Controls.ComboBox { ItemsSource = list, Width = width };
+        // Left-aligned under its label: with a fixed width it used to float in the middle of the row.
+        var box = new System.Windows.Controls.ComboBox { ItemsSource = list, Width = width, HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
         var index = list.FindIndex(o => EqualityComparer<T>.Default.Equals(o.Value, selected));
         box.SelectedIndex = index >= 0 ? index : 0;
         box.SelectionChanged += (_, _) =>
