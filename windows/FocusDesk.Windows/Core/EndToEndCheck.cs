@@ -165,6 +165,7 @@ public static class EndToEndCheck
             $"{name}: FocusDesk lee la dirección de la pestaña (sin esto no puede bloquear webs)",
             url.HasValue ? $"leído {url.Value.Host}{url.Value.Path}" : "no se pudo leer");
         Info($"{name}: pestañas detectadas {BrowserInspector.CountTabs(hwnd)}");
+        if (!url.HasValue) Info($"{name}: lo que FocusDesk ve en la ventana → {BrowserInspector.DescribeInputs(hwnd)}");
 
         await Pump(engine, 7);
         Shot($"{name}-1-permitida");

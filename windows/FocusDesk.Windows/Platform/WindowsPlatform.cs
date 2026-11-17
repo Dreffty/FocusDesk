@@ -336,6 +336,21 @@ public static class BrowserInspector
         var root = AutomationElement.FromHandle(hwnd);
         if (root == null) return (null, null);
 
+        // Firefox and its family (Zen, LibreWolf…): the address bar is the element «urlbar-input», exposed as a
+        // combo box (it has a suggestions list), deeper than the walk below reaches. Ask for it by its id — only in
+        // their windows: in Chromium the same search would walk the whole web page every few seconds.
+        if (IsGeckoWindow(hwnd)) try
+        {
+            var gecko = root.FindFirst(TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.AutomationIdProperty, "urlbar-input"));
+            if (gecko != null && gecko.TryGetCurrentPattern(ValuePattern.Pattern, out var gp) && gp is ValuePattern gvp)
+            {
+                var val = gvp.Current.Value?.Trim() ?? "";
+                return (gecko, LooksLikeUrl(val) ? val : (gecko.Current.HasKeyboardFocus ? null : val));
+            }
+        }
+        catch { }
+
         var walker = TreeWalker.ControlViewWalker;
         var queue = new Queue<(AutomationElement Element, int Depth)>();
         queue.Enqueue((root, 0));
@@ -355,7 +370,7 @@ public static class BrowserInspector
             // Never descend into rendered webpage DOM subtrees (slow and can match in-page text boxes).
             if (ct == ControlType.Document) continue;
 
-            if (ct == ControlType.Edit && depth > 0)
+            if ((ct == ControlType.Edit || ct == ControlType.ComboBox) && depth > 0)
             {
                 try
                 {
@@ -376,7 +391,7 @@ public static class BrowserInspector
                             // If the bar already holds a valid URL, never hide it just because the user clicked the omnibox.
                             return (cur, isUrl ? val : (hasFocus ? null : val));
                         }
-                        if (fallbackEdit == null && isUrl)
+                        if (fallbackEdit == null && isUrl && ct == ControlType.Edit)
                         {
                             fallbackEdit = cur;
                             fallbackRaw = val;
@@ -400,6 +415,40 @@ public static class BrowserInspector
         }
 
         return (fallbackEdit, fallbackRaw);
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
+
+    private static bool IsGeckoWindow(IntPtr hwnd)
+    {
+        var sb = new StringBuilder(64);
+        GetClassName(hwnd, sb, sb.Capacity);
+        return sb.ToString() == "MozillaWindowClass";
+    }
+
+    /// <summary>Diagnostics for the end-to-end check: every text box / combo box the browser window exposes.</summary>
+    public static string DescribeInputs(IntPtr hwnd)
+    {
+        try
+        {
+            var sb = new StringBuilder(64);
+            GetClassName(hwnd, sb, sb.Capacity);
+            var root = AutomationElement.FromHandle(hwnd);
+            var found = root.FindAll(TreeScope.Descendants, new OrCondition(
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox)));
+            var parts = new List<string>();
+            foreach (AutomationElement e in found)
+            {
+                if (parts.Count >= 12) break;
+                string val = "";
+                try { if (e.TryGetCurrentPattern(ValuePattern.Pattern, out var vp) && vp is ValuePattern v) val = v.Current.Value ?? ""; } catch { }
+                parts.Add($"[{e.Current.ControlType.ProgrammaticName} name=«{e.Current.Name}» id=«{e.Current.AutomationId}» value=«{val}»]");
+            }
+            return $"clase {sb} · {found.Count} campos: " + string.Join(" ", parts);
+        }
+        catch (Exception ex) { return "no se pudo inspeccionar: " + ex.Message; }
     }
 
     private static bool LooksLikeUrl(string raw)
