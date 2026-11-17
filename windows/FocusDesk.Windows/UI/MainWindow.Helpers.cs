@@ -125,7 +125,15 @@ public partial class MainWindow
 
     private static System.Windows.Controls.CheckBox ToggleBox(string text, bool on, Action<bool> onChange, double top = 8)
     {
-        var box = new System.Windows.Controls.CheckBox { Content = text, IsChecked = on, Margin = new Thickness(0, top, 0, 0) };
+        // Settings toggles are Mac switches: the text on the left, the switch on the right.
+        var box = new System.Windows.Controls.CheckBox
+        {
+            Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, FontSize = 13.5 },
+            IsChecked = on,
+            Margin = new Thickness(0, top + 4, 0, 4),
+            HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch
+        };
+        box.Style = (Style)System.Windows.Application.Current.FindResource("Switch");
         box.Click += (_, _) => onChange(box.IsChecked == true);
         return box;
     }

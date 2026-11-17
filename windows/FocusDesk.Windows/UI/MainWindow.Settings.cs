@@ -163,7 +163,6 @@ public partial class MainWindow
 
         // General
         var general = new StackPanel();
-        general.Children.Add(SectionLabel("GENERAL", 0, "#38A169"));
         general.Children.Add(Labeled("Tamaño del texto", ChoiceBox(new[]
         {
             new ComboOption<double>(1.0, "Normal"), new ComboOption<double>(1.15, "Grande"), new ComboOption<double>(1.3, "Muy grande")
@@ -188,27 +187,25 @@ public partial class MainWindow
             new[] { 0, 5, 10, 15, 30, 60 }.Select(m => new ComboOption<int>(m, m == 0 ? "No protegerla antes" : $"{m} min antes")),
             s.RunUpMinutes, SetRunUpMinutes, 220), 10));
         general.Children.Add(Row(SmallButton("Salir de FocusDesk", () => _onQuitRequested(), true, 0)));
-        PageContent.Children.Add(Card(general));
+        PageContent.Children.Add(GroupCard("General", "\uE713", general));
 
         // Avisos
         var alerts = new StackPanel();
-        alerts.Children.Add(SectionLabel("AVISOS", 0, "#38A169"));
         alerts.Children.Add(ToggleBox("Avisarme cuando queden 5 min y 1 min de un presupuesto diario o visita", s.PreBlockRemindersEnabled,
             v => ChangeSetting(x => x.PreBlockRemindersEnabled = v), 0));
         alerts.Children.Add(ToggleBox("Mostrar aviso y cuenta atrás cuando empiece un descanso programado", s.EnforceBreaks,
             v => ChangeSetting(x => x.EnforceBreaks = v)));
-        PageContent.Children.Add(Card(alerts));
+        PageContent.Children.Add(GroupCard("Avisos", "\uEA8F", alerts));
 
         // Agenda
         var agenda = new StackPanel();
-        agenda.Children.Add(SectionLabel("AGENDA", 0, "#38A169"));
         agenda.Children.Add(WrapRow(
             Labeled("Inicio de jornada (hora)", NumberBox(s.WorkStartHour, 0, 23, v => ChangeSetting(x => x.WorkStartHour = v)), 0),
             Labeled("Fin de jornada (hora)", NumberBox(s.WorkEndHour, 1, 24, v => ChangeSetting(x => x.WorkEndHour = v)), 0),
             Labeled("Corte de día (0-8 h)", NumberBox(s.DayRolloverHour, 0, 8, v => ChangeSetting(x => x.DayRolloverHour = v)), 0),
             Labeled("Detalle de actividad (días)", ChoiceBox(new[] { 7, 14, 30, 60, 90 }.Select(d => new ComboOption<int>(d, $"{d} días")), s.DetailDays,
                 v => ChangeSetting(x => x.DetailDays = v), 130), 0)));
-        agenda.Children.Add(SectionLabel("DÍAS LABORABLES", 12));
+        agenda.Children.Add(SectionLabel("Días laborables", 12));
         var days = new WrapPanel();
         foreach (var (dayNum, dayLabel) in new[] { (2, "Lun"), (3, "Mar"), (4, "Mié"), (5, "Jue"), (6, "Vie"), (7, "Sáb"), (1, "Dom") })
         {
@@ -231,7 +228,7 @@ public partial class MainWindow
             days.Children.Add(dayButton);
         }
         agenda.Children.Add(days);
-        agenda.Children.Add(SectionLabel("CATEGORÍAS", 14));
+        agenda.Children.Add(SectionLabel("Categorías", 14));
         var categoryList = new WrapPanel();
         foreach (var category in s.Categories)
         {
@@ -262,16 +259,13 @@ public partial class MainWindow
         categoryForm.Children.Add(Labeled("Color", ChoiceBox(CategoryColors.Select((c, i) => new ComboOption<int>(i, c.Name)), _newCategoryColor, v => _newCategoryColor = v, 120), 4));
         categoryForm.Children.Add(addCategory);
         agenda.Children.Add(categoryForm);
-        PageContent.Children.Add(Card(agenda));
+        PageContent.Children.Add(GroupCard("Agenda", "\uE787", agenda));
 
         // Profiles
         var profiles = new StackPanel();
-        var profileHead = new DockPanel();
-        var addProfile = SmallButton("+ Nuevo perfil", () => Dialogs.ShowProfileEditor(_engine, null, this), true, 0);
-        DockPanel.SetDock(addProfile, Dock.Right);
-        profileHead.Children.Add(addProfile);
-        profileHead.Children.Add(SectionLabel("PERFILES DE TAREA", 0, "#38A169"));
-        profiles.Children.Add(profileHead);
+        var addProfile = GlyphButton("\uE710", "Nuevo perfil", () => Dialogs.ShowProfileEditor(_engine, null, this), plain: true);
+        addProfile.MinHeight = 30;
+        if (_engine.Workspace.Profiles.Count == 0) profiles.Children.Add(MutedText("Sin perfiles todavía.", 12.5, 0));
         foreach (var profile in _engine.Workspace.Profiles)
         {
             var line = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
@@ -285,14 +279,14 @@ public partial class MainWindow
             }, true, 0));
             DockPanel.SetDock(buttons, Dock.Right);
             line.Children.Add(buttons);
-            line.Children.Add(new TextBlock { Text = $"{profile.Name} · {profile.Category} · {profile.Minutes} min", FontSize = 13.5, VerticalAlignment = VerticalAlignment.Center });
-            profiles.Children.Add(line);
+            line.Children.Add(new TextBlock { Text = $"{profile.Name} · {profile.Category} · {profile.Minutes} min", FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
+            line.Margin = new Thickness(0);
+            profiles.Children.Add(InnerRow(line, 8));
         }
-        PageContent.Children.Add(Card(profiles));
+        PageContent.Children.Add(GroupCard("Perfiles de tarea", "\uE8F1", profiles, trailing: addProfile));
 
         // Study sources
         var studyPanel = new StackPanel();
-        studyPanel.Children.Add(SectionLabel("QUÉ CUENTA COMO ESTUDIO ACTIVO", 0, "#38A169"));
         studyPanel.Children.Add(MutedText("Lo que añadas hoy empieza a contar mañana para evitar atajos de último minuto.", 12, 0));
         var addRow = new WrapPanel { Margin = new Thickness(0, 10, 0, 12) };
         var webInput = new System.Windows.Controls.TextBox { Width = 220, Margin = new Thickness(0, 0, 8, 0) };
@@ -329,11 +323,10 @@ public partial class MainWindow
             wrap.Children.Add(pill);
         }
         studyPanel.Children.Add(wrap);
-        PageContent.Children.Add(Card(studyPanel));
+        PageContent.Children.Add(GroupCard("Qué cuenta como estudio activo", "\uE82D", studyPanel));
 
         // Privacy and protection
         var guardPanel = new StackPanel();
-        guardPanel.Children.Add(SectionLabel("PRIVACIDAD Y PROTECCIÓN", 0, "#38A169"));
         var guardCheck = ToggleBox("Volver a abrirse si lo matan durante una sesión protegida (vigilante al iniciar Windows)", s.RelaunchGuard, v => { }, 0);
         guardCheck.Click += (_, _) =>
         {
@@ -362,11 +355,10 @@ public partial class MainWindow
             v => ChangeSetting(x => x.ProtectActivityHistory = v)));
         guardPanel.Children.Add(ToggleBox("Anotar las webs que visitas durante una sesión (para el historial)", s.ObserveBrowserSites,
             v => ChangeSetting(x => x.ObserveBrowserSites = v)));
-        PageContent.Children.Add(Card(guardPanel));
+        PageContent.Children.Add(GroupCard("Privacidad y protección", "\uE72E", guardPanel));
 
         // Data and copies
         var backupPanel = new StackPanel();
-        backupPanel.Children.Add(SectionLabel("DATOS Y COPIAS DE SEGURIDAD", 0, "#38A169"));
         var expBtn = SmallButton("Exportar copia (.json)", () =>
         {
             var dlg = new Microsoft.Win32.SaveFileDialog { FileName = "FocusDesk-backup.json", Filter = "JSON (*.json)|*.json" };
@@ -418,10 +410,10 @@ public partial class MainWindow
                 catch (Exception ex) { _engine.Error = $"No se pudo restaurar la copia: {ex.Message}"; UpdateNoticeAndSidebar(); }
             }, true, 0);
             restoreDaily.Margin = new Thickness(10, 0, 0, 0);
-            backupPanel.Children.Add(SectionLabel("COPIAS DIARIAS (14 DÍAS)", 12));
+            backupPanel.Children.Add(SectionLabel("Copias diarias (14 días)", 12));
             backupPanel.Children.Add(Row(dailyChoice, restoreDaily));
         }
-        PageContent.Children.Add(Card(backupPanel));
+        PageContent.Children.Add(GroupCard("Datos y copias de seguridad", "\uE74E", backupPanel));
     }
 
     private void SetRunUpMinutes(int minutes)
