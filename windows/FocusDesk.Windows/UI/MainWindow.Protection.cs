@@ -579,46 +579,96 @@ public partial class MainWindow
 
     // MARK: - Descansos
 
+    /// <summary>A thin rounded progress bar (the Mac bar under the continuous-use counter).</summary>
+    private static (Grid View, Action<double> Set) ProgressBar()
+    {
+        var grid = new Grid { Height = 6, Margin = new Thickness(0, 14, 0, 14) };
+        grid.Children.Add(new Border { Background = BrushHex("#262A30"), CornerRadius = new CornerRadius(3) });
+        var fill = new Border { Background = BrushHex("#38A169"), CornerRadius = new CornerRadius(3), HorizontalAlignment = System.Windows.HorizontalAlignment.Left, Width = 6 };
+        grid.Children.Add(fill);
+        void Set(double f)
+        {
+            var width = grid.ActualWidth > 0 ? grid.ActualWidth : 600;
+            fill.Width = Math.Max(6, Math.Clamp(f, 0, 1) * width);
+        }
+        grid.SizeChanged += (_, _) => Set(fill.Tag is double d ? d : 0);
+        return (grid, f => { fill.Tag = f; Set(f); });
+    }
+
+    /// <summary>«Cada 50 min ⌃⌄»: a value with up/down arrows, like the Mac steppers.</summary>
+    private UIElement Stepper(string prefix, int value, int min, int max, int step, Action<int> onChange)
+    {
+        var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Margin = new Thickness(0, 0, 26, 0) };
+        row.Children.Add(new TextBlock { Text = $"{prefix} {value} min", FontSize = 14, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+        var arrows = new StackPanel();
+        var up = new System.Windows.Controls.Button { Content = Glyph("", 9, "#D5DBDF"), MinHeight = 16, Height = 16, Width = 26, Padding = new Thickness(0), Margin = new Thickness(0, 0, 0, 1) };
+        var down = new System.Windows.Controls.Button { Content = Glyph("", 9, "#D5DBDF"), MinHeight = 16, Height = 16, Width = 26, Padding = new Thickness(0) };
+        up.Click += (_, _) => onChange(Math.Min(max, value + step));
+        down.Click += (_, _) => onChange(Math.Max(min, value - step));
+        arrows.Children.Add(up);
+        arrows.Children.Add(down);
+        row.Children.Add(arrows);
+        return row;
+    }
+
     private void BuildBreaksPage()
     {
-        PageContent.Children.Add(PageHeader("Descansos", "Descansa la vista y la mente antes de necesitarlo."));
         var s = _engine.Workspace.Settings;
+        var restNow = GlyphButton("", "Descansar ahora", () => _engine.StartContinuousBreakNow(), primary: true);
+        restNow.IsEnabled = s.ContinuousBreakEnabled && _engine.ActiveContinuousBreakDeadline == null;
+        PageContent.Children.Add(PageHeader("Descansos", "Descansa antes de necesitarlo.", restNow));
 
-        // Rest of the eyes after a long time at the computer
+        // Rest after a long time in a row: the counter, the bar and the two steppers
         var eyes = new StackPanel();
-        eyes.Children.Add(SectionLabel("DESCANSO CONTINUO DE VISTA", 0, "#38A169"));
-        eyes.Children.Add(ToggleBox("Sugerir un descanso breve tras usar el equipo de forma continua", s.ContinuousBreakEnabled, v =>
+        var counterRow = new WrapPanel();
+        var counter = new TextBlock { FontSize = 40, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#38A169"), FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0) };
+        var counterText = new TextBlock { FontSize = 14, Foreground = BrushHex("#99A6AD"), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, MaxWidth = 560 };
+        counterRow.Children.Add(counter);
+        counterRow.Children.Add(counterText);
+        eyes.Children.Add(counterRow);
+        var (bar, setBar) = ProgressBar();
+        eyes.Children.Add(bar);
+        void Refresh(DateTimeOffset now)
         {
-            ChangeSetting(x => x.ContinuousBreakEnabled = v);
-        }, 0));
-        eyes.Children.Add(WrapRow(
-            Labeled("Cada (min de trabajo)", NumberBox(s.ContinuousWorkMinutes, 15, 180, v => ChangeSetting(x => x.ContinuousWorkMinutes = v)), 8),
-            Labeled("Descansar (min)", NumberBox(s.ContinuousBreakDurationMinutes, 1, 30, v => ChangeSetting(x => x.ContinuousBreakDurationMinutes = v)), 8),
-            Labeled("Máx. saltos al día", NumberBox(s.ContinuousBreakMaxSkipsPerDay, 0, 10, v => ChangeSetting(x => x.ContinuousBreakMaxSkipsPerDay = v)), 8)));
+            if (_engine.ActiveContinuousBreakDeadline != null)
+            {
+                counter.Text = FocusRules.Clock(_engine.ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot(now));
+                counterText.Text = $"de descanso · {_engine.ActiveContinuousBreakMessage}";
+                setBar(1);
+                return;
+            }
+            var used = _engine.ContinuousActiveWorkSeconds;
+            var every = Math.Max(1, s.ContinuousWorkMinutes) * 60.0;
+            counter.Text = FocusRules.Clock(used);
+            counterText.Text = s.ContinuousBreakEnabled
+                ? $"de {s.ContinuousWorkMinutes} min frente al ordenador · te propondré {s.ContinuousBreakDurationMinutes} min de pausa en {FocusRules.DurationText((int)Math.Ceiling(Math.Max(0, every - used) / 60))}"
+                : "Apagado: actívalo con el interruptor de la derecha.";
+            setBar(used / every);
+        }
+        Refresh(DateTimeOffset.Now);
+        _livePageTick = Refresh;
+
+        var steppers = new WrapPanel();
+        steppers.Children.Add(Stepper("Cada", s.ContinuousWorkMinutes, 15, 180, 5, v => { ChangeSetting(x => x.ContinuousWorkMinutes = v); RefreshUI(); }));
+        steppers.Children.Add(Stepper("Durante", s.ContinuousBreakDurationMinutes, 1, 30, 1, v => { ChangeSetting(x => x.ContinuousBreakDurationMinutes = v); RefreshUI(); }));
+        steppers.Children.Add(Stepper("Saltos al día:", s.ContinuousBreakMaxSkipsPerDay, 0, 10, 1, v => { ChangeSetting(x => x.ContinuousBreakMaxSkipsPerDay = v); RefreshUI(); }));
+        eyes.Children.Add(steppers);
         if (_engine.ActiveContinuousBreakDeadline != null)
         {
-            _liveContinuousBreakText = new TextBlock
-            {
-                Text = $"Descanso de vista · {FocusRules.Clock(_engine.ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot())} · {_engine.ActiveContinuousBreakMessage}",
-                Foreground = BrushHex("#38A169"),
-                FontSize = 13,
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 10, 0, 0)
-            };
-            eyes.Children.Add(_liveContinuousBreakText);
-            eyes.Children.Add(Row(SmallButton($"Posponer ({_engine.ContinuousBreakSkipsLeft})", () => _engine.SkipContinuousBreak(), _engine.ContinuousBreakSkipsLeft > 0)));
+            var skip = SmallButton($"Posponer ({_engine.ContinuousBreakSkipsLeft})", () => _engine.SkipContinuousBreak(), _engine.ContinuousBreakSkipsLeft > 0, 0);
+            skip.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
+            skip.Margin = new Thickness(0, 12, 0, 0);
+            eyes.Children.Add(skip);
         }
-        else
-        {
-            eyes.Children.Add(Row(SmallButton("Descansar ahora", () => _engine.StartContinuousBreakNow(), s.ContinuousBreakEnabled)));
-        }
-        eyes.Children.Add(SectionLabel("MENSAJES DE DESCANSO (UNO POR LÍNEA)", 14));
+        eyes.Children.Add(MutedText("Si te levantas o dejas el teclado unos minutos, el contador vuelve a cero solo.", 12.5, 12));
+        eyes.Children.Add(SectionLabel("Mensajes de descanso (uno por línea)", 14));
         var messagesBox = new System.Windows.Controls.TextBox
         {
             Text = string.Join(Environment.NewLine, s.BreakMessages),
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
-            Height = 90
+            Height = 84,
+            VerticalContentAlignment = VerticalAlignment.Top
         };
         messagesBox.LostFocus += (_, _) =>
         {
@@ -626,34 +676,99 @@ public partial class MainWindow
             ChangeSetting(x => x.BreakMessages = lines.Count > 0 ? lines : new Settings().BreakMessages);
         };
         eyes.Children.Add(messagesBox);
-        PageContent.Children.Add(Card(eyes));
+        var eyesSwitch = new System.Windows.Controls.CheckBox { IsChecked = s.ContinuousBreakEnabled, ToolTip = "Encender o apagar" };
+        eyesSwitch.Style = (Style)System.Windows.Application.Current.FindResource("Switch");
+        eyesSwitch.Click += (_, _) => { ChangeSetting(x => x.ContinuousBreakEnabled = eyesSwitch.IsChecked == true); RefreshUI(); };
+        PageContent.Children.Add(GroupCard("Descanso tras mucho rato seguido", "", eyes, trailing: eyesSwitch));
 
-        // Scheduled breaks (lunch, siesta…)
+        // Micro-pauses of your rules | Pomodoro breaks, side by side as on the Mac
+        var two = new Grid { Margin = new Thickness(0, 0, 0, 0) };
+        two.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        two.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
+        two.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var micro = new StackPanel();
+        micro.Children.Add(MutedText("Sueltan una regla unos minutos y vuelve a bloquear sola. Tienes un número contado al día.", 12.5, 0));
+        var withMicro = _engine.Workspace.GeneralRules.Where(r => r.DailyMicroPausesAllowed > 0).ToList();
+        if (withMicro.Count == 0) micro.Children.Add(MutedText("Ninguna de tus reglas tiene micro-pausas.", 12.5, 10));
+        foreach (var r in withMicro)
+        {
+            var left = Math.Max(0, r.DailyMicroPausesAllowed - _engine.Workspace.MicroPausesUsedToday(r.Id));
+            var line = new DockPanel();
+            var take = SmallButton("Tomar una", () => _engine.UseMicroPause(r), left > 0 && _engine.IsRuleEnforcing(r), 0);
+            take.VerticalAlignment = VerticalAlignment.Center;
+            DockPanel.SetDock(take, Dock.Right);
+            line.Children.Add(take);
+            var info = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            info.Children.Add(new TextBlock { Text = r.Name, FontSize = 14.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+            info.Children.Add(MutedText($"{left} de {r.DailyMicroPausesAllowed} disponibles hoy · {r.MicroPauseMinutes} min cada una", 12.5, 2));
+            line.Children.Add(info);
+            micro.Children.Add(InnerRow(line, 8));
+        }
+        var microCard = GroupCard("Micro-pausas de tus reglas", "", micro);
+        two.Children.Add(microCard);
+
+        var pomo = new StackPanel();
+        var pomodoros = _engine.Workspace.GeneralRules.Where(r => r.Kind == GeneralRuleKind.Pomodoro).ToList();
+        if (pomodoros.Count == 0) pomo.Children.Add(MutedText("No tienes reglas Pomodoro. Crea una en «Reglas y límites».", 12.5, 0));
+        foreach (var r in pomodoros)
+        {
+            var line = new DockPanel();
+            System.Windows.Controls.Button act;
+            if (r.Enabled && r.PomodoroPhase != PomodoroPhase.Idle && r.PomodoroPhase != PomodoroPhase.WaitingForUser)
+                act = SmallButton("Saltar fase", () =>
+                {
+                    if (r.PomodoroPhase == PomodoroPhase.Work && !UnlockRuleFor(r, $"saltar el enfoque de «{r.Name}»")) return;
+                    _engine.SkipPomodoroPhase(r);
+                }, true, 0);
+            else if (r.PomodoroPhase == PomodoroPhase.WaitingForUser)
+                act = SmallButton("Continuar", () => _engine.ContinuePomodoro(r), true, 0);
+            else
+                act = SmallButton("Iniciar", () =>
+                {
+                    var loosening = _engine.RestartLoosening(r, GeneralRuleKind.Pomodoro);
+                    if (loosening != null && !UnlockRuleFor(r, loosening)) return;
+                    _engine.StartRulePomodoro(r);
+                }, true, 0);
+            act.VerticalAlignment = VerticalAlignment.Center;
+            DockPanel.SetDock(act, Dock.Right);
+            line.Children.Add(act);
+            var info = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+            info.Children.Add(new TextBlock { Text = r.Name, FontSize = 14.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+            info.Children.Add(MutedText($"{(r.Enabled ? RuleInfoLine(r) : "Apagada")} · descansos de {r.PomodoroShortBreakMinutes} min, y de {r.PomodoroLongBreakMinutes} min cada {r.PomodoroLongBreakEvery} ciclos", 12.5, 2));
+            line.Children.Add(info);
+            pomo.Children.Add(InnerRow(line, 8));
+        }
+        var pomoCard = GroupCard("Descansos del Pomodoro", "", pomo);
+        Grid.SetColumn(pomoCard, 2);
+        two.Children.Add(pomoCard);
+        PageContent.Children.Add(two);
+
+        // Habitual breaks of your agenda (lunch, siesta…)
         var scheduled = new StackPanel();
-        scheduled.Children.Add(SectionLabel("DESCANSOS PROGRAMADOS", 0, "#38A169"));
-        scheduled.Children.Add(ToggleBox("Mostrar aviso y cuenta atrás cuando empiece un descanso", s.EnforceBreaks, v => ChangeSetting(x => x.EnforceBreaks = v), 0));
         foreach (var br in s.Breaks.ToList())
         {
-            var line = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
-            var remove = SmallButton("Quitar", () =>
+            var line = new DockPanel();
+            var remove = IconButton("", "Quitar", () =>
             {
                 ChangeSetting(x => x.Breaks.RemoveAll(b => b.Id == br.Id));
                 RefreshUI();
-            }, true, 0);
+            }, "#FF8080", "#2A161B");
             DockPanel.SetDock(remove, Dock.Right);
             line.Children.Add(remove);
-            line.Children.Add(new TextBlock { Text = $"{br.Title} · {br.StartHour:D2}:{br.StartMinute:D2} ({br.DurationMinutes} min)", FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
-            scheduled.Children.Add(line);
+            var time = new TextBlock { Text = $"{br.StartHour:D2}:{br.StartMinute:D2}", FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), Width = 70, VerticalAlignment = VerticalAlignment.Center };
+            DockPanel.SetDock(time, Dock.Left);
+            line.Children.Add(time);
+            line.Children.Add(new TextBlock { Text = $"{br.Title} · {br.DurationMinutes} min", FontSize = 14.5, VerticalAlignment = VerticalAlignment.Center });
+            scheduled.Children.Add(InnerRow(line, 8));
         }
-        if (s.Breaks.Count == 0) scheduled.Children.Add(MutedText("Sin descansos programados.", 12.5, 8));
+        if (s.Breaks.Count == 0) scheduled.Children.Add(MutedText("Sin descansos programados.", 12.5, 0));
 
         var titleBox = new System.Windows.Controls.TextBox { Text = "Descanso", Width = 190 };
         var hourBox = NumberBox(14, 0, 23, _ => { }, 60);
         var minuteBox = NumberBox(0, 0, 59, _ => { }, 60);
         var durationBox = NumberBox(60, 5, 240, _ => { }, 70);
-        var addBreak = PrimaryButton("Añadir descanso");
-        addBreak.Margin = new Thickness(0, 22, 0, 0);
-        addBreak.Click += (_, _) =>
+        var addBreak = GlyphButton("", "Añadir descanso", () =>
         {
             // The boxes apply their value on losing focus: read them directly so the click always sees what is typed.
             int Read(System.Windows.Controls.TextBox box, int min, int max, int fallback) =>
@@ -668,7 +783,8 @@ public partial class MainWindow
             };
             ChangeSetting(x => x.Breaks.Add(period));
             RefreshUI();
-        };
+        });
+        addBreak.Margin = new Thickness(0, 26, 0, 0);
         var form = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
         form.Children.Add(Labeled("Nombre", titleBox, 10));
         form.Children.Add(Labeled("Hora", hourBox, 10));
@@ -676,6 +792,7 @@ public partial class MainWindow
         form.Children.Add(Labeled("Duración (min)", durationBox, 10));
         form.Children.Add(addBreak);
         scheduled.Children.Add(form);
-        PageContent.Children.Add(Card(scheduled));
+        var warn = SwitchRow("Avisarme y mostrar cuenta atrás", s.EnforceBreaks, v => ChangeSetting(x => x.EnforceBreaks = v), 0);
+        PageContent.Children.Add(GroupCard("Descansos habituales de tu agenda", "", scheduled, trailing: warn));
     }
 }

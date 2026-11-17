@@ -32,6 +32,9 @@ public partial class MainWindow
     private sealed record NavItem(string Tag, System.Windows.Controls.Button Button, TextBlock Icon, TextBlock Label, Border Badge, TextBlock BadgeText);
     private readonly List<NavItem> _navItems = new();
 
+    /// <summary>Per-second refresh of whatever the current page shows live (e.g. the continuous-use counter).</summary>
+    private Action<DateTimeOffset>? _livePageTick;
+
     /// <summary>Small capitals with the wide letter spacing of the Mac labels (WPF has no tracking for TextBlock).</summary>
     private static string Spaced(string text) =>
         string.Join(" ", text.ToUpper(Spanish).Replace(" ", " ").ToCharArray().Select(c => c.ToString()));

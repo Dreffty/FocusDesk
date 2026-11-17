@@ -193,6 +193,7 @@ public partial class MainWindow : Window
         var now = DateTimeOffset.Now;
         UpdateSidebarSession(now);
         UpdateNavBadges(now);
+        _livePageTick?.Invoke(now);
 
         if (_liveRingUpdate != null && _engine.Workspace.Session is { EndedAt: null } rs)
             _liveRingUpdate(rs.Budget > 0 ? rs.Remaining(now) / rs.Budget : 0, FocusRules.Clock(Math.Max(0, rs.Remaining(now))), rs.Paused);
@@ -238,6 +239,7 @@ public partial class MainWindow : Window
 
         _liveClockText = null;
         _liveRingUpdate = null;
+        _livePageTick = null;
         _livePomodoroText = null;
         _liveBreakText = null;
         _liveGameStrips.Clear();
