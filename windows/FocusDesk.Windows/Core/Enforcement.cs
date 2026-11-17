@@ -533,7 +533,7 @@ public sealed class GeneralBlockRule
         // loop rules (EarnsMatchesPerGoalBlock == true) stay protected across cycles.
         if (Kind == GeneralRuleKind.WorkGoal && MaxDailyMatches > 0 && !EarnsMatchesPerGoalBlock && workedTodaySeconds >= GoalRequiredSeconds)
             return false;
-        if (Enabled && AlwaysProtected) return true;
+        if (Enabled && (AlwaysProtected || EarnsMatchesPerGoalBlock)) return true;
         var cont = continuous ?? TrustedClock.ContinuousSeconds();
         if (IsInRunUp(now, usedTodaySeconds, workedTodaySeconds, isMatchInProgress, runUpMinutes)) return true;
         if (IsEnforcing(now, usedTodaySeconds, workedTodaySeconds, launchesToday, matchesToday, isMatchInProgress, cont)) return true;

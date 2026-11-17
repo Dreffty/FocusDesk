@@ -2512,7 +2512,7 @@ public struct GeneralBlockRule: Codable, Equatable, Identifiable, Sendable {
         if kind == .workGoal && maxDailyMatches > 0 && !earnsMatchesPerGoalBlock && workedTodaySeconds >= goalRequiredSeconds {
             return false
         }
-        if enabled && alwaysProtected {
+        if enabled && (alwaysProtected || earnsMatchesPerGoalBlock) {
             return true
         }
         if isInRunUp(
