@@ -21,6 +21,15 @@ public partial class App : System.Windows.Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // FocusDesk speaks Spanish: dates («martes 17 nov.») must not come out in English on an English Windows.
+        var spanish = new System.Globalization.CultureInfo("es-ES");
+        System.Globalization.CultureInfo.DefaultThreadCurrentCulture = spanish;
+        System.Globalization.CultureInfo.DefaultThreadCurrentUICulture = spanish;
+        Thread.CurrentThread.CurrentCulture = spanish;
+        Thread.CurrentThread.CurrentUICulture = spanish;
+        FrameworkElement.LanguageProperty.OverrideMetadata(typeof(FrameworkElement),
+            new FrameworkPropertyMetadata(System.Windows.Markup.XmlLanguage.GetLanguage(spanish.IetfLanguageTag)));
+
         base.OnStartup(e);
 
         if (e.Args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))

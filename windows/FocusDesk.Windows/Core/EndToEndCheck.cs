@@ -86,6 +86,10 @@ public static class EndToEndCheck
 
         try
         {
+            var weekday = DateTime.Now.ToString("dddd d MMM");
+            Check(new[] { "lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo" }.Any(d => weekday.StartsWith(d)),
+                "Las fechas salen en castellano aunque Windows esté en inglés", weekday);
+
             server = StartServer();
             using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
             {
