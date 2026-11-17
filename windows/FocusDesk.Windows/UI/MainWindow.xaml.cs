@@ -164,9 +164,19 @@ public partial class MainWindow : Window
         UpdateNoticeAndSidebar();
     }
 
+    private string? _noticeShownText;
+    private DateTime _noticeShownAt = DateTime.UtcNow;
+
     private void UpdateNoticeAndSidebar()
     {
         var msg = !string.IsNullOrEmpty(_engine.Error) ? _engine.Error : _engine.Notice;
+        // Like the Mac, a normal notice goes away by itself after a few seconds; an error stays until closed.
+        if (msg != _noticeShownText) { _noticeShownText = msg; _noticeShownAt = DateTime.UtcNow; }
+        if (string.IsNullOrEmpty(_engine.Error) && !string.IsNullOrEmpty(msg) && (DateTime.UtcNow - _noticeShownAt).TotalSeconds > 7)
+        {
+            _engine.Notice = "";
+            msg = "";
+        }
         if (!string.IsNullOrEmpty(msg))
         {
             NoticeBanner.Visibility = Visibility.Visible;
