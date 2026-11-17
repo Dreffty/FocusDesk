@@ -194,6 +194,9 @@ public partial class MainWindow : Window
         UpdateSidebarSession(now);
         UpdateNavBadges(now);
 
+        if (_liveRingUpdate != null && _engine.Workspace.Session is { EndedAt: null } rs)
+            _liveRingUpdate(rs.Budget > 0 ? rs.Remaining(now) / rs.Budget : 0, FocusRules.Clock(Math.Max(0, rs.Remaining(now))), rs.Paused);
+
         if (_liveClockText != null && _engine.Workspace.Session is { EndedAt: null } s)
         {
             _liveClockText.Text = FocusRules.Clock(s.Remaining(now));
@@ -201,6 +204,10 @@ public partial class MainWindow : Window
             {
                 _livePomodoroText.Text = $"Pomodoro · {phase.Label} (ciclo {phase.Cycle}) · {FocusRules.Clock(phase.RemainingInPhase)}";
             }
+        }
+        else if (_livePomodoroText != null && _engine.Workspace.Session is { EndedAt: null } ps && ps.Task.PomodoroPhase(ps.Elapsed(now)) is { } livePhase)
+        {
+            _livePomodoroText.Text = $"{livePhase.Label} · bloque {livePhase.Cycle} · quedan {FocusRules.Clock(livePhase.RemainingInPhase)}";
         }
 
         if (_liveBreakText != null && _engine.ActiveContinuousBreakDeadline != null)
@@ -230,6 +237,7 @@ public partial class MainWindow : Window
         UpdateSidebarSession(DateTimeOffset.Now);
 
         _liveClockText = null;
+        _liveRingUpdate = null;
         _livePomodoroText = null;
         _liveBreakText = null;
         _liveGameStrips.Clear();
@@ -361,36 +369,7 @@ public partial class MainWindow : Window
         _engine.SnoozeTask(task, 10, bypassProtection: bypass);
     }
 
-    private Border OverdueRow(FocusTask t)
-    {
-        var dock = new DockPanel();
-        var right = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        var start = PrimaryButton("Iniciar");
-        start.Margin = new Thickness(0, 0, 6, 0);
-        start.Click += (_, _) => StartOrHandoffSession(t);
-        var snooze = new System.Windows.Controls.Button { Content = "+10m", Margin = new Thickness(0, 0, 6, 0) };
-        snooze.Click += (_, _) => ConfirmAndSnoozeTask(t);
-        var edit = new System.Windows.Controls.Button { Content = "Editar", Margin = new Thickness(0, 0, 6, 0) };
-        edit.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, t, this);
-        var del = new System.Windows.Controls.Button { Content = "Borrar" };
-        del.Click += (_, _) => ConfirmAndDeleteTask(t);
-        right.Children.Add(start);
-        right.Children.Add(snooze);
-        right.Children.Add(edit);
-        right.Children.Add(del);
-        DockPanel.SetDock(right, Dock.Right);
-        dock.Children.Add(right);
-
-        var left = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        left.Children.Add(new TextBlock { Text = t.Title, FontSize = 14.5, FontWeight = FontWeights.SemiBold });
-        var meta = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
-        meta.Children.Add(PillBadge($"{t.ScheduledAt.LocalDateTime:ddd d MMM · HH:mm}", "#FAC74D", "#251D10"));
-        meta.Children.Add(PillBadge(FocusRules.DurationText(t.Minutes)));
-        meta.Children.Add(PillBadge(t.Category));
-        left.Children.Add(meta);
-        dock.Children.Add(left);
-        return Card(dock, "#4A3A1E");
-    }
+    private Border OverdueRow(FocusTask t) => MacTaskRow(t, scheduled: true, overdue: true);
 
     /// <summary>
     /// Like macOS `refuseWhileProtected`: while something is protected, settings that would let it be escaped

@@ -20,133 +20,97 @@ public partial class MainWindow
 
     // MARK: - Hoy
 
+    private Action<double, string, bool>? _liveRingUpdate;
+
     private void BuildTodayPage()
     {
         var selected = _engine.SelectedDate.LocalDateTime.Date;
         var isToday = selected == DateTime.Now.Date;
+        var now = DateTimeOffset.Now;
 
-        var header = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-        header.Children.Add(SmallButton("◀", () => _engine.SelectedDate = _engine.SelectedDate.AddDays(-1)));
-        if (!isToday) header.Children.Add(SmallButton("Hoy", () => _engine.SelectedDate = DateTimeOffset.Now));
-        header.Children.Add(SmallButton("▶", () => _engine.SelectedDate = _engine.SelectedDate.AddDays(1)));
-        header.Children.Add(SmallButton("Deshacer", () => _engine.UndoAgenda(), _engine.CanUndo));
-        header.Children.Add(SmallButton("Rehacer", () => _engine.RedoAgenda(), _engine.CanRedo, 12));
-        var addBtn = PrimaryButton("+ Nueva tarea");
-        addBtn.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, null, this);
-        header.Children.Add(addBtn);
-        PageContent.Children.Add(PageHeader(
-            $"{(isToday ? "Hoy" : "Agenda")} · {selected:dddd d MMM}",
-            "Haz espacio para lo importante.",
-            header));
+        PageContent.Children.Add(PageHeader("Hoy", "Haz espacio para lo importante.",
+            GlyphButton("", "Nueva tarea", () => Dialogs.ShowTaskEditor(_engine, null, this), primary: true)));
+
+        // «Antidistracción hoy»: what is blocking right now, at a glance (as on the Mac).
+        var enforcing = _engine.Workspace.GeneralRules.Where(r => r.Enabled && _engine.IsRuleEnforcing(r, now)).ToList();
+        if (enforcing.Count > 0)
+        {
+            var chips = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 0, -6) };
+            foreach (var r in enforcing.Take(4))
+            {
+                var left = r.Kind == GeneralRuleKind.Countdown && r.ActiveDeadline != null ? r.ActiveDeadline.RemainingAfterPossibleReboot(now) : 0;
+                chips.Children.Add(Chip(left > 0 ? $"{r.Name} · Quedan {FocusRules.Clock(left)}" : r.Name, "#38A169", "#15291F"));
+            }
+            var see = GlyphButton("", "Ver", () => _engine.ActivePage = "Reglas", plain: true);
+            see.MinHeight = 30;
+            PageContent.Children.Add(GroupCard("Antidistracción hoy", "", chips, trailing: see));
+        }
 
         // A scheduled break (lunch…) that is running now
         if (_engine.ActiveBreak() is { } activeBreak)
         {
             _shownScheduledBreak = activeBreak;
-            var row = new DockPanel();
-            var hide = SmallButton("Ocultar este descanso", () => _engine.DismissActiveBreak(activeBreak.Period), true, 0);
-            DockPanel.SetDock(hide, Dock.Right);
-            row.Children.Add(hide);
             _liveScheduledBreakText = new TextBlock
             {
                 Text = $"{activeBreak.Period.Title} · quedan {FocusRules.Clock(activeBreak.Remaining)}",
-                FontSize = 14,
+                FontSize = 15,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = BrushHex("#FAC74D"),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            row.Children.Add(_liveScheduledBreakText);
-            PageContent.Children.Add(Card(row, "#4A3A1E"));
+            PageContent.Children.Add(GroupCard("Descanso", "", _liveScheduledBreakText, "#FAC74D",
+                SmallButton("Ocultar este descanso", () => _engine.DismissActiveBreak(activeBreak.Period), true, 0), "#4A3A1E"));
         }
 
         // Rest of the eyes (continuous use)
         if (_engine.ActiveContinuousBreakDeadline != null && _engine.Workspace.Settings.ContinuousBreakEnabled)
         {
-            var row = new DockPanel();
-            var skip = SmallButton($"Posponer ({_engine.ContinuousBreakSkipsLeft})", () => _engine.SkipContinuousBreak(), _engine.ContinuousBreakSkipsLeft > 0, 0);
-            DockPanel.SetDock(skip, Dock.Right);
-            row.Children.Add(skip);
             _liveContinuousBreakText = new TextBlock
             {
-                Text = $"Descanso de vista · {FocusRules.Clock(_engine.ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot())} · {_engine.ActiveContinuousBreakMessage}",
-                FontSize = 13,
+                Text = $"{FocusRules.Clock(_engine.ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot())} · {_engine.ActiveContinuousBreakMessage}",
+                FontSize = 14,
                 Foreground = BrushHex("#38A169"),
                 TextWrapping = TextWrapping.Wrap,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            row.Children.Add(_liveContinuousBreakText);
-            PageContent.Children.Add(Card(row, "#2A5A3F"));
+            PageContent.Children.Add(GroupCard("Descanso de vista", "", _liveContinuousBreakText, trailing:
+                SmallButton($"Posponer ({_engine.ContinuousBreakSkipsLeft})", () => _engine.SkipContinuousBreak(), _engine.ContinuousBreakSkipsLeft > 0, 0)));
         }
 
-        // Active session card
+        // The running session: «Ahora, solo esto», like the Mac card with the ring on the right.
         if (_engine.Workspace.Session is { EndedAt: null } s)
         {
-            var now = DateTimeOffset.Now;
-            var sp = new StackPanel();
-            sp.Children.Add(new TextBlock
-            {
-                Text = s.Paused ? $"EN PAUSA · {s.Task.Title}" : $"EN MARCHA · {s.Task.Title}",
-                FontSize = 14,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = BrushHex(s.Paused ? "#FAC74D" : "#38A169")
-            });
-            _liveClockText = new TextBlock
-            {
-                Text = FocusRules.Clock(s.Remaining(now)),
-                FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"),
-                FontSize = 38,
-                FontWeight = FontWeights.Bold,
-                Margin = new Thickness(0, 8, 0, 6)
-            };
-            sp.Children.Add(_liveClockText);
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
+            var sp = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            var chips = new WrapPanel();
+            chips.Children.Add(s.Paused ? Chip(Spaced("En pausa"), "#FAC74D", "#2E2614", "") : Chip(Spaced("Ahora, solo esto"), "#38A169", "#15291F", ""));
+            chips.Children.Add(Chip(s.Task.Category, CategoryHex(s.Task.Category), "#22262C"));
             if (s.Task.PomodoroPhase(s.Elapsed(now)) is { } phase)
             {
-                _livePomodoroText = new TextBlock
-                {
-                    Text = $"Pomodoro · {phase.Label} (ciclo {phase.Cycle}) · {FocusRules.Clock(phase.RemainingInPhase)}",
-                    Foreground = BrushHex("#FAC74D"),
-                    FontSize = 12.5,
-                    Margin = new Thickness(0, 0, 0, 10)
-                };
-                sp.Children.Add(_livePomodoroText);
+                var phaseChip = Chip($"{phase.Label} · bloque {phase.Cycle} · quedan {FocusRules.Clock(phase.RemainingInPhase)}", "#38A169", "#15291F", "");
+                _livePomodoroText = (TextBlock)((StackPanel)phaseChip.Child).Children.OfType<TextBlock>().Last();
+                chips.Children.Add(phaseChip);
             }
+            sp.Children.Add(chips);
+            sp.Children.Add(new TextBlock { Text = s.Task.Title, FontSize = 25, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 14),
+                FontFamily = new System.Windows.Media.FontFamily("Segoe UI Variable Display, Segoe UI") });
 
-            // Checklist: tick the steps as you go (the same steps the task was written with)
-            var steps = AppEngine.ChecklistSteps(s.Task.Checklist);
-            if (steps.Count > 0)
-            {
-                sp.Children.Add(SectionLabel("CHECKLIST", 4));
-                for (var i = 0; i < steps.Count; i++)
-                {
-                    var key = i.ToString();
-                    var box = new System.Windows.Controls.CheckBox { Content = steps[i], IsChecked = s.Checked.Contains(key), Margin = new Thickness(0, 3, 0, 0) };
-                    box.Click += (_, _) => _engine.SetCheck(key, box.IsChecked == true);
-                    sp.Children.Add(box);
-                }
-            }
-
-            var btns = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
-            var pauseBtn = new System.Windows.Controls.Button { Content = s.Paused ? "Reanudar" : "Pausar", Margin = new Thickness(0, 0, 8, 0) };
-            pauseBtn.Click += (_, _) =>
-            {
-                if (!s.Paused && !Dialogs.RequestSessionStop("pausar", s, this)) return;
-                if (s.Paused) _engine.ResumeSession(); else _engine.PauseSession();
-            };
-            var add10 = new System.Windows.Controls.Button { Content = "+10 min", Margin = new Thickness(0, 0, 8, 0) };
-            add10.Click += (_, _) => _engine.AddSessionMinutes(10);
-            var fin = PrimaryButton("He terminado");
-            fin.Margin = new Thickness(0, 0, 8, 0);
-            fin.Click += (_, _) =>
+            var btns = new WrapPanel();
+            btns.Children.Add(GlyphButton("", "He terminado", () =>
             {
                 if (!Dialogs.RequestSessionStop("terminar antes", s, this)) return;
                 _engine.FinishSession();
-            };
-            var cancelBtn = new System.Windows.Controls.Button
+            }, primary: true));
+            btns.Children.Add(GlyphButton(s.Paused ? "" : "", s.Paused ? "Reanudar" : "Pausar", () =>
             {
-                Content = s.Task.Protection == SessionProtection.Forced ? "Salida de emergencia" : "Cancelar"
-            };
-            cancelBtn.Click += (_, _) =>
+                if (!s.Paused && !Dialogs.RequestSessionStop("pausar", s, this)) return;
+                if (s.Paused) _engine.ResumeSession(); else _engine.PauseSession();
+            }));
+            btns.Children.Add(GlyphButton("", "+10 min", () => _engine.AddSessionMinutes(10), plain: true));
+            var cancel = IconButton("", s.Task.Protection == SessionProtection.Forced ? "Salida de emergencia" : "Cancelar la sesión", () =>
             {
                 if (s.Remaining(DateTimeOffset.Now) > 0 && s.Task.Protection != SessionProtection.None)
                 {
@@ -156,72 +120,60 @@ public partial class MainWindow
                         _engine.Workspace.RecordAudit("Salida de emergencia", $"Cancelación de emergencia de «{s.Task.Title}».");
                 }
                 _engine.CancelSession();
-            };
-            btns.Children.Add(pauseBtn);
-            btns.Children.Add(add10);
-            btns.Children.Add(fin);
-            btns.Children.Add(cancelBtn);
+            }, "#FF8080", "#2A161B");
+            cancel.MinHeight = 38;
+            btns.Children.Add(cancel);
             sp.Children.Add(btns);
-            PageContent.Children.Add(Card(sp, s.Paused ? "#4A3A1E" : "#2A5A3F"));
+
+            // Checklist: tick the steps as you go (the same steps the task was written with)
+            var steps = AppEngine.ChecklistSteps(s.Task.Checklist);
+            if (steps.Count > 0)
+            {
+                var list = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
+                for (var i = 0; i < steps.Count; i++)
+                {
+                    var key = i.ToString();
+                    var box = new System.Windows.Controls.CheckBox { Content = steps[i], IsChecked = s.Checked.Contains(key), Margin = new Thickness(0, 0, 18, 4) };
+                    box.Click += (_, _) => _engine.SetCheck(key, box.IsChecked == true);
+                    list.Children.Add(box);
+                }
+                sp.Children.Add(list);
+            }
+            grid.Children.Add(sp);
+
+            var (ring, update) = SessionRing();
+            ring.Margin = new Thickness(24, 0, 4, 0);
+            Grid.SetColumn(ring, 1);
+            grid.Children.Add(ring);
+            _liveRingUpdate = update;
+            update(s.Budget > 0 ? s.Remaining(now) / s.Budget : 0, FocusRules.Clock(Math.Max(0, s.Remaining(now))), s.Paused);
+            PageContent.Children.Add(Card(grid, s.Paused ? "#4A3A1E" : "#2A5A3F"));
         }
 
         // Game rules live strip
         foreach (var gr in _engine.Workspace.GeneralRules.Where(r => r.Enabled && r.Kind == GeneralRuleKind.WorkGoal && r.MaxDailyMatches > 0))
         {
             var st = _engine.GameRuleStatus(gr);
-            var dock = new DockPanel();
+            var row = new DockPanel();
             if (st.CanFinish)
             {
-                var endMatch = new System.Windows.Controls.Button { Content = "He terminado", Margin = new Thickness(12, 0, 0, 0) };
-                endMatch.Click += (_, _) => _engine.FinishTimedMatch(gr, TimedMatchPlanner.FinishReason.UserFinished);
+                var endMatch = SmallButton("He terminado", () => _engine.FinishTimedMatch(gr, TimedMatchPlanner.FinishReason.UserFinished), true, 0);
                 DockPanel.SetDock(endMatch, Dock.Right);
-                dock.Children.Add(endMatch);
+                row.Children.Add(endMatch);
             }
+            var icon = Glyph("", 18, "#38A169");
+            icon.Margin = new Thickness(0, 0, 14, 0);
+            DockPanel.SetDock(icon, Dock.Left);
+            row.Children.Add(icon);
             var info = new StackPanel();
-            var titleBlock = new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, FontSize = 14, Foreground = BrushHex(st.Warning ? "#FAC74D" : "#38A169") };
-            var subBlock = new TextBlock { Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(gr))} · {_engine.Workspace.MatchesToday(gr.Id)}/{gr.MaxDailyMatches} {gr.MatchUnitPlural}", Foreground = BrushHex("#99A6AD"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0) };
+            var titleBlock = new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, FontSize = 14.5, Foreground = BrushHex(st.Warning ? "#FAC74D" : "#38A169") };
+            var subBlock = new TextBlock { Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(gr))} · {_engine.Workspace.MatchesToday(gr.Id)}/{gr.MaxDailyMatches} {gr.MatchUnitPlural}", Foreground = BrushHex("#99A6AD"), FontSize = 12.5, Margin = new Thickness(0, 4, 0, 0) };
             info.Children.Add(titleBlock);
             info.Children.Add(subBlock);
-            dock.Children.Add(info);
+            row.Children.Add(info);
             _liveGameStrips.Add((gr, titleBlock, subBlock));
-            PageContent.Children.Add(Card(dock));
+            PageContent.Children.Add(Card(row));
         }
-
-        // Quick capture into the inbox
-        var captureBox = new System.Windows.Controls.TextBox { MinWidth = 320, Margin = new Thickness(0, 0, 8, 0) };
-        void Capture()
-        {
-            var text = captureBox.Text;
-            captureBox.Text = "";
-            _engine.QuickCapture(text);
-        }
-        captureBox.KeyDown += (_, e) =>
-        {
-            if (e.Key == Key.Enter) Capture();
-        };
-        var captureRow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-        captureRow.Children.Add(captureBox);
-        captureRow.Children.Add(SmallButton("Apuntar en la bandeja", Capture, true, 0));
-        PageContent.Children.Add(SectionLabel("APUNTAR EN LA BANDEJA", 4));
-        PageContent.Children.Add(captureRow);
-
-        // Scheduled tasks of the chosen day
-        var dayTasks = _engine.Workspace.Tasks
-            .Where(t => !t.Completed && t.IsScheduled && t.ScheduledAt.LocalDateTime.Date == selected)
-            .OrderBy(t => t.ScheduledAt)
-            .ToList();
-
-        PageContent.Children.Add(SectionLabel($"AGENDA ({dayTasks.Count})", 14));
-        if (dayTasks.Count == 0)
-        {
-            PageContent.Children.Add(Card(new TextBlock
-            {
-                Text = "Sin tareas programadas este día. Pulsa «+ Nueva tarea» para crear tu primer bloque.",
-                Foreground = BrushHex("#99A6AD"),
-                FontSize = 13
-            }));
-        }
-        foreach (var t in dayTasks) PageContent.Children.Add(TaskRow(t, scheduled: true));
 
         // Overdue: an occurrence of an earlier day that was not completed (also what a series leaves behind when it rolls forward)
         var sessionTaskId = _engine.Workspace.Session?.Task.Id;
@@ -231,69 +183,77 @@ public partial class MainWindow
             .ToList();
         if (overdue.Count > 0)
         {
-            PageContent.Children.Add(SectionLabel($"ATRASADAS ({overdue.Count})", 14, "#FAC74D"));
-            foreach (var t in overdue) PageContent.Children.Add(OverdueRow(t));
+            var list = new StackPanel();
+            foreach (var t in overdue) list.Children.Add(MacTaskRow(t, scheduled: true, overdue: true));
+            PageContent.Children.Add(GroupCard($"Atrasadas de otros días · {overdue.Count}", "", list, "#FAC74D"));
         }
 
-        // Inbox
+        // Day navigation and the day's summary, then the agenda
+        var dayTasks = _engine.Workspace.Tasks
+            .Where(t => t.IsScheduled && t.ScheduledAt.LocalDateTime.Date == selected)
+            .OrderBy(t => t.ScheduledAt)
+            .ToList();
+        var pending = dayTasks.Where(t => !t.Completed).ToList();
+
+        var nav = new DockPanel { Margin = new Thickness(0, 6, 0, 6) };
+        var undo = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        var undoBtn = IconButton("", "Deshacer (Ctrl+Z)", () => _engine.UndoAgenda());
+        undoBtn.IsEnabled = _engine.CanUndo;
+        var redoBtn = IconButton("", "Rehacer (Ctrl+Y)", () => _engine.RedoAgenda());
+        redoBtn.IsEnabled = _engine.CanRedo;
+        undo.Children.Add(undoBtn);
+        undo.Children.Add(redoBtn);
+        DockPanel.SetDock(undo, Dock.Right);
+        nav.Children.Add(undo);
+        var days = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        var prev = IconButton("", "Día anterior", () => _engine.SelectedDate = _engine.SelectedDate.AddDays(-1));
+        prev.Margin = new Thickness(0);
+        days.Children.Add(prev);
+        var todayBtn = GlyphButton("", isToday ? "Hoy" : "Volver a hoy", () => _engine.SelectedDate = DateTimeOffset.Now, plain: true);
+        todayBtn.Margin = new Thickness(6, 0, 0, 0);
+        days.Children.Add(todayBtn);
+        days.Children.Add(IconButton("", "Día siguiente", () => _engine.SelectedDate = _engine.SelectedDate.AddDays(1)));
+        var dateChip = Chip(selected.ToString("dd/MM/yyyy"), "#EDF2F5", "#1D2229");
+        dateChip.Margin = new Thickness(12, 0, 0, 0);
+        dateChip.VerticalAlignment = VerticalAlignment.Center;
+        days.Children.Add(dateChip);
+        nav.Children.Add(days);
+        PageContent.Children.Add(nav);
+
+        var planned = pending.Sum(t => t.Minutes);
+        PageContent.Children.Add(MutedText($"{pending.Count} por hacer · previsto {FocusRules.DurationText(planned)} · {dayTasks.Count(t => t.Completed)} hecha{(dayTasks.Count(t => t.Completed) == 1 ? "" : "s")}", 12.5, 2));
+        PageContent.Children.Add(new Border { Height = 14 });
+
+        var agenda = new StackPanel();
+        if (pending.Count == 0)
+            agenda.Children.Add(MutedText("Sin tareas programadas este día. Pulsa «Nueva tarea» para crear tu primer bloque.", 13, 0));
+        foreach (var t in pending) agenda.Children.Add(MacTaskRow(t, scheduled: true));
+        PageContent.Children.Add(GroupCard(isToday ? "Agenda de hoy" : $"Agenda · {selected.ToString("dddd d 'de' MMMM", Spanish)}", "", agenda));
+
+        // Inbox with the quick capture box on top
         var inbox = _engine.Workspace.Tasks.Where(t => !t.Completed && !t.IsScheduled).ToList();
-        if (inbox.Count > 0)
+        var inboxStack = new StackPanel();
+        var captureBox = new System.Windows.Controls.TextBox { Margin = new Thickness(0, 0, 8, 0), ToolTip = "Escribe y pulsa Intro" };
+        void Capture()
         {
-            PageContent.Children.Add(SectionLabel($"BANDEJA SIN HORA ({inbox.Count})", 14));
-            foreach (var t in inbox) PageContent.Children.Add(TaskRow(t, scheduled: false));
+            var text = captureBox.Text;
+            captureBox.Text = "";
+            _engine.QuickCapture(text);
         }
+        captureBox.KeyDown += (_, e) => { if (e.Key == Key.Enter) Capture(); };
+        var captureRow = new DockPanel { Margin = new Thickness(0, 0, 0, inbox.Count > 0 ? 12 : 0) };
+        var captureBtn = GlyphButton("", "Apuntar", Capture);
+        captureBtn.Margin = new Thickness(0);
+        DockPanel.SetDock(captureBtn, Dock.Right);
+        captureRow.Children.Add(captureBtn);
+        captureRow.Children.Add(captureBox);
+        inboxStack.Children.Add(captureRow);
+        foreach (var t in inbox) inboxStack.Children.Add(MacTaskRow(t, scheduled: false));
+        PageContent.Children.Add(GroupCard(inbox.Count > 0 ? $"Bandeja sin hora · {inbox.Count}" : "Bandeja sin hora", "", inboxStack));
     }
 
-    /// <summary>One task of the agenda (or of the inbox) with what can be done to it.</summary>
-    private Border TaskRow(FocusTask t, bool scheduled)
-    {
-        var dock = new DockPanel();
-        var right = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, MaxWidth = 430, HorizontalAlignment = System.Windows.HorizontalAlignment.Right };
-        var start = PrimaryButton("Iniciar");
-        start.Margin = new Thickness(0, 0, 6, 4);
-        start.Click += (_, _) => StartOrHandoffSession(t);
-        right.Children.Add(start);
-        if (scheduled)
-        {
-            var snooze = new System.Windows.Controls.Button { Content = "+10m", Margin = new Thickness(0, 0, 6, 4) };
-            snooze.Click += (_, _) => ConfirmAndSnoozeTask(t);
-            right.Children.Add(snooze);
-            var tomorrow = new System.Windows.Controls.Button { Content = "Mañana", Margin = new Thickness(0, 0, 6, 4) };
-            tomorrow.Click += (_, _) => ApplyTaskChange(t, $"mover a mañana «{t.Title}»", bypass => _engine.MoveToTomorrowSameTime(t, bypass));
-            right.Children.Add(tomorrow);
-            var inboxButton = new System.Windows.Controls.Button { Content = "Bandeja", Margin = new Thickness(0, 0, 6, 4) };
-            inboxButton.Click += (_, _) => ApplyTaskChange(t, $"pasar a la bandeja «{t.Title}»", bypass => _engine.MoveToInbox(t, bypass));
-            right.Children.Add(inboxButton);
-        }
-        else
-        {
-            var todayButton = new System.Windows.Controls.Button { Content = "Programar hoy", Margin = new Thickness(0, 0, 6, 4) };
-            todayButton.Click += (_, _) => ApplyTaskChange(t, $"programar «{t.Title}»", bypass => _engine.ScheduleInFirstFreeSlot(t, bypass));
-            right.Children.Add(todayButton);
-        }
-        var edit = new System.Windows.Controls.Button { Content = "Editar", Margin = new Thickness(0, 0, 6, 4) };
-        edit.Click += (_, _) => Dialogs.ShowTaskEditor(_engine, t, this);
-        right.Children.Add(edit);
-        var del = new System.Windows.Controls.Button { Content = "Borrar", Margin = new Thickness(0, 0, 0, 4) };
-        del.Click += (_, _) => ConfirmAndDeleteTask(t);
-        right.Children.Add(del);
-        DockPanel.SetDock(right, Dock.Right);
-        dock.Children.Add(right);
-
-        var left = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        left.Children.Add(new TextBlock { Text = t.Title, FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
-        var meta = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
-        if (scheduled) meta.Children.Add(PillBadge($"{t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}", "#38A169", "#16291F"));
-        meta.Children.Add(PillBadge(FocusRules.DurationText(t.Minutes)));
-        meta.Children.Add(PillBadge(t.Category));
-        if (t.RepeatRule != RepeatRule.Never) meta.Children.Add(PillBadge("↻ " + t.RepeatRule.Label()));
-        if (t.Protection != SessionProtection.None)
-            meta.Children.Add(PillBadge(_engine.IsTaskProtected(t) ? $"Ya protegida · {t.Protection.Label()}" : t.Protection.Label(), "#FAC74D", "#251D10"));
-        if (t.Enforces && t.Protection == SessionProtection.None) meta.Children.Add(PillBadge(t.BlockingSummary, "#99A6AD", "#1D2229"));
-        left.Children.Add(meta);
-        dock.Children.Add(left);
-        return Card(dock);
-    }
+    /// <summary>One task of the agenda (or of the inbox), drawn like the Mac rows.</summary>
+    private Border TaskRow(FocusTask t, bool scheduled) => MacTaskRow(t, scheduled);
 
     // MARK: - Semana
 
