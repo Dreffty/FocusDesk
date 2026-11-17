@@ -2222,6 +2222,23 @@ final class AppModel: ObservableObject {
                 }
 
                 if let kw = matchedTitleKeyword {
+                    // In a browser the word blocks that page (its tab goes to the block page), not the whole browser:
+                    // hiding the browser threw the person out of every other tab too.
+                    if WebRules.isBrowser(id) {
+                        let key = "«\(kw)»"
+                        if lastWebBlockHost == key, at.timeIntervalSince(lastWebBlockAt) < 4 { return }
+                        lastWebBlockHost = key
+                        lastWebBlockAt = at
+                        workspace.session?.registerBlock()
+                        if let target = sessionBlockPageURL(for: s, visitKey: key) {
+                            webInspector.redirectActiveTab(bundleID: id, to: target) { [weak self] ok in
+                                self?.notice = ok
+                                    ? "La pestaña contiene «\(kw)», bloqueada en «\(s.task.title)»: va a la página de bloqueo. Las demás siguen abiertas."
+                                    : "La pestaña contiene «\(kw)», bloqueada en «\(s.task.title)», pero no pude cambiarla. Revisa el permiso de Automatización."
+                            }
+                        }
+                        return
+                    }
                     fg.app.hide()
                     workspace.session?.registerBlock()
                     notice = "«\(kw)» está bloqueada por título de ventana en «\(s.task.title)»: he ocultado \(fg.app.localizedName ?? id)."

@@ -802,39 +802,19 @@ extension AppModel {
             let hardened = punisherJustFired || (workspace.session?.punisher.isActive() ?? false)
             let action: WebBlockAction = hardened && effectiveWebAction == .redirect ? .closeTab : effectiveWebAction
             if action == .closeTab {
-                webInspector.closeActiveTab(bundleID: bundleID) { [weak self] ok in
+                webInspector.closeActiveTab(bundleID: bundleID, fallbackURL: sessionBlockPageURL(for: s, visitKey: visitKey)) { [weak self] ok in
                     guard let self else { return }
                     if ok, punisherJustFired, let message = self.punisherMessage(for: s) {
                         self.notice = message
                     } else {
                         self.notice = ok
-                            ? "\(visitKey) está bloqueada en esta tarea: he cerrado esa pestaña. El resto del navegador sigue como estaba."
+                            ? "\(visitKey) está bloqueada en esta tarea: he cerrado esa pestaña (si era la única, ahora muestra la página de bloqueo). El resto del navegador sigue como estaba."
                             : "\(visitKey) está bloqueada en esta tarea, pero no pude cerrar la pestaña. Revisa el permiso de Automatización."
                     }
                     if !self.preview { self.notifyDistraction(self.notice ?? "", session: s) }
                 }
             } else {
-                let remaining = currentRemaining(for: s)
-                let allowedList = s.task.webListMode == .allowListed ? FocusRules.parseDomains(s.task.domains).valid : []
-                let pendingSteps = s.task.checklist
-                    .split(whereSeparator: \.isNewline)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty && !s.checked.contains($0) }
-                let targetURL: URL
-                if let custom = WebRules.normalizedRedirectURL(s.task.customRedirectURL) {
-                    targetURL = custom
-                } else if let page = BlockPage.write(
-                    taskTitle: s.task.title,
-                    host: visitKey,
-                    remaining: remaining,
-                    endsAt: Date().addingTimeInterval(max(0, remaining)),
-                    allowedDomains: allowedList,
-                    motivationalMessage: s.task.motivationalMessage,
-                    checklistSteps: pendingSteps,
-                    in: store.url.deletingLastPathComponent()
-                ) {
-                    targetURL = page
-                } else {
+                guard let targetURL = sessionBlockPageURL(for: s, visitKey: visitKey) else {
                     notice = "\(visitKey) está bloqueada en esta tarea, pero no se pudo preparar la página de bloqueo."
                     return
                 }
@@ -2237,6 +2217,23 @@ extension AppModel {
             guard !exemptions.contains(id) else { continue }
 
             if let kw = FocusRules.matchesTitleKeyword(fg.title, keywords: rule.blockedTitleKeywords, wholeWord: rule.wholeWordKeywords) {
+                // In a browser the word blocks that page (its tab goes to the block page), not the whole browser:
+                // hiding the browser threw the person out of every other tab too.
+                if WebRules.isBrowser(id) {
+                    let key = "«\(kw)»"
+                    if lastWebBlockHost == key, at.timeIntervalSince(lastWebBlockAt) < 4 { return }
+                    lastWebBlockHost = key
+                    lastWebBlockAt = at
+                    _ = mutateRuleBlock(ruleID: rule.id)
+                    if let target = ruleBlockPageURL(rule, visitKey: key, at: at) {
+                        webInspector.redirectActiveTab(bundleID: id, to: target) { [weak self] ok in
+                            self?.notice = ok
+                                ? "La pestaña contiene «\(kw)» (bloqueada por «\(rule.name)»): va a la página de bloqueo. Las demás siguen abiertas."
+                                : "La pestaña contiene «\(kw)» (bloqueada por «\(rule.name)»), pero no pude cambiarla. Revisa el permiso de Automatización."
+                        }
+                    }
+                    return
+                }
                 _ = mutateRuleBlock(ruleID: rule.id)
                 let verb = applyBlockAction(to: fg.app, bundleID: id, action: rule.activeBlockAction())
                 activateFallbackApp(excluding: id)
@@ -2327,6 +2324,50 @@ extension AppModel {
         }
     }
 
+    /// The page a blocked tab of a task goes to: the task's own address if it has one, otherwise FocusDesk's block page.
+    func sessionBlockPageURL(for s: WorkSession, visitKey: String) -> URL? {
+        if let custom = WebRules.normalizedRedirectURL(s.task.customRedirectURL) { return custom }
+        let remaining = currentRemaining(for: s)
+        let allowedList = s.task.webListMode == .allowListed ? FocusRules.parseDomains(s.task.domains).valid : []
+        let pendingSteps = s.task.checklist
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !s.checked.contains($0) }
+        return BlockPage.write(
+            taskTitle: s.task.title,
+            host: visitKey,
+            remaining: remaining,
+            endsAt: Date().addingTimeInterval(max(0, remaining)),
+            allowedDomains: allowedList,
+            motivationalMessage: s.task.motivationalMessage,
+            checklistSteps: pendingSteps,
+            in: store.url.deletingLastPathComponent()
+        )
+    }
+
+    /// The page a tab blocked by a rule goes to: the rule's own address if it has one, otherwise the block page.
+    func ruleBlockPageURL(_ rule: GeneralBlockRule, visitKey: String, at nowInstant: Date) -> URL? {
+        if let custom = WebRules.normalizedRedirectURL(rule.customRedirectURL) { return custom }
+        let rem = remainingRuleLockSeconds(rule, at: nowInstant)
+        let allowedList = rule.webListMode == .allowListed ? FocusRules.parseDomains(rule.domains).valid : []
+        let pendingSteps = session.map { s in
+            s.task.checklist
+                .split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !s.checked.contains($0) }
+        } ?? []
+        return BlockPage.write(
+            taskTitle: rule.name,
+            host: visitKey,
+            remaining: rem,
+            endsAt: nowInstant.addingTimeInterval(max(0, rem)),
+            allowedDomains: allowedList,
+            motivationalMessage: rule.motivationalMessage,
+            checklistSteps: pendingSteps,
+            in: store.url.deletingLastPathComponent()
+        )
+    }
+
     func evaluateGeneralRulesOnWeb(host: String, path: String, bundleID: String, browserName: String) {
         let nowInstant = Date()
         if workspace.isTemporarilyAllowed(host: host, path: path, at: nowInstant) { return }
@@ -2362,38 +2403,14 @@ extension AppModel {
             let baseAction: WebBlockAction = rule.webBlockAction == .warn ? .redirect : rule.webBlockAction
             let action: WebBlockAction = hardened && baseAction == .redirect ? .closeTab : baseAction
             if action == .closeTab {
-                webInspector.closeActiveTab(bundleID: bundleID) { [weak self] ok in
+                webInspector.closeActiveTab(bundleID: bundleID, fallbackURL: ruleBlockPageURL(rule, visitKey: visitKey, at: nowInstant)) { [weak self] ok in
                     guard let self else { return }
                     self.notice = ok
                         ? "\(visitKey) está bloqueada por «\(rule.name)»: he cerrado esa pestaña."
                         : "\(visitKey) está bloqueada por «\(rule.name)», pero no pude cerrar la pestaña."
                 }
             } else {
-                let rem = remainingRuleLockSeconds(rule, at: nowInstant)
-                let allowedList = rule.webListMode == .allowListed ? FocusRules.parseDomains(rule.domains).valid : []
-                let pendingSteps = session.map { s in
-                    s.task.checklist
-                        .split(whereSeparator: \.isNewline)
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .filter { !$0.isEmpty && !s.checked.contains($0) }
-                } ?? []
-                let targetURL: URL
-                if let custom = WebRules.normalizedRedirectURL(rule.customRedirectURL) {
-                    targetURL = custom
-                } else if let page = BlockPage.write(
-                    taskTitle: rule.name,
-                    host: visitKey,
-                    remaining: rem,
-                    endsAt: nowInstant.addingTimeInterval(max(0, rem)),
-                    allowedDomains: allowedList,
-                    motivationalMessage: rule.motivationalMessage,
-                    checklistSteps: pendingSteps,
-                    in: store.url.deletingLastPathComponent()
-                ) {
-                    targetURL = page
-                } else {
-                    return
-                }
+                guard let targetURL = ruleBlockPageURL(rule, visitKey: visitKey, at: nowInstant) else { return }
                 webInspector.redirectActiveTab(bundleID: bundleID, to: targetURL) { [weak self] ok in
                     guard let self else { return }
                     self.notice = ok

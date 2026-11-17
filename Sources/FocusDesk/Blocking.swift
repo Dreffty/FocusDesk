@@ -200,13 +200,10 @@ final class WebInspector {
         if kind == .accessibility {
             // Firefox, Zen, Waterfox and DuckDuckGo do not expose active-tab URL mutation via AppleScript:
             // close the offending tab immediately, and if a custom web redirect URL was configured, open it.
+            // The block page (or the custom address) opens right after, so even when the closed tab was the last
+            // one the person lands on it in the same browser instead of being left outside.
             let closed = Self.closeAccessibilityTab(bundleID: bundleID)
-            if ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-               let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-                let config = NSWorkspace.OpenConfiguration()
-                config.activates = false
-                NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: config, completionHandler: nil)
-            }
+            Self.openInBrowser(url, bundleID: bundleID)
             completion(closed)
             return
         }
@@ -241,31 +238,45 @@ final class WebInspector {
         }
     }
 
-    /// Closes only the active tab. With a single tab open the browser closes its window, which is the same thing
-    /// the user would get pressing ⌘W.
-    func closeActiveTab(bundleID: String, completion: @escaping (Bool) -> Void) {
+    /// Closes only the active tab. The last tab of a window is never closed — that closes the whole window and
+    /// throws the person out of the browser —: with `fallbackURL` it goes to that page (the block page) instead.
+    func closeActiveTab(bundleID: String, fallbackURL: URL? = nil, completion: @escaping (Bool) -> Void) {
         guard let kind = WebRules.browserKind(for: bundleID), isRunning(bundleID) else { completion(false); return }
         if kind == .accessibility {
-            completion(Self.closeAccessibilityTab(bundleID: bundleID))
+            let closed = Self.closeAccessibilityTab(bundleID: bundleID)
+            if let fallbackURL { Self.openInBrowser(fallbackURL, bundleID: bundleID) }
+            completion(closed)
             return
         }
+        // The address is one FocusDesk built (its own blocked page); nothing from the web reaches this text.
+        let fallback = fallbackURL?.absoluteString
         let script: String
         switch kind {
         case .safari:
+            let lastTab = fallback.map { "set URL of front document to \"\($0)\"" } ?? "return \"__LAST_TAB__\""
             script = """
             with timeout of 3 seconds
              tell application id "\(bundleID)"
               if (count of windows) is 0 then return "__NO_WINDOW__"
-              close current tab of front window
+              if (count of tabs of front window) > 1 then
+               close current tab of front window
+              else
+               \(lastTab)
+              end if
              end tell
             end timeout
             """
         case .chromium:
+            let lastTab = fallback.map { "set URL of active tab of front window to \"\($0)\"" } ?? "return \"__LAST_TAB__\""
             script = """
             with timeout of 3 seconds
              tell application id "\(bundleID)"
               if (count of windows) is 0 then return "__NO_WINDOW__"
-              close active tab of front window
+              if (count of tabs of front window) > 1 then
+               close active tab of front window
+              else
+               \(lastTab)
+              end if
              end tell
             end timeout
             """
@@ -273,8 +284,8 @@ final class WebInspector {
             completion(false)
             return
         }
-        run(script, timeout: 4) { _, _, status, timedOut in
-            completion(status == 0 && !timedOut)
+        run(script, timeout: 4) { output, _, status, timedOut in
+            completion(status == 0 && !timedOut && output != "__LAST_TAB__" && output != "__NO_WINDOW__")
         }
     }
 
@@ -392,6 +403,17 @@ final class WebInspector {
               host.contains(".") else { return nil }
         let fullPath = (url.query?.isEmpty == false) ? "\(url.path)?\(url.query!)" : url.path
         return (host, fullPath)
+    }
+
+    /// Opens `url` (the block page or a custom address) in that browser, a moment after a tab was closed.
+    private static func openInBrowser(_ url: URL, bundleID: String) {
+        guard ["http", "https", "file"].contains(url.scheme?.lowercased() ?? ""),
+              let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: config, completionHandler: nil)
+        }
     }
 
     private static func closeAccessibilityTab(bundleID: String) -> Bool {
