@@ -131,6 +131,8 @@ public static class EndToEndCheck
 
             quick.Enabled = true;
             await CheckAppRule(engine, quick);
+            await CheckFolder(engine, quick);
+            await CheckUiTour(engine);
         }
         catch (Exception ex)
         {
@@ -140,6 +142,7 @@ public static class EndToEndCheck
         {
             try { server?.Stop(); } catch { }
             foreach (var n in new[] { "msedge", "chrome", "firefox", "notepad" }) KillAll(n);
+            try { Directory.Delete(@"C:\FD-Carpeta-Bloqueada", true); } catch { }
         }
         return Finish(Failures.Count == 0 ? 0 : 1);
     }
@@ -279,6 +282,95 @@ public static class EndToEndCheck
         Check(hidden, "Una app bloqueada (Bloc de notas) se aparta de delante", $"título «{TitleOf(hwnd)}» · aviso «{engine.Notice}»");
         try { p?.Kill(true); } catch { }
         KillAll("notepad");
+    }
+
+    // MARK: - Folders
+
+    private static async Task CheckFolder(AppEngine engine, GeneralBlockRule rule)
+    {
+        Info("—— Carpeta bloqueada (Explorador) ——");
+        var folder = @"C:\FD-Carpeta-Bloqueada";
+        Directory.CreateDirectory(folder);
+        rule.BlockedFolders = new List<string> { folder };
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+        var hwnd = await WaitForWindow("explorer", t => t.Contains("FD-Carpeta-Bloqueada"), 20);
+        if (hwnd == IntPtr.Zero) { Shot("carpeta-no-abre"); Check(false, "El Explorador abre la carpeta para la prueba"); return; }
+        Shot("carpeta-abierta");
+        var closed = await PumpUntil(engine, () => !IsWindow(hwnd) || !IsWindowVisible(hwnd), 15);
+        Shot("carpeta-bloqueada");
+        Check(closed, "Una carpeta bloqueada abierta en el Explorador se cierra", $"aviso «{engine.Notice}»");
+        rule.BlockedFolders = new List<string>();
+    }
+
+    // MARK: - The window itself
+
+    /// <summary>Opens FocusDesk's own window, goes through every page and the main editors, and photographs them:
+    /// a page that throws while drawing, or a button that cannot be built, shows up here instead of on someone's PC.</summary>
+    private static async Task CheckUiTour(AppEngine engine)
+    {
+        Info("—— Ventana de FocusDesk ——");
+        engine.Workspace.Tasks.Add(new FocusTask { Title = "Repasar apuntes de historia", Minutes = 45, ScheduledAt = DateTimeOffset.Now.AddHours(1), Category = "Estudio" });
+        engine.Workspace.Tasks.Add(new FocusTask { Title = "Entregar práctica", Minutes = 30, ScheduledAt = DateTimeOffset.Now.AddHours(3), Category = "Universidad" });
+        var running = new FocusTask { Title = "Escribir el guion", Minutes = 50, ScheduledAt = DateTimeOffset.Now, Checklist = "Estructura\nGanchos\nCierre" };
+        engine.Workspace.Tasks.Add(running);
+        engine.StartSession(running);
+
+        FocusDesk.Windows.UI.MainWindow window;
+        try
+        {
+            window = new FocusDesk.Windows.UI.MainWindow(engine, () => { })
+            {
+                Width = 1024, Height = 740, Left = 0, Top = 0,
+                WindowStartupLocation = System.Windows.WindowStartupLocation.Manual
+            };
+            window.Show();
+            window.Activate();
+            Check(true, "La ventana principal se abre");
+        }
+        catch (Exception ex) { Check(false, "La ventana principal se abre", ex.ToString()); return; }
+
+        foreach (var page in new[] { "Hoy", "Semana", "Historial", "Reglas", "Bloquear", "Descansos", "Ajustes" })
+        {
+            try
+            {
+                engine.ActivePage = page;
+                await Task.Delay(1500);
+                Shot($"ui-{page}");
+                Check(true, $"La pantalla «{page}» se dibuja sin errores");
+            }
+            catch (Exception ex) { Check(false, $"La pantalla «{page}» se dibuja sin errores", ex.Message); }
+        }
+
+        ShowDialogAndClose(() => FocusDesk.Windows.UI.Dialogs.ShowTaskEditor(engine, null, window), "editor-tarea", window);
+        ShowDialogAndClose(() => FocusDesk.Windows.UI.Dialogs.ShowRuleEditor(engine, null, null, window), "editor-regla", window);
+
+        try { window.AllowClose(); window.Close(); } catch { }
+        if (engine.Workspace.Session is { EndedAt: null }) engine.Workspace.Session = null;
+    }
+
+    /// <summary>Shows a modal editor, photographs it after two seconds and closes it (Esc for any question it asks).</summary>
+    private static void ShowDialogAndClose(Action show, string name, System.Windows.Window owner)
+    {
+        var ticks = 0;
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        timer.Tick += (_, _) =>
+        {
+            ticks++;
+            var dialog = System.Windows.Application.Current.Windows.OfType<System.Windows.Window>()
+                .LastOrDefault(w => !ReferenceEquals(w, owner) && w.IsVisible);
+            if (ticks == 1) Shot(name);
+            if (dialog != null) { try { dialog.Close(); } catch { } }
+            else if (ticks > 1) Forms.SendKeys.SendWait("{ESC}");
+            if (ticks > 6) timer.Stop();
+        };
+        timer.Start();
+        try
+        {
+            show();
+            Check(true, $"La ventana «{name}» se abre y se cierra sin errores");
+        }
+        catch (Exception ex) { Check(false, $"La ventana «{name}» se abre y se cierra sin errores", ex.Message); }
+        finally { timer.Stop(); }
     }
 
     // MARK: - Helpers
