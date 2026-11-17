@@ -292,7 +292,7 @@ public static class Dialogs
                 FontSize = 14,
                 ContextMenu = null
             };
-            DataObject.AddPastingHandler(input, (_, e) => e.CancelCommand());
+            System.Windows.DataObject.AddPastingHandler(input, (_, e) => e.CancelCommand());
             CommandManager.AddPreviewExecutedHandler(input, (_, e) =>
             {
                 if (e.Command == ApplicationCommands.Paste) e.Handled = true;
