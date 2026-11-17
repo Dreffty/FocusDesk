@@ -88,9 +88,15 @@ jobs:
 
       # Real blocking on a real Windows desktop: Edge, Chrome and Firefox on a local test site, «Bloquear ahora»,
       # a task session and an app rule. No release is published if this fails.
+      - name: Install Brave and Opera for the end-to-end test
+        shell: pwsh
+        continue-on-error: true
+        timeout-minutes: 8
+        run: choco install brave opera -y --no-progress
+
       - name: End-to-end test with real browsers
         shell: pwsh
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: |
           Add-Content -Path "$env:SystemRoot\System32\drivers\etc\hosts" -Value "`r`n127.0.0.1 prueba-focusdesk.test"
           New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Force | Out-Null

@@ -110,7 +110,7 @@ public static class EndToEndCheck
             quick.PunisherEnabled = false; // each browser gets the same treatment; the hardened mode is checked on its own below
             Info($"Regla: webs «{quick.Domains}» · palabras «{quick.BlockedTitleKeywords}» · acción web {quick.WebBlockAction}");
 
-            var browsers = new[] { "msedge", "chrome", "firefox" }
+            var browsers = new[] { "msedge", "chrome", "firefox", "brave", "opera" }
                 .Select(name => (Name: name, Exe: FindBrowser(name)))
                 .Where(b => b.Exe != null)
                 .ToList();
@@ -137,6 +137,15 @@ public static class EndToEndCheck
             await CheckAppRule(engine, quick);
             await CheckFolder(engine, quick);
             await CheckUiTour(engine);
+
+            // The rest is checked with the quick block off, one rule at a time.
+            quick.Enabled = false;
+            if (browsers.Count > 0) await CheckSchedule(engine, browsers[0].Name, browsers[0].Exe!);
+            await CheckDailyBudget(engine);
+            if (browsers.Count > 0) await CheckStrict(engine, browsers[0].Name, browsers[0].Exe!);
+            await CheckGame(engine);
+            CheckProtections(engine, tempDir);
+            await CheckRelaunch();
         }
         catch (Exception ex)
         {
@@ -145,7 +154,7 @@ public static class EndToEndCheck
         finally
         {
             try { server?.Stop(); } catch { }
-            foreach (var n in new[] { "msedge", "chrome", "firefox", "notepad" }) KillAll(n);
+            foreach (var n in new[] { "msedge", "chrome", "firefox", "brave", "opera", "notepad", "FortniteClient-Win64-Shipping" }) KillAll(n);
             try { Directory.Delete(@"C:\FD-Carpeta-Bloqueada", true); } catch { }
         }
         return Finish(Failures.Count == 0 ? 0 : 1);
@@ -286,6 +295,233 @@ public static class EndToEndCheck
         Check(hidden, "Una app bloqueada (Bloc de notas) se aparta de delante", $"título «{TitleOf(hwnd)}» · aviso «{engine.Notice}»");
         try { p?.Kill(true); } catch { }
         KillAll("notepad");
+    }
+
+    // MARK: - Rules by time
+
+    private static async Task CheckSchedule(AppEngine engine, string name, string exe)
+    {
+        Info($"—— Regla por horario ({name}) ——");
+        var nowMin = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
+        var rule = new GeneralBlockRule
+        {
+            Name = "Horario de prueba", Kind = GeneralRuleKind.Schedule, Protection = SessionProtection.None, PunisherEnabled = false,
+            StartMinutes = (nowMin + 1440 - 60) % 1440, EndMinutes = (nowMin + 60) % 1440,
+            WebListMode = WebListMode.BlockListed, WebBlockAction = WebBlockAction.Redirect, Domains = $"{TestHost}/clips"
+        };
+        engine.Workspace.GeneralRules.Add(rule);
+        Check(engine.IsRuleEnforcing(rule), "Una regla con un horario que incluye ahora está bloqueando");
+
+        var hwnd = await OpenBrowser(name, exe);
+        if (hwnd == IntPtr.Zero) { Check(false, $"{name}: se abre para la prueba de horario"); engine.Workspace.GeneralRules.Remove(rule); return; }
+        await OpenInNewTab(Url("/clips"));
+        var blocked = await PumpUntil(engine, () => TitleOf(hwnd).Contains(BlockPageTitle), 25);
+        Shot("horario-1-dentro");
+        Check(blocked && WindowOpen(hwnd), "Dentro del horario, la web de la regla pasa a la página de bloqueo", $"título «{TitleOf(hwnd)}»");
+
+        rule.StartMinutes = (nowMin + 120) % 1440;
+        rule.EndMinutes = (nowMin + 180) % 1440;
+        Check(!engine.IsRuleEnforcing(rule), "Fuera del horario la regla no bloquea");
+        Forms.SendKeys.SendWait("^l");
+        await Task.Delay(500);
+        Forms.SendKeys.SendWait(Url("/clips") + "{ENTER}");
+        await Pump(engine, 9);
+        Shot("horario-2-fuera");
+        Check(TitleOf(hwnd).Contains("Clip de prueba"), "Fuera del horario la misma web se puede abrir", $"título «{TitleOf(hwnd)}»");
+
+        engine.Workspace.GeneralRules.Remove(rule);
+        KillAll(name);
+        await Task.Delay(1500);
+    }
+
+    private static async Task CheckDailyBudget(AppEngine engine)
+    {
+        Info("—— Presupuesto diario de 1 minuto (Bloc de notas) ——");
+        var rule = new GeneralBlockRule
+        {
+            Name = "Presupuesto de prueba", Kind = GeneralRuleKind.DailyLimit, DailyLimitMinutes = 1, Protection = SessionProtection.None,
+            PunisherEnabled = false, BlockApps = true, AppListMode = AppListMode.BlockListed, BlockAction = AppBlockAction.Hide,
+            Apps = new List<AllowedApp> { new("notepad", "Bloc de notas", @"C:\Windows\System32\notepad.exe") }
+        };
+        engine.Workspace.GeneralRules.Add(rule);
+        Process.Start(new ProcessStartInfo("notepad.exe") { UseShellExecute = true });
+        var hwnd = await WaitForWindow("notepad", _ => true, 20);
+        if (hwnd == IntPtr.Zero) { Check(false, "El Bloc de notas se abre para la prueba de presupuesto"); engine.Workspace.GeneralRules.Remove(rule); return; }
+
+        // Uses it for 40 s: still allowed.
+        for (var i = 0; i < 4; i++) { WindowsActivity.ActivateWindow(hwnd); await Pump(engine, 10); }
+        Shot("presupuesto-1-dentro");
+        Check(WindowOpen(hwnd), "Con presupuesto disponible la app se puede usar", $"usado {engine.Workspace.UsedSecondsToday(rule.Id, now: DateTimeOffset.Now):0} s");
+
+        // Past the minute: blocked.
+        var blocked = false;
+        for (var i = 0; i < 6 && !blocked; i++)
+        {
+            if (WindowOpen(hwnd)) WindowsActivity.ActivateWindow(hwnd);
+            blocked = await PumpUntil(engine, () => !WindowOpen(hwnd), 10);
+        }
+        Shot("presupuesto-2-agotado");
+        Check(blocked, "Al gastar el minuto de presupuesto la app se bloquea",
+            $"usado {engine.Workspace.UsedSecondsToday(rule.Id, now: DateTimeOffset.Now):0} s · aviso «{engine.Notice}»");
+        engine.Workspace.GeneralRules.Remove(rule);
+        KillAll("notepad");
+    }
+
+    // MARK: - Strict mode
+
+    private static async Task CheckStrict(AppEngine engine, string name, string exe)
+    {
+        Info($"—— Modo estricto (solo Bloc de notas; abro {name}) ——");
+        Process.Start(new ProcessStartInfo("notepad.exe") { UseShellExecute = true });
+        var notepad = await WaitForWindow("notepad", _ => true, 20);
+        if (notepad == IntPtr.Zero) { Check(false, "El Bloc de notas se abre para la prueba de modo estricto"); return; }
+        var task = new FocusTask
+        {
+            Title = "Tarea estricta", Minutes = 30, Strict = true, PunisherEnabled = false, AppListMode = AppListMode.AllowListed,
+            Apps = new List<AllowedApp> { new("notepad", "Bloc de notas", @"C:\Windows\System32\notepad.exe") }
+        };
+        engine.Workspace.Tasks.Add(task);
+        engine.StartSession(task);
+        WindowsActivity.ActivateWindow(notepad);
+        await Pump(engine, 4);
+
+        var browser = await OpenBrowser(name, exe);
+        var back = await PumpUntil(engine, () =>
+            WindowsActivity.GetForegroundApp()?.ProcessName.Equals("notepad", StringComparison.OrdinalIgnoreCase) == true ||
+            (browser != IntPtr.Zero && !WindowOpen(browser)), 30);
+        Shot("estricto");
+        Check(back, "En modo estricto, abrir una app fuera de la tarea te devuelve a la app permitida",
+            $"delante «{WindowsActivity.GetForegroundApp()?.ProcessName}» · aviso «{engine.Notice}»");
+        engine.Workspace.Session = null;
+        KillAll(name);
+        KillAll("notepad");
+        await Task.Delay(1500);
+    }
+
+    // MARK: - Games
+
+    private static async Task CheckGame(AppEngine engine)
+    {
+        Info("—— Juego sin haber estudiado (Fortnite de prueba) ——");
+        var rule = new GeneralBlockRule
+        {
+            Name = "Fortnite de prueba", Kind = GeneralRuleKind.WorkGoal, GameId = "fortnite", GoalMinutesRequired = 60,
+            MaxDailyMatches = 2, MatchMinutes = 25, MatchOvertimeMinutes = 10, Protection = SessionProtection.None, PunisherEnabled = false
+        };
+        engine.Workspace.GeneralRules.Add(rule);
+        Check(engine.IsRuleEnforcing(rule), "Sin haber estudiado, la regla del juego está bloqueando");
+
+        var dir = Path.Combine(Path.GetTempPath(), "FocusDesk-E2E-juego");
+        Directory.CreateDirectory(dir);
+        var fake = Path.Combine(dir, "FortniteClient-Win64-Shipping.exe");
+        try { File.Copy(Environment.ProcessPath!, fake, overwrite: true); }
+        catch (Exception ex) { Check(false, "Se prepara un juego de prueba", ex.Message); engine.Workspace.GeneralRules.Remove(rule); return; }
+
+        var game = Process.Start(new ProcessStartInfo(fake, "--e2e-ventana \"Fortnite (prueba)\"") { UseShellExecute = false });
+        var hwnd = await WaitForWindow("FortniteClient-Win64-Shipping", _ => true, 30);
+        Info($"Juego de prueba: ventana {(hwnd != IntPtr.Zero ? "abierta" : "no encontrada")}");
+        if (hwnd != IntPtr.Zero) WindowsActivity.ActivateWindow(hwnd);
+        var closed = await PumpUntil(engine, () => game == null || game.HasExited, 25);
+        Shot("juego");
+        Check(closed, "Abrir el juego sin haber estudiado lo cierra", $"aviso «{engine.Notice}»");
+        try { if (game is { HasExited: false }) game.Kill(true); } catch { }
+        engine.Workspace.GeneralRules.Remove(rule);
+    }
+
+    // MARK: - Protection
+
+    private static void CheckProtections(AppEngine engine, string dataDir)
+    {
+        Info("—— Protección de reglas y espera que sobrevive a cerrar la app ——");
+        var rule = new GeneralBlockRule
+        {
+            Name = "Protegida de prueba", Kind = GeneralRuleKind.Countdown, CountdownMinutes = 30, ActiveDeadline = new TrustedDeadline(1800),
+            Protection = SessionProtection.Challenge, WebListMode = WebListMode.BlockListed, WebBlockAction = WebBlockAction.Redirect,
+            Domains = "distraccion-de-prueba.com, otra-distraccion.com"
+        };
+        engine.Workspace.GeneralRules.Add(rule);
+        Check(engine.IsRuleProtected(rule), "Una cuenta atrás con código está protegida mientras dura");
+
+        engine.DeleteGeneralRule(rule);
+        Check(engine.Workspace.GeneralRules.Any(r => r.Id == rule.Id) && !string.IsNullOrEmpty(engine.Error),
+            "Una regla protegida no se puede borrar sin desbloquear", engine.Error);
+
+        var off = rule.Clone();
+        off.Enabled = false;
+        engine.SaveGeneralRule(off);
+        Check(engine.Workspace.GeneralRules.First(r => r.Id == rule.Id).Enabled, "Una regla protegida no se puede apagar sin desbloquear", engine.Error);
+
+        var fewer = rule.Clone();
+        fewer.Domains = "distraccion-de-prueba.com";
+        engine.SaveGeneralRule(fewer);
+        Check(engine.Workspace.GeneralRules.First(r => r.Id == rule.Id).Domains.Contains("otra-distraccion.com"),
+            "A una regla protegida no se le pueden quitar webs sin desbloquear", engine.Error);
+
+        var tighter = rule.Clone();
+        tighter.Domains = "distraccion-de-prueba.com, otra-distraccion.com, una-mas.com";
+        engine.SaveGeneralRule(tighter);
+        Check(engine.Workspace.GeneralRules.First(r => r.Id == rule.Id).Domains.Contains("una-mas.com"),
+            "A una regla protegida sí se le pueden añadir webs (endurecer no pide nada)", engine.Error);
+
+        // «Espera»: asking to stop starts a wait; closing and reopening FocusDesk must not reset it.
+        var key = "apagar la regla de prueba";
+        Check(!engine.EvaluateDelay(key, 5), "Pedir parar una regla con espera no la para al momento");
+        engine.Persist();
+        using (var reopened = new AppEngine(dataDir, enablePlatformWatchers: false))
+        {
+            var allowed = reopened.EvaluateDelay(key, 5);
+            var wait = reopened.Workspace.PendingStopWaits.FirstOrDefault(w => w.Key == key);
+            var left = wait?.Request.RemainingSeconds(DateTimeOffset.Now) ?? 0;
+            Check(!allowed && left > 240, "La espera sigue contando tras cerrar y abrir FocusDesk (no vuelve a empezar ni se salta)",
+                $"permitido={allowed}, quedan {left:0} s");
+        }
+        engine.DeleteGeneralRule(rule, bypassProtection: true);
+    }
+
+    /// <summary>
+    /// Protected rule running, FocusDesk killed from outside (as with Task Manager): the watcher must open it again.
+    /// Uses the real data folder of the test machine, like a fresh installation.
+    /// </summary>
+    private static async Task CheckRelaunch()
+    {
+        Info("—— FocusDesk cerrado a la fuerza con una regla protegida ——");
+        var self = Environment.ProcessId;
+        var exe = Environment.ProcessPath!;
+        using (var seed = new AppEngine(null, enablePlatformWatchers: false))
+        {
+            seed.LaunchQuickBlock(30, SessionProtection.Challenge, DistractionPreset.ShortVideos);
+            seed.Persist();
+        }
+        var app = Process.Start(new ProcessStartInfo(exe) { UseShellExecute = false });
+        if (app == null) { Check(false, "FocusDesk arranca para la prueba de vigilante"); return; }
+        var window = await WaitForWindow("FocusDesk", t => t.Contains("FocusDesk"), 40);
+        await Task.Delay(8000);
+        var others = Process.GetProcessesByName("FocusDesk").Where(p => p.Id != self && p.Id != app.Id).Select(p => p.Id).ToList();
+        Check(window != IntPtr.Zero && others.Count >= 1, "Con una regla protegida, FocusDesk arranca su vigilante",
+            $"ventana={(window != IntPtr.Zero)}, procesos extra={others.Count}");
+        Shot("vigilante-1-abierto");
+
+        try { app.Kill(entireProcessTree: false); } catch { }
+        var watchers = others.ToHashSet();
+        var reopened = false;
+        var end = DateTime.UtcNow.AddSeconds(40);
+        while (DateTime.UtcNow < end && !reopened)
+        {
+            await Task.Delay(1500);
+            reopened = WindowsActivity.VisibleWindows().Any(w =>
+                w.ProcessName.Equals("FocusDesk", StringComparison.OrdinalIgnoreCase) && w.ProcessId != self && w.ProcessId != app.Id &&
+                !watchers.Contains(w.ProcessId) && w.WindowTitle.Contains("FocusDesk"));
+        }
+        Shot("vigilante-2-reabierto");
+        Check(reopened, "Si se cierra FocusDesk a la fuerza durante una regla protegida, se vuelve a abrir solo");
+
+        RelaunchGuard.Remove();
+        await Task.Delay(1500);
+        foreach (var p in Process.GetProcessesByName("FocusDesk"))
+        {
+            if (p.Id == self) continue;
+            try { p.Kill(entireProcessTree: false); } catch { }
+        }
     }
 
     // MARK: - Folders
@@ -465,21 +701,24 @@ public static class EndToEndCheck
 
     private static string? FindBrowser(string name)
     {
-        var relative = name switch
+        var relatives = name switch
         {
-            "msedge" => @"Microsoft\Edge\Application\msedge.exe",
-            "chrome" => @"Google\Chrome\Application\chrome.exe",
-            "firefox" => @"Mozilla Firefox\firefox.exe",
-            _ => null
+            "msedge" => new[] { @"Microsoft\Edge\Application\msedge.exe" },
+            "chrome" => new[] { @"Google\Chrome\Application\chrome.exe" },
+            "firefox" => new[] { @"Mozilla Firefox\firefox.exe" },
+            "brave" => new[] { @"BraveSoftware\Brave-Browser\Application\brave.exe" },
+            "opera" => new[] { @"Programs\Opera\opera.exe", @"Opera\opera.exe" },
+            _ => Array.Empty<string>()
         };
-        if (relative == null) return null;
         var roots = new[]
         {
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
         };
-        return roots.Where(r => !string.IsNullOrEmpty(r)).Select(r => Path.Combine(r, relative)).FirstOrDefault(File.Exists);
+        return roots.Where(r => !string.IsNullOrEmpty(r))
+            .SelectMany(r => relatives.Select(rel => Path.Combine(r, rel)))
+            .FirstOrDefault(File.Exists);
     }
 
     private static void KillAll(string processName)

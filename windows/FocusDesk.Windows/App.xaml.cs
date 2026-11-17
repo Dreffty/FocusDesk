@@ -39,6 +39,19 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // A plain window with a given title, used by the end-to-end check as a stand-in game (a copy of this exe
+        // renamed like the game's process).
+        var fakeIdx = Array.FindIndex(e.Args, a => a.Equals("--e2e-ventana", StringComparison.OrdinalIgnoreCase));
+        if (fakeIdx >= 0)
+        {
+            ShutdownMode = ShutdownMode.OnLastWindowClose;
+            var title = fakeIdx + 1 < e.Args.Length ? e.Args[fakeIdx + 1] : "Ventana de prueba";
+            new Window { Title = title, Width = 640, Height = 420, Background = System.Windows.Media.Brushes.Black,
+                Content = new System.Windows.Controls.TextBlock { Text = title, Foreground = System.Windows.Media.Brushes.White, FontSize = 28,
+                    HorizontalAlignment = System.Windows.HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } }.Show();
+            return;
+        }
+
         // Real end-to-end check with real browsers (CI). Runs on this dispatcher so the engine works as in the app.
         if (e.Args.Contains("--e2e-test", StringComparer.OrdinalIgnoreCase))
         {
