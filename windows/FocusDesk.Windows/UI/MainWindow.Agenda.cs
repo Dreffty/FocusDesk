@@ -248,7 +248,7 @@ public partial class MainWindow
     private Border TaskRow(FocusTask t, bool scheduled)
     {
         var dock = new DockPanel();
-        var right = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, MaxWidth = 430, HorizontalAlignment = HorizontalAlignment.Right };
+        var right = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, MaxWidth = 430, HorizontalAlignment = System.Windows.HorizontalAlignment.Right };
         var start = PrimaryButton("Iniciar");
         start.Margin = new Thickness(0, 0, 6, 4);
         start.Click += (_, _) => StartOrHandoffSession(t);

@@ -61,7 +61,7 @@ public partial class MainWindow
         {
             var sp = new StackPanel();
             var header = new DockPanel();
-            var actions = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, MaxWidth = 520, HorizontalAlignment = HorizontalAlignment.Right };
+            var actions = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, MaxWidth = 520, HorizontalAlignment = System.Windows.HorizontalAlignment.Right };
             var now = DateTimeOffset.Now;
             var cont = TrustedClock.ContinuousSeconds();
 
