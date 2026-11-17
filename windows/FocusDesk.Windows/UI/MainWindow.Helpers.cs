@@ -51,9 +51,10 @@ public partial class MainWindow
         return button;
     }
 
-    private static TextBlock SectionLabel(string text, double top = 14, string color = "#94A3B8") => new()
+    // Section titles in small capitals with wide spacing, like the Mac cards («GENERAL», «BLOQUEO RÁPIDO»).
+    private static TextBlock SectionLabel(string text, double top = 14, string color = "#99A6AD") => new()
     {
-        Text = text,
+        Text = Spaced(text),
         FontSize = 11,
         FontWeight = FontWeights.SemiBold,
         Foreground = BrushHex(color),
@@ -64,7 +65,7 @@ public partial class MainWindow
     {
         Text = text,
         FontSize = size,
-        Foreground = BrushHex("#94A3B8"),
+        Foreground = BrushHex("#99A6AD"),
         TextWrapping = TextWrapping.Wrap,
         Margin = new Thickness(0, top, 0, 0)
     };
@@ -89,10 +90,10 @@ public partial class MainWindow
         var panel = new StackPanel { Margin = new Thickness(0, top, 14, 0), VerticalAlignment = VerticalAlignment.Top };
         panel.Children.Add(new TextBlock
         {
-            Text = label.ToUpperInvariant(),
+            Text = Spaced(label),
             FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = BrushHex("#94A3B8"),
+            Foreground = BrushHex("#99A6AD"),
             Margin = new Thickness(0, 0, 0, 5)
         });
         panel.Children.Add(control);

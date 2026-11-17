@@ -52,7 +52,7 @@ public partial class MainWindow
                 Text = $"{activeBreak.Period.Title} · quedan {FocusRules.Clock(activeBreak.Remaining)}",
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = BrushHex("#F5B95F"),
+                Foreground = BrushHex("#FAC74D"),
                 VerticalAlignment = VerticalAlignment.Center
             };
             row.Children.Add(_liveScheduledBreakText);
@@ -88,7 +88,7 @@ public partial class MainWindow
                 Text = s.Paused ? $"EN PAUSA · {s.Task.Title}" : $"EN MARCHA · {s.Task.Title}",
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = BrushHex(s.Paused ? "#F5B95F" : "#38A169")
+                Foreground = BrushHex(s.Paused ? "#FAC74D" : "#38A169")
             });
             _liveClockText = new TextBlock
             {
@@ -105,7 +105,7 @@ public partial class MainWindow
                 _livePomodoroText = new TextBlock
                 {
                     Text = $"Pomodoro · {phase.Label} (ciclo {phase.Cycle}) · {FocusRules.Clock(phase.RemainingInPhase)}",
-                    Foreground = BrushHex("#F5B95F"),
+                    Foreground = BrushHex("#FAC74D"),
                     FontSize = 12.5,
                     Margin = new Thickness(0, 0, 0, 10)
                 };
@@ -178,8 +178,8 @@ public partial class MainWindow
                 dock.Children.Add(endMatch);
             }
             var info = new StackPanel();
-            var titleBlock = new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, FontSize = 14, Foreground = BrushHex(st.Warning ? "#F5B95F" : "#38A169") };
-            var subBlock = new TextBlock { Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(gr))} · {_engine.Workspace.MatchesToday(gr.Id)}/{gr.MaxDailyMatches} {gr.MatchUnitPlural}", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0) };
+            var titleBlock = new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, FontSize = 14, Foreground = BrushHex(st.Warning ? "#FAC74D" : "#38A169") };
+            var subBlock = new TextBlock { Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(gr))} · {_engine.Workspace.MatchesToday(gr.Id)}/{gr.MaxDailyMatches} {gr.MatchUnitPlural}", Foreground = BrushHex("#99A6AD"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0) };
             info.Children.Add(titleBlock);
             info.Children.Add(subBlock);
             dock.Children.Add(info);
@@ -217,7 +217,7 @@ public partial class MainWindow
             PageContent.Children.Add(Card(new TextBlock
             {
                 Text = "Sin tareas programadas este día. Pulsa «+ Nueva tarea» para crear tu primer bloque.",
-                Foreground = BrushHex("#94A3B8"),
+                Foreground = BrushHex("#99A6AD"),
                 FontSize = 13
             }));
         }
@@ -231,7 +231,7 @@ public partial class MainWindow
             .ToList();
         if (overdue.Count > 0)
         {
-            PageContent.Children.Add(SectionLabel($"ATRASADAS ({overdue.Count})", 14, "#F5B95F"));
+            PageContent.Children.Add(SectionLabel($"ATRASADAS ({overdue.Count})", 14, "#FAC74D"));
             foreach (var t in overdue) PageContent.Children.Add(OverdueRow(t));
         }
 
@@ -288,8 +288,8 @@ public partial class MainWindow
         meta.Children.Add(PillBadge(t.Category));
         if (t.RepeatRule != RepeatRule.Never) meta.Children.Add(PillBadge("↻ " + t.RepeatRule.Label()));
         if (t.Protection != SessionProtection.None)
-            meta.Children.Add(PillBadge(_engine.IsTaskProtected(t) ? $"Ya protegida · {t.Protection.Label()}" : t.Protection.Label(), "#F5B95F", "#251D10"));
-        if (t.Enforces && t.Protection == SessionProtection.None) meta.Children.Add(PillBadge(t.BlockingSummary, "#94A3B8", "#1B2230"));
+            meta.Children.Add(PillBadge(_engine.IsTaskProtected(t) ? $"Ya protegida · {t.Protection.Label()}" : t.Protection.Label(), "#FAC74D", "#251D10"));
+        if (t.Enforces && t.Protection == SessionProtection.None) meta.Children.Add(PillBadge(t.BlockingSummary, "#99A6AD", "#1D2229"));
         left.Children.Add(meta);
         dock.Children.Add(left);
         return Card(dock);
@@ -347,16 +347,16 @@ public partial class MainWindow
                 Text = isToday ? $"{day:dddd d MMM} · Hoy" : day.ToString("dddd d MMM"),
                 FontSize = 14.5,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = BrushHex(isToday ? "#38A169" : "#F2F5FA"),
+                Foreground = BrushHex(isToday ? "#38A169" : "#EDF2F5"),
                 VerticalAlignment = VerticalAlignment.Center
             });
             sp.Children.Add(dayHeader);
             if (dayTasks.Count == 0 && projected.Count == 0)
-                sp.Children.Add(new TextBlock { Text = "Sin bloques programados", Foreground = BrushHex("#64748B"), FontSize = 12, Margin = new Thickness(0, 5, 0, 0) });
+                sp.Children.Add(new TextBlock { Text = "Sin bloques programados", Foreground = BrushHex("#7C868C"), FontSize = 12, Margin = new Thickness(0, 5, 0, 0) });
             foreach (var t in dayTasks)
-                sp.Children.Add(new TextBlock { Text = $"• {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min) · {t.Category}", Foreground = BrushHex("#CBD5E1"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
+                sp.Children.Add(new TextBlock { Text = $"• {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min) · {t.Category}", Foreground = BrushHex("#D5DBDF"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
             foreach (var t in projected)
-                sp.Children.Add(new TextBlock { Text = $"↻ {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min) · repetición", Foreground = BrushHex("#94A3B8"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
+                sp.Children.Add(new TextBlock { Text = $"↻ {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min) · repetición", Foreground = BrushHex("#99A6AD"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
             PageContent.Children.Add(Card(sp, isToday ? "#2A5A3F" : null));
         }
     }
@@ -412,7 +412,7 @@ public partial class MainWindow
             foreach (var item in _engine.Workspace.AuditLog.Take(100))
                 PageContent.Children.Add(Card(new TextBlock { Text = $"{item.At.LocalDateTime:g} · [{item.Category}] {item.Summary}", TextWrapping = TextWrapping.Wrap, FontSize = 13 }));
             if (_engine.Workspace.AuditLog.Count == 0)
-                PageContent.Children.Add(Card(new TextBlock { Text = "Sin eventos registrados todavía.", Foreground = BrushHex("#94A3B8") }));
+                PageContent.Children.Add(Card(new TextBlock { Text = "Sin eventos registrados todavía.", Foreground = BrushHex("#99A6AD") }));
             return;
         }
 
@@ -484,7 +484,7 @@ public partial class MainWindow
             sp.Children.Add(new TextBlock
             {
                 Text = $"{rec.Session.StartedAt.LocalDateTime:g} · Trabajado: {FocusRules.Clock(rec.Session.Elapsed(rec.Session.EndedAt ?? rec.Session.StartedAt))} · Interrupciones: {rec.Session.InterruptionCount} · {rec.Session.Task.Category}",
-                Foreground = BrushHex("#94A3B8"),
+                Foreground = BrushHex("#99A6AD"),
                 FontSize = 12,
                 Margin = new Thickness(0, 4, 0, 0)
             });
@@ -496,20 +496,20 @@ public partial class MainWindow
                 {
                     sp.Children.Add(SectionLabel("DÓNDE ESTUVO EL TIEMPO", 10));
                     foreach (var app in apps)
-                        sp.Children.Add(new TextBlock { Text = $"{app.Name} · {FocusRules.Clock(app.Seconds)}", FontSize = 12.5, Foreground = BrushHex("#CBD5E1"), Margin = new Thickness(0, 2, 0, 0) });
+                        sp.Children.Add(new TextBlock { Text = $"{app.Name} · {FocusRules.Clock(app.Seconds)}", FontSize = 12.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
                 }
                 var steps = AppEngine.ChecklistSteps(rec.Session.Task.Checklist);
                 if (steps.Count > 0)
                 {
                     sp.Children.Add(SectionLabel("CHECKLIST", 10));
                     for (var i = 0; i < steps.Count; i++)
-                        sp.Children.Add(new TextBlock { Text = (rec.Session.Checked.Contains(i.ToString()) ? "☑ " : "☐ ") + steps[i], FontSize = 12.5, Foreground = BrushHex("#CBD5E1"), Margin = new Thickness(0, 2, 0, 0) });
+                        sp.Children.Add(new TextBlock { Text = (rec.Session.Checked.Contains(i.ToString()) ? "☑ " : "☐ ") + steps[i], FontSize = 12.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
                 }
                 if (rec.ConfirmedFiles.Count > 0 || rec.ManualFiles.Count > 0)
                 {
                     sp.Children.Add(SectionLabel("ARCHIVOS DEL RESULTADO", 10));
                     foreach (var file in rec.ConfirmedFiles.Concat(rec.ManualFiles).Distinct().Take(12))
-                        sp.Children.Add(new TextBlock { Text = file, FontSize = 12, Foreground = BrushHex("#CBD5E1"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+                        sp.Children.Add(new TextBlock { Text = file, FontSize = 12, Foreground = BrushHex("#D5DBDF"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
                 }
                 if (rec.Session.BlocksApplied > 0)
                     sp.Children.Add(MutedText($"Bloqueos aplicados: {rec.Session.BlocksApplied}", 12, 8));
@@ -523,9 +523,9 @@ public partial class MainWindow
                 RefreshUI();
             }));
         if (_engine.Workspace.History.Count == 0)
-            PageContent.Children.Add(Card(new TextBlock { Text = "Todavía no has completado ninguna sesión.", Foreground = BrushHex("#94A3B8") }));
+            PageContent.Children.Add(Card(new TextBlock { Text = "Todavía no has completado ninguna sesión.", Foreground = BrushHex("#99A6AD") }));
         else if (all.Count == 0)
-            PageContent.Children.Add(Card(new TextBlock { Text = "Ninguna sesión coincide con estos filtros.", Foreground = BrushHex("#94A3B8") }));
+            PageContent.Children.Add(Card(new TextBlock { Text = "Ninguna sesión coincide con estos filtros.", Foreground = BrushHex("#99A6AD") }));
     }
 
     private void ExportHistoryFile()

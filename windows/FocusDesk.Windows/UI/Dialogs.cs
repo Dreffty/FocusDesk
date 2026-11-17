@@ -61,7 +61,7 @@ public static partial class Dialogs
             {
                 Text = subtitle,
                 FontSize = 11.5,
-                Foreground = BrushHex("#94A3B8"),
+                Foreground = BrushHex("#99A6AD"),
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 0, 0, 12)
             });
@@ -69,8 +69,8 @@ public static partial class Dialogs
         inner.Children.Add(content);
         return new Border
         {
-            Background = BrushHex("#131822"),
-            BorderBrush = BrushHex("#242E40"),
+            Background = BrushHex("#161B21"),
+            BorderBrush = BrushHex("#262A30"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(14),
             Padding = new Thickness(18),
@@ -87,7 +87,7 @@ public static partial class Dialogs
             Text = label.ToUpperInvariant(),
             FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = BrushHex("#94A3B8"),
+            Foreground = BrushHex("#99A6AD"),
             Margin = new Thickness(0, 0, 0, 5)
         });
         panel.Children.Add(control);
@@ -163,9 +163,9 @@ public static partial class Dialogs
             MinHeight = 26,
             FontSize = 11.5,
             Margin = new Thickness(0, 6, 6, 0),
-            Background = BrushHex("#1B2230"),
-            Foreground = BrushHex("#E2E8F0"),
-            BorderBrush = BrushHex("#2E3A4F")
+            Background = BrushHex("#1D2229"),
+            Foreground = BrushHex("#E4E9EC"),
+            BorderBrush = BrushHex("#30353C")
         };
         btn.Click += (_, _) => onClick();
         return btn;
@@ -177,7 +177,7 @@ public static partial class Dialogs
         {
             Content = text,
             Background = BrushHex("#38A169"),
-            Foreground = BrushHex("#0B0E14"),
+            Foreground = BrushHex("#0D1014"),
             BorderBrush = BrushHex("#38A169"),
             FontWeight = FontWeights.SemiBold,
             Padding = new Thickness(16, 8, 16, 8)
@@ -265,8 +265,8 @@ public static partial class Dialogs
             WindowStartupLocation = owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
             Owner = owner,
             ResizeMode = ResizeMode.NoResize,
-            Background = BrushHex("#0B0E14"),
-            Foreground = BrushHex("#F2F5FA")
+            Background = BrushHex("#0D1014"),
+            Foreground = BrushHex("#EDF2F5")
         };
 
         var root = new StackPanel { Margin = new Thickness(24) };
@@ -277,7 +277,7 @@ public static partial class Dialogs
             Text = $"Para {actionLabel}",
             FontSize = 18,
             FontWeight = FontWeights.SemiBold,
-            Foreground = BrushHex("#F2F5FA"),
+            Foreground = BrushHex("#EDF2F5"),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8)
         });
@@ -295,7 +295,7 @@ public static partial class Dialogs
             root.Children.Add(new TextBlock
             {
                 Text = intro,
-                Foreground = BrushHex(protection == SessionProtection.Forced ? "#F5B95F" : "#94A3B8"),
+                Foreground = BrushHex(protection == SessionProtection.Forced ? "#FAC74D" : "#99A6AD"),
                 TextWrapping = TextWrapping.Wrap,
                 FontSize = 12.5,
                 Margin = new Thickness(0, 0, 0, 12)
@@ -303,8 +303,8 @@ public static partial class Dialogs
 
             var codeBorder = new Border
             {
-                Background = BrushHex("#131822"),
-                BorderBrush = BrushHex("#242E40"),
+                Background = BrushHex("#161B21"),
+                BorderBrush = BrushHex("#262A30"),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(14),
@@ -337,7 +337,7 @@ public static partial class Dialogs
             var progress = new TextBlock
             {
                 Text = $"0 / {expected.Length} caracteres correctos",
-                Foreground = BrushHex("#94A3B8"),
+                Foreground = BrushHex("#99A6AD"),
                 FontSize = 12,
                 Margin = new Thickness(0, 8, 0, 16)
             };
@@ -359,13 +359,13 @@ public static partial class Dialogs
                     input.Text = "";
                     resetting = false;
                     progress.Text = $"Carácter incorrecto · código nuevo generado (0 / {expected.Length})";
-                    progress.Foreground = BrushHex("#F26D6D");
+                    progress.Foreground = BrushHex("#FF8080");
                     confirmBtn.IsEnabled = false;
                     return;
                 }
                 var ok = UnlockChallenge.Matches(input.Text, expected);
                 progress.Text = $"{prefix} / {expected.Length} caracteres correctos";
-                progress.Foreground = BrushHex(ok ? "#38A169" : "#F5B95F");
+                progress.Foreground = BrushHex(ok ? "#38A169" : "#FAC74D");
                 confirmBtn.IsEnabled = ok;
             };
             input.KeyDown += (_, e) =>
@@ -395,7 +395,7 @@ public static partial class Dialogs
             root.Children.Add(new TextBlock
             {
                 Text = "Mantén esta ventana abierta hasta completar el tiempo de espera:",
-                Foreground = BrushHex("#94A3B8"),
+                Foreground = BrushHex("#99A6AD"),
                 FontSize = 12.5,
                 Margin = new Thickness(0, 0, 0, 10)
             });
@@ -406,7 +406,7 @@ public static partial class Dialogs
                 FontFamily = new System.Windows.Media.FontFamily("Consolas"),
                 FontSize = 22,
                 FontWeight = FontWeights.Bold,
-                Foreground = BrushHex("#F5B95F"),
+                Foreground = BrushHex("#FAC74D"),
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 4, 0, 20)
             };
@@ -483,8 +483,8 @@ public static partial class Dialogs
             MinHeight = 600,
             WindowStartupLocation = owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
             Owner = owner,
-            Background = BrushHex("#0B0E14"),
-            Foreground = BrushHex("#F2F5FA")
+            Background = BrushHex("#0D1014"),
+            Foreground = BrushHex("#EDF2F5")
         };
 
         var shell = new Grid();
@@ -496,7 +496,7 @@ public static partial class Dialogs
         // Header
         var headerBorder = new Border
         {
-            BorderBrush = BrushHex("#242E40"),
+            BorderBrush = BrushHex("#262A30"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(24, 18, 24, 14)
         };
@@ -506,13 +506,13 @@ public static partial class Dialogs
             Text = existing == null ? "Dale un espacio." : $"Editar «{existing.Title}»",
             FontSize = 21,
             FontWeight = FontWeights.SemiBold,
-            Foreground = BrushHex("#F2F5FA")
+            Foreground = BrushHex("#EDF2F5")
         });
         headerStack.Children.Add(new TextBlock
         {
             Text = "Un objetivo claro, un tiempo concreto y reglas opcionales de bloqueo.",
             FontSize = 12,
-            Foreground = BrushHex("#94A3B8"),
+            Foreground = BrushHex("#99A6AD"),
             Margin = new Thickness(0, 3, 0, 0)
         });
         headerBorder.Child = headerStack;
@@ -528,14 +528,14 @@ public static partial class Dialogs
         var inlineError = new Border
         {
             Background = BrushHex("#2A161B"),
-            BorderBrush = BrushHex("#F26D6D"),
+            BorderBrush = BrushHex("#FF8080"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(12, 9, 12, 9),
             Margin = new Thickness(0, 0, 0, 14),
             Visibility = Visibility.Collapsed
         };
-        var inlineErrorText = new TextBlock { Foreground = BrushHex("#F26D6D"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap };
+        var inlineErrorText = new TextBlock { Foreground = BrushHex("#FF8080"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap };
         inlineError.Child = inlineErrorText;
         root.Children.Add(inlineError);
 
@@ -544,7 +544,7 @@ public static partial class Dialogs
             var protNote = new Border
             {
                 Background = BrushHex("#251D10"),
-                BorderBrush = BrushHex("#F5B95F"),
+                BorderBrush = BrushHex("#FAC74D"),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(12, 9, 12, 9),
@@ -552,7 +552,7 @@ public static partial class Dialogs
                 Child = new TextBlock
                 {
                     Text = "Esta tarea está protegida (en marcha o cerca de empezar). Alargarla o endurecerla es libre; retrasarla o suavizarla pedirá desbloqueo.",
-                    Foreground = BrushHex("#F5B95F"),
+                    Foreground = BrushHex("#FAC74D"),
                     FontSize = 12,
                     TextWrapping = TextWrapping.Wrap
                 }
@@ -661,9 +661,9 @@ public static partial class Dialogs
             void RefreshRepeatDayStyle()
             {
                 var on = repeatDays.Contains(dayNum);
-                dayBtn.Background = BrushHex(on ? "#38A169" : "#1B2230");
-                dayBtn.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
-                dayBtn.BorderBrush = BrushHex(on ? "#38A169" : "#2E3A4F");
+                dayBtn.Background = BrushHex(on ? "#38A169" : "#1D2229");
+                dayBtn.Foreground = BrushHex(on ? "#0D1014" : "#E4E9EC");
+                dayBtn.BorderBrush = BrushHex(on ? "#38A169" : "#30353C");
                 dayBtn.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
             }
             RefreshRepeatDayStyle();
@@ -675,7 +675,7 @@ public static partial class Dialogs
             repeatDaysWrap.Children.Add(dayBtn);
         }
         var repeatDaysPanel = new StackPanel();
-        repeatDaysPanel.Children.Add(new TextBlock { Text = "DÍAS DE LA SEMANA", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 12, 0, 0) });
+        repeatDaysPanel.Children.Add(new TextBlock { Text = "DÍAS DE LA SEMANA", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 12, 0, 0) });
         repeatDaysPanel.Children.Add(repeatDaysWrap);
         void SyncRepeatDays()
         {
@@ -693,9 +693,9 @@ public static partial class Dialogs
                     var label = child.Content as string ?? "";
                     var num = label switch { "Lun" => 2, "Mar" => 3, "Mié" => 4, "Jue" => 5, "Vie" => 6, "Sáb" => 7, _ => 1 };
                     var on = repeatDays.Contains(num);
-                    child.Background = BrushHex(on ? "#38A169" : "#1B2230");
-                    child.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
-                    child.BorderBrush = BrushHex(on ? "#38A169" : "#2E3A4F");
+                    child.Background = BrushHex(on ? "#38A169" : "#1D2229");
+                    child.Foreground = BrushHex(on ? "#0D1014" : "#E4E9EC");
+                    child.BorderBrush = BrushHex(on ? "#38A169" : "#30353C");
                     child.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
                 }
             }
@@ -733,7 +733,7 @@ public static partial class Dialogs
         var redirectBox = MakeTextBox(draft.CustomRedirectURL);
 
         var protCombo = MakeCombo(Enum.GetValues<SessionProtection>().Select(p => new ComboOption<SessionProtection>(p, p.Label())), draft.Protection);
-        var protParamLabel = new TextBlock { FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 0, 0, 5) };
+        var protParamLabel = new TextBlock { FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 0, 0, 5) };
         var protParamBox = MakeTextBox();
         var protParamWrap = new StackPanel();
         protParamWrap.Children.Add(protParamLabel);
@@ -775,7 +775,7 @@ public static partial class Dialogs
             LabeledField("Modo lista web", webModeCombo, 0),
             LabeledField("Si abres web no permitida", webActionCombo, 0),
             topMargin: 12));
-        blockingBody.Children.Add(new TextBlock { Text = "LOTES RÁPIDOS PARA BLOQUEAR", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 12, 0, 2) });
+        blockingBody.Children.Add(new TextBlock { Text = "LOTES RÁPIDOS PARA BLOQUEAR", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 12, 0, 2) });
         blockingBody.Children.Add(BuildPresetChips(domainsBox, keywordsBox, () =>
         {
             if (GetComboValue(webActionCombo, WebBlockAction.Warn) == WebBlockAction.Warn)
@@ -854,8 +854,8 @@ public static partial class Dialogs
         // Footer Bar
         var footer = new Border
         {
-            Background = BrushHex("#131822"),
-            BorderBrush = BrushHex("#242E40"),
+            Background = BrushHex("#161B21"),
+            BorderBrush = BrushHex("#262A30"),
             BorderThickness = new Thickness(0, 1, 0, 0),
             Padding = new Thickness(24, 14, 24, 14)
         };
@@ -872,7 +872,7 @@ public static partial class Dialogs
         footerDock.Children.Add(new TextBlock
         {
             Text = existing == null ? "Se añadirá a tu agenda de hoy." : "Los cambios se guardan al instante.",
-            Foreground = BrushHex("#94A3B8"),
+            Foreground = BrushHex("#99A6AD"),
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center
         });
@@ -1040,8 +1040,8 @@ public static partial class Dialogs
             MinHeight = 620,
             WindowStartupLocation = owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
             Owner = owner,
-            Background = BrushHex("#0B0E14"),
-            Foreground = BrushHex("#F2F5FA")
+            Background = BrushHex("#0D1014"),
+            Foreground = BrushHex("#EDF2F5")
         };
 
         var shell = new Grid();
@@ -1052,7 +1052,7 @@ public static partial class Dialogs
 
         var headerBorder = new Border
         {
-            BorderBrush = BrushHex("#242E40"),
+            BorderBrush = BrushHex("#262A30"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(24, 18, 24, 14)
         };
@@ -1062,13 +1062,13 @@ public static partial class Dialogs
             Text = existing == null ? "Nueva regla de bloqueo" : "Editar regla de bloqueo",
             FontSize = 21,
             FontWeight = FontWeights.SemiBold,
-            Foreground = BrushHex("#F2F5FA")
+            Foreground = BrushHex("#EDF2F5")
         });
         headerStack.Children.Add(new TextBlock
         {
             Text = "Funciona en segundo plano aunque no tengas una tarea iniciada en tu agenda.",
             FontSize = 12,
-            Foreground = BrushHex("#94A3B8"),
+            Foreground = BrushHex("#99A6AD"),
             Margin = new Thickness(0, 3, 0, 0)
         });
         headerBorder.Child = headerStack;
@@ -1084,14 +1084,14 @@ public static partial class Dialogs
         var inlineError = new Border
         {
             Background = BrushHex("#2A161B"),
-            BorderBrush = BrushHex("#F26D6D"),
+            BorderBrush = BrushHex("#FF8080"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(12, 9, 12, 9),
             Margin = new Thickness(0, 0, 0, 14),
             Visibility = Visibility.Collapsed
         };
-        var inlineErrorText = new TextBlock { Foreground = BrushHex("#F26D6D"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap };
+        var inlineErrorText = new TextBlock { Foreground = BrushHex("#FF8080"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap };
         inlineError.Child = inlineErrorText;
         root.Children.Add(inlineError);
 
@@ -1118,7 +1118,7 @@ public static partial class Dialogs
         // Fields held at top level for clean save & state transitions
         var nameBox = MakeTextBox(draft.Name);
         var kindCombo = MakeCombo(Enum.GetValues<GeneralRuleKind>().Select(k => new ComboOption<GeneralRuleKind>(k, k.GalleryTitle())), draft.Kind);
-        var kindSummary = new TextBlock { FontSize = 12, Foreground = BrushHex("#94A3B8"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
+        var kindSummary = new TextBlock { FontSize = 12, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
 
         // Daily Limit controls
         var dailyLimitBox = MakeTextBox(draft.DailyLimitMinutes.ToString(CultureInfo.InvariantCulture));
@@ -1198,9 +1198,9 @@ public static partial class Dialogs
             void RefreshDayStyle()
             {
                 var on = selectedDays.Contains(dayNum);
-                btn.Background = BrushHex(on ? "#38A169" : "#1B2230");
-                btn.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
-                btn.BorderBrush = BrushHex(on ? "#38A169" : "#2E3A4F");
+                btn.Background = BrushHex(on ? "#38A169" : "#1D2229");
+                btn.Foreground = BrushHex(on ? "#0D1014" : "#E4E9EC");
+                btn.BorderBrush = BrushHex(on ? "#38A169" : "#30353C");
                 btn.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
             }
             RefreshDayStyle();
@@ -1256,7 +1256,7 @@ public static partial class Dialogs
         // Protection controls
         var protCombo = MakeCombo(Enum.GetValues<SessionProtection>().Select(p => new ComboOption<SessionProtection>(p, p.Label())), draft.Protection);
         var protParamBox = MakeTextBox();
-        var protParamLabel = new TextBlock { FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 0, 0, 5) };
+        var protParamLabel = new TextBlock { FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 0, 0, 5) };
         var protParamWrap = new StackPanel();
         protParamWrap.Children.Add(protParamLabel);
         protParamWrap.Children.Add(protParamBox);
@@ -1316,7 +1316,7 @@ public static partial class Dialogs
             LabeledField("Desde (HH:mm)", fromBox, 0),
             LabeledField("Hasta (HH:mm · admite tramo nocturno)", toBox, 0),
             topMargin: 0));
-        schedulePanel.Children.Add(new TextBlock { Text = "DÍAS ACTIVOS", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 12, 0, 2) });
+        schedulePanel.Children.Add(new TextBlock { Text = "DÍAS ACTIVOS", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 12, 0, 2) });
         schedulePanel.Children.Add(daysWrap);
         schedulePanel.Children.Add(LabeledField("Tramos extra (HH:mm-HH:mm separados por coma, ej. 15:30-17:00)", extraIntervalsBox, 12));
 
@@ -1349,7 +1349,7 @@ public static partial class Dialogs
         alwaysOnPanel.Children.Add(new TextBlock
         {
             Text = "Permanece bloqueando 24 horas al día mientras el interruptor de esta regla esté encendido.",
-            Foreground = BrushHex("#E2E8F0"),
+            Foreground = BrushHex("#E4E9EC"),
             FontSize = 12.5,
             TextWrapping = TextWrapping.Wrap
         });
@@ -1365,8 +1365,8 @@ public static partial class Dialogs
 
         var dynamicKindBox = new Border
         {
-            Background = BrushHex("#151B26"),
-            BorderBrush = BrushHex("#242E40"),
+            Background = BrushHex("#12161B"),
+            BorderBrush = BrushHex("#262A30"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(11),
             Padding = new Thickness(14),
@@ -1437,7 +1437,7 @@ public static partial class Dialogs
         identityBody.Children.Add(dynamicKindBox);
 
         var targetsBody = new StackPanel();
-        targetsBody.Children.Add(new TextBlock { Text = "LOTES RÁPIDOS PARA BLOQUEAR", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 0, 0, 2) });
+        targetsBody.Children.Add(new TextBlock { Text = "LOTES RÁPIDOS PARA BLOQUEAR", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 0, 0, 2) });
         targetsBody.Children.Add(BuildPresetChips(domainsBox, keywordsBox));
         targetsBody.Children.Add(TwoColGrid(
             LabeledField("Modo lista web", webModeCombo, 0),
@@ -1478,8 +1478,8 @@ public static partial class Dialogs
 
         var footer = new Border
         {
-            Background = BrushHex("#131822"),
-            BorderBrush = BrushHex("#242E40"),
+            Background = BrushHex("#161B21"),
+            BorderBrush = BrushHex("#262A30"),
             BorderThickness = new Thickness(0, 1, 0, 0),
             Padding = new Thickness(24, 14, 24, 14)
         };
@@ -1495,7 +1495,7 @@ public static partial class Dialogs
         footerDock.Children.Add(new TextBlock
         {
             Text = existing == null ? "Se activará automáticamente según el modo elegido." : "Los cambios cumplen el trinquete anti-trampas.",
-            Foreground = BrushHex("#94A3B8"),
+            Foreground = BrushHex("#99A6AD"),
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center
         });

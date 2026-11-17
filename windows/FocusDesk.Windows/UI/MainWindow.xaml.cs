@@ -44,6 +44,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _engine = engine;
+        BuildNavigation();
         _onQuitRequested = onQuitRequested;
         _engine.StateRefreshed += RefreshUI;
         _engine.TickUpdated += UpdateLiveReadouts;
@@ -170,8 +171,8 @@ public partial class MainWindow : Window
         {
             NoticeBanner.Visibility = Visibility.Visible;
             NoticeText.Text = msg;
-            NoticeText.Foreground = BrushHex(!string.IsNullOrEmpty(_engine.Error) ? "#F26D6D" : "#38A169");
-            NoticeBanner.BorderBrush = BrushHex(!string.IsNullOrEmpty(_engine.Error) ? "#5C262B" : "#242E40");
+            NoticeText.Foreground = BrushHex(!string.IsNullOrEmpty(_engine.Error) ? "#FF8080" : "#38A169");
+            NoticeBanner.BorderBrush = BrushHex(!string.IsNullOrEmpty(_engine.Error) ? "#5C262B" : "#262A30");
         }
         else
         {
@@ -180,6 +181,8 @@ public partial class MainWindow : Window
 
         SidebarStudyText.Text = $"Estudio hoy: {FocusRules.Clock(_engine.Workspace.VerifiedStudySecondsToday())}";
         SidebarGuardText.Text = $"Vigilante: {(RelaunchGuard.IsInstalled() ? "activo" : "apagado")}";
+        var keys = _engine.Workspace.Settings;
+        HotKeyChipText.Text = keys.HotKeyEnabled ? HotKeyNames[Math.Clamp(keys.HotKeyChoice, 0, HotKeyNames.Length - 1)] : "apagado";
     }
 
     private void UpdateLiveReadouts()
@@ -188,6 +191,8 @@ public partial class MainWindow : Window
 
         UpdateNoticeAndSidebar();
         var now = DateTimeOffset.Now;
+        UpdateSidebarSession(now);
+        UpdateNavBadges(now);
 
         if (_liveClockText != null && _engine.Workspace.Session is { EndedAt: null } s)
         {
@@ -209,7 +214,7 @@ public partial class MainWindow : Window
         {
             var st = _engine.GameRuleStatus(rule, now);
             titleBlock.Text = $"{rule.Game?.Name ?? rule.Name} · {st.Text}";
-            titleBlock.Foreground = BrushHex(st.Warning ? "#F5B95F" : "#38A169");
+            titleBlock.Foreground = BrushHex(st.Warning ? "#FAC74D" : "#38A169");
             subBlock.Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(rule, now))} · {_engine.Workspace.MatchesToday(rule.Id, now)}/{Math.Max(1, rule.MaxDailyMatches)} {rule.MatchUnitPlural}";
         }
     }
@@ -220,14 +225,9 @@ public partial class MainWindow : Window
 
         UpdateNoticeAndSidebar();
 
-        foreach (var child in NavStack.Children.OfType<System.Windows.Controls.Button>())
-        {
-            var active = string.Equals(child.Tag as string, _engine.ActivePage, StringComparison.Ordinal);
-            child.Background = BrushHex(active ? "#38A169" : "Transparent");
-            child.BorderBrush = BrushHex(active ? "#38A169" : "Transparent");
-            child.Foreground = BrushHex(active ? "#0B0E14" : "#CBD5E1");
-            child.FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal;
-        }
+        UpdateNav();
+        UpdateNavBadges(DateTimeOffset.Now);
+        UpdateSidebarSession(DateTimeOffset.Now);
 
         _liveClockText = null;
         _livePomodoroText = null;
@@ -270,72 +270,25 @@ public partial class MainWindow : Window
 
     private Border Card(UIElement child, string? accentBorder = null) => new()
     {
-        Background = BrushHex("#131822"),
-        BorderBrush = BrushHex(accentBorder ?? "#242E40"),
+        Background = BrushHex("#161B21"),
+        BorderBrush = BrushHex(accentBorder ?? "#262A30"),
         BorderThickness = new Thickness(1),
-        CornerRadius = new CornerRadius(14),
-        Padding = new Thickness(18),
-        Margin = new Thickness(0, 0, 0, 12),
+        CornerRadius = new CornerRadius(16),
+        Padding = new Thickness(20),
+        Margin = new Thickness(0, 0, 0, 14),
         Child = child
     };
-
-    private UIElement PageHeader(string title, string subtitle, UIElement? trailingButton = null)
-    {
-        // Title on the left, buttons on the right — and the buttons drop below the title when the window is too
-        // narrow for both (they used to slide over the title on a 1024-px-wide laptop window).
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 18) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-        var stack = new StackPanel();
-        stack.Children.Add(new TextBlock { Text = title, FontSize = 24, FontWeight = FontWeights.Bold, Foreground = BrushHex("#F2F5FA") });
-        stack.Children.Add(new TextBlock { Text = subtitle, FontSize = 12.5, Foreground = BrushHex("#94A3B8"), Margin = new Thickness(0, 3, 0, 0), TextWrapping = TextWrapping.Wrap });
-        grid.Children.Add(stack);
-
-        if (trailingButton is FrameworkElement trailing)
-        {
-            // A row of buttons wraps onto several lines instead of running off the edge.
-            if (trailing is StackPanel row && row.Orientation == System.Windows.Controls.Orientation.Horizontal)
-            {
-                var wrap = new WrapPanel();
-                var kids = row.Children.Cast<UIElement>().ToList();
-                row.Children.Clear();
-                foreach (var kid in kids) wrap.Children.Add(kid);
-                trailing = wrap;
-            }
-            grid.Children.Add(trailing);
-            void Relayout()
-            {
-                var unbounded = new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity);
-                stack.Measure(unbounded);
-                trailing.Measure(unbounded);
-                var fits = grid.ActualWidth <= 0 || stack.DesiredSize.Width + trailing.DesiredSize.Width + 24 <= grid.ActualWidth;
-                Grid.SetRow(trailing, fits ? 0 : 1);
-                Grid.SetColumn(trailing, fits ? 1 : 0);
-                Grid.SetColumnSpan(trailing, fits ? 1 : 2);
-                trailing.HorizontalAlignment = fits ? System.Windows.HorizontalAlignment.Right : System.Windows.HorizontalAlignment.Left;
-                trailing.VerticalAlignment = VerticalAlignment.Center;
-                trailing.Margin = fits ? new Thickness(0) : new Thickness(0, 12, 0, 0);
-            }
-            grid.SizeChanged += (_, _) => Relayout();
-            grid.Loaded += (_, _) => Relayout();
-            Relayout();
-        }
-        return grid;
-    }
 
     private static System.Windows.Controls.Button PrimaryButton(string label) => new()
     {
         Content = label,
         Background = BrushHex("#38A169"),
-        Foreground = BrushHex("#0B0E14"),
+        Foreground = BrushHex("#0D1014"),
         BorderBrush = BrushHex("#38A169"),
         FontWeight = FontWeights.SemiBold
     };
 
-    private static Border PillBadge(string text, string fgHex = "#94A3B8", string bgHex = "#1B2230") => new()
+    private static Border PillBadge(string text, string fgHex = "#99A6AD", string bgHex = "#1D2229") => new()
     {
         Background = BrushHex(bgHex),
         CornerRadius = new CornerRadius(6),
@@ -431,7 +384,7 @@ public partial class MainWindow : Window
         var left = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         left.Children.Add(new TextBlock { Text = t.Title, FontSize = 14.5, FontWeight = FontWeights.SemiBold });
         var meta = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
-        meta.Children.Add(PillBadge($"{t.ScheduledAt.LocalDateTime:ddd d MMM · HH:mm}", "#F5B95F", "#251D10"));
+        meta.Children.Add(PillBadge($"{t.ScheduledAt.LocalDateTime:ddd d MMM · HH:mm}", "#FAC74D", "#251D10"));
         meta.Children.Add(PillBadge(FocusRules.DurationText(t.Minutes)));
         meta.Children.Add(PillBadge(t.Category));
         left.Children.Add(meta);

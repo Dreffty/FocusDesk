@@ -38,11 +38,11 @@ public partial class MainWindow
                 Margin = new Thickness(0, 0, 10, 10),
                 HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left,
                 Padding = new Thickness(14, 11, 14, 11),
-                Background = BrushHex("#131822"),
-                BorderBrush = BrushHex("#242E40")
+                Background = BrushHex("#161B21"),
+                BorderBrush = BrushHex("#262A30")
             };
             var sp = new StackPanel();
-            sp.Children.Add(new TextBlock { Text = game.Name, FontWeight = FontWeights.SemiBold, FontSize = 13.5, Foreground = BrushHex("#F2F5FA") });
+            sp.Children.Add(new TextBlock { Text = game.Name, FontWeight = FontWeights.SemiBold, FontSize = 13.5, Foreground = BrushHex("#EDF2F5") });
             sp.Children.Add(new TextBlock
             {
                 Text = game.Detection.IsExact() ? game.Detection.Label() : $"{game.TypicalMatchMinutes} min + prórroga",
@@ -149,9 +149,9 @@ public partial class MainWindow
             titleStack.Children.Add(new TextBlock { Text = rule.Name, FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
             var pills = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
             pills.Children.Add(PillBadge(rule.Kind.GalleryTitle()));
-            pills.Children.Add(PillBadge(enforcing ? "Bloqueando" : rule.Enabled ? "Activa" : "Apagada", enforcing ? "#38A169" : rule.Enabled ? "#E2E8F0" : "#64748B", enforcing ? "#16291F" : "#1B2230"));
-            pills.Children.Add(PillBadge(rule.Protection.Label(), rule.Protection == SessionProtection.None ? "#94A3B8" : "#F5B95F", rule.Protection == SessionProtection.None ? "#1B2230" : "#251D10"));
-            if (rule.AlwaysProtected) pills.Children.Add(PillBadge("Obligatoria 24/7", "#F5B95F", "#251D10"));
+            pills.Children.Add(PillBadge(enforcing ? "Bloqueando" : rule.Enabled ? "Activa" : "Apagada", enforcing ? "#38A169" : rule.Enabled ? "#E4E9EC" : "#7C868C", enforcing ? "#16291F" : "#1D2229"));
+            pills.Children.Add(PillBadge(rule.Protection.Label(), rule.Protection == SessionProtection.None ? "#99A6AD" : "#FAC74D", rule.Protection == SessionProtection.None ? "#1D2229" : "#251D10"));
+            if (rule.AlwaysProtected) pills.Children.Add(PillBadge("Obligatoria 24/7", "#FAC74D", "#251D10"));
             titleStack.Children.Add(pills);
             titleStack.Children.Add(MutedText(RuleInfoLine(rule), 12, 6));
             header.Children.Add(titleStack);
@@ -167,7 +167,7 @@ public partial class MainWindow
                     DockPanel.SetDock(finBtn, Dock.Right);
                     finBtn.Click += (_, _) => _engine.FinishTimedMatch(rule, TimedMatchPlanner.FinishReason.UserFinished);
                     gRow.Children.Add(finBtn);
-                    gRow.Children.Add(new TextBlock { Text = st.Text, Foreground = BrushHex(st.Warning ? "#F5B95F" : "#38A169"), FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+                    gRow.Children.Add(new TextBlock { Text = st.Text, Foreground = BrushHex(st.Warning ? "#FAC74D" : "#38A169"), FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
                     sp.Children.Add(gRow);
                 }
             }
@@ -313,7 +313,7 @@ public partial class MainWindow
         var newProfile = SmallButton("+ Nuevo perfil", () => Dialogs.ShowProfileEditor(_engine, null, this), true, 0);
         DockPanel.SetDock(newProfile, Dock.Right);
         profileHeader.Children.Add(newProfile);
-        profileHeader.Children.Add(new TextBlock { Text = "PERFILES REUTILIZABLES", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#94A3B8"), VerticalAlignment = VerticalAlignment.Center });
+        profileHeader.Children.Add(new TextBlock { Text = "PERFILES REUTILIZABLES", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), VerticalAlignment = VerticalAlignment.Center });
         PageContent.Children.Add(profileHeader);
         foreach (var profile in _engine.Workspace.Profiles)
         {

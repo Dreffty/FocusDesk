@@ -112,13 +112,13 @@ public partial class MainWindow
             Owner = this,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             ResizeMode = ResizeMode.NoResize,
-            Background = BrushHex("#0B0E14"),
-            Foreground = BrushHex("#F2F5FA")
+            Background = BrushHex("#0D1014"),
+            Foreground = BrushHex("#EDF2F5")
         };
         var root = new DockPanel { Margin = new Thickness(16) };
         var search = new System.Windows.Controls.TextBox { Margin = new Thickness(0, 0, 0, 10), FontSize = 15 };
         DockPanel.SetDock(search, Dock.Top);
-        var list = new System.Windows.Controls.ListBox { Background = BrushHex("#131822"), BorderBrush = BrushHex("#242E40") };
+        var list = new System.Windows.Controls.ListBox { Background = BrushHex("#161B21"), BorderBrush = BrushHex("#262A30") };
         root.Children.Add(search);
         root.Children.Add(list);
 
@@ -129,7 +129,7 @@ public partial class MainWindow
             foreach (var command in commands)
             {
                 if (query.Length > 0 && !FocusRules.Fold(command.Title).Contains(query, StringComparison.Ordinal)) continue;
-                list.Items.Add(new ListBoxItem { Content = command.Title, Tag = command.Run, Foreground = BrushHex("#F2F5FA") });
+                list.Items.Add(new ListBoxItem { Content = command.Title, Tag = command.Run, Foreground = BrushHex("#EDF2F5") });
             }
             if (list.Items.Count > 0) list.SelectedIndex = 0;
         }
@@ -217,8 +217,8 @@ public partial class MainWindow
             void Paint()
             {
                 var on = _engine.Workspace.Settings.Workdays.Contains(num);
-                dayButton.Background = BrushHex(on ? "#38A169" : "#1B2230");
-                dayButton.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
+                dayButton.Background = BrushHex(on ? "#38A169" : "#1D2229");
+                dayButton.Foreground = BrushHex(on ? "#0D1014" : "#E4E9EC");
             }
             Paint();
             dayButton.Click += (_, _) =>
@@ -239,7 +239,7 @@ public partial class MainWindow
                 (byte)Math.Round(category.Red * 255), (byte)Math.Round(category.Green * 255), (byte)Math.Round(category.Blue * 255)));
             categoryList.Children.Add(new Border
             {
-                Background = BrushHex("#1B2230"),
+                Background = BrushHex("#1D2229"),
                 CornerRadius = new CornerRadius(6),
                 Padding = new Thickness(10, 4, 10, 4),
                 Margin = new Thickness(0, 0, 6, 6),

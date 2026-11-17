@@ -3,23 +3,27 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ShutdownMode="OnExplicitShutdown">
   <Application.Resources>
-    <!-- Desaturated dark palette tokens -->
-    <SolidColorBrush x:Key="BgBrush" Color="#0B0E14"/>
-    <SolidColorBrush x:Key="SidebarBrush" Color="#080A0F"/>
-    <SolidColorBrush x:Key="SurfaceBrush" Color="#131822"/>
-    <SolidColorBrush x:Key="ElevatedBrush" Color="#1B2230"/>
-    <SolidColorBrush x:Key="HoverBrush" Color="#242D40"/>
-    <SolidColorBrush x:Key="FieldBgBrush" Color="#151B26"/>
-    <SolidColorBrush x:Key="StrokeBrush" Color="#242E40"/>
-    <SolidColorBrush x:Key="FieldStrokeBrush" Color="#38465E"/>
+    <!-- The macOS palette (DesignSystem.swift, dark): neutral near-black, grey cards, one solid green -->
+    <SolidColorBrush x:Key="BgBrush" Color="#0D1014"/>
+    <SolidColorBrush x:Key="SidebarBrush" Color="#0A0C10"/>
+    <SolidColorBrush x:Key="SurfaceBrush" Color="#161B21"/>
+    <SolidColorBrush x:Key="ElevatedBrush" Color="#1D2229"/>
+    <SolidColorBrush x:Key="HoverBrush" Color="#252A31"/>
+    <SolidColorBrush x:Key="FieldBgBrush" Color="#12161B"/>
+    <SolidColorBrush x:Key="StrokeBrush" Color="#2A2E34"/>
+    <SolidColorBrush x:Key="FieldStrokeBrush" Color="#3A3F46"/>
     <SolidColorBrush x:Key="MintBrush" Color="#38A169"/>
     <SolidColorBrush x:Key="MintBrightBrush" Color="#43B077"/>
-    <SolidColorBrush x:Key="MintSoftBrush" Color="#16291F"/>
-    <SolidColorBrush x:Key="OnAccentBrush" Color="#0B0E14"/>
-    <SolidColorBrush x:Key="WarningBrush" Color="#F5B95F"/>
-    <SolidColorBrush x:Key="DangerBrush" Color="#F26D6D"/>
-    <SolidColorBrush x:Key="TextBrush" Color="#F2F5FA"/>
-    <SolidColorBrush x:Key="MutedBrush" Color="#94A3B8"/>
+    <SolidColorBrush x:Key="MintSoftBrush" Color="#15291F"/>
+    <SolidColorBrush x:Key="OnAccentBrush" Color="#0D1014"/>
+    <SolidColorBrush x:Key="WarningBrush" Color="#FAC74D"/>
+    <SolidColorBrush x:Key="DangerBrush" Color="#FF8080"/>
+    <SolidColorBrush x:Key="TextBrush" Color="#EDF2F5"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#99A6AD"/>
+
+    <Style TargetType="Window">
+      <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI"/>
+    </Style>
 
     <!-- Secondary / Default Button with subtle tactile press scale (emil-design-eng: 0.97) -->
     <Style TargetType="Button">
@@ -30,7 +34,7 @@
       <Setter Property="Padding" Value="14,8"/>
       <Setter Property="MinHeight" Value="34"/>
       <Setter Property="FontSize" Value="13"/>
-      <Setter Property="FontWeight" Value="Medium"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="HorizontalContentAlignment" Value="Center"/>
       <Setter Property="VerticalContentAlignment" Value="Center"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -42,7 +46,7 @@
                     Background="{TemplateBinding Background}"
                     BorderBrush="{TemplateBinding BorderBrush}"
                     BorderThickness="{TemplateBinding BorderThickness}"
-                    CornerRadius="9"
+                    CornerRadius="10"
                     Padding="{TemplateBinding Padding}"
                     RenderTransformOrigin="0.5,0.5">
               <Border.RenderTransform>
@@ -53,7 +57,7 @@
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="BtnBorder" Property="Opacity" Value="0.92"/>
+                <Setter TargetName="BtnBorder" Property="Opacity" Value="0.88"/>
               </Trigger>
               <Trigger Property="IsPressed" Value="True">
                 <Trigger.EnterActions>
@@ -129,11 +133,11 @@
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="BorderBrush" Value="#4C5E7D"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="#4A5058"/>
               </Trigger>
               <Trigger Property="IsKeyboardFocused" Value="True">
                 <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource MintBrush}"/>
-                <Setter TargetName="Bd" Property="Background" Value="#18202E"/>
+                <Setter TargetName="Bd" Property="Background" Value="#191D23"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
                 <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
@@ -219,7 +223,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                       <Trigger Property="IsMouseOver" Value="True">
-                        <Setter TargetName="ComboBd" Property="BorderBrush" Value="#4C5E7D"/>
+                        <Setter TargetName="ComboBd" Property="BorderBrush" Value="#4A5058"/>
                       </Trigger>
                       <Trigger Property="IsChecked" Value="True">
                         <Setter TargetName="ComboBd" Property="BorderBrush" Value="{StaticResource MintBrush}"/>
