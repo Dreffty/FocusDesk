@@ -358,6 +358,7 @@ public static class BrowserInspector
 
         AutomationElement? fallbackEdit = null;
         string? fallbackRaw = null;
+        AutomationElement? emptyNamedBar = null;
 
         while (queue.Count > 0 && visited < MaxVisitedNodes)
         {
@@ -389,7 +390,10 @@ public static class BrowserInspector
                         if (isNamedAddressBar)
                         {
                             // If the bar already holds a valid URL, never hide it just because the user clicked the omnibox.
-                            return (cur, isUrl ? val : (hasFocus ? null : val));
+                            if (isUrl || hasFocus) return (cur, isUrl ? val : null);
+                            // Opera has an empty «Address bar» next to the «Address field» that holds the address:
+                            // remember the empty one only as a last resort and keep looking.
+                            if (emptyNamedBar == null) emptyNamedBar = cur;
                         }
                         if (fallbackEdit == null && isUrl && ct == ControlType.Edit)
                         {
@@ -414,7 +418,8 @@ public static class BrowserInspector
             catch { }
         }
 
-        return (fallbackEdit, fallbackRaw);
+        if (fallbackEdit != null) return (fallbackEdit, fallbackRaw);
+        return (emptyNamedBar, emptyNamedBar != null ? "" : null);
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
