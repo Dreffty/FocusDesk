@@ -297,7 +297,7 @@ public sealed class FocusProfile
     public bool PunisherEnabled { get; set; } = true;
     public List<string> BlockedFolders { get; set; } = new();
     public AppListMode AppListMode { get; set; } = AppListMode.BlockListed;
-    public WebListMode WebListMode { get; set; } = AppListMode.BlockListed;
+    public WebListMode WebListMode { get; set; } = WebListMode.BlockListed;
     public string BlockedTitleKeywords { get; set; } = "";
     public bool WholeWordKeywords { get; set; }
     public string CustomRedirectURL { get; set; } = "";
