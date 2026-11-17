@@ -94,8 +94,11 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         set { _hourlyLayout = value; OnPropertyChanged(); StateRefreshed?.Invoke(); }
     }
 
-    public AppEngine(string? customDir = null)
+    private readonly bool _enablePlatformWatchers;
+
+    public AppEngine(string? customDir = null, bool enablePlatformWatchers = true)
     {
+        _enablePlatformWatchers = enablePlatformWatchers;
         Store = new WorkspaceStore(customDir);
         try
         {
@@ -104,12 +107,12 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             Workspace.ClosedBySystemAt = null;
             if (Workspace.Session != null)
             {
-                var shouldResume = Workspace.Session.ShouldResumeAfterRelaunch(DateTimeOffset.Now);
-                Workspace.Session.RunningSince = null;
-                Workspace.Session.RunningUptime = null;
+                var now = DateTimeOffset.Now;
+                var shouldResume = Workspace.Session.ShouldResumeAfterRelaunch(now);
+                Workspace.Session.RecoverAfterUncleanExit(now);
                 if (shouldResume)
                 {
-                    Workspace.Session.Resume(DateTimeOffset.Now);
+                    Workspace.Session.Resume(now);
                     Notice = $"«{Workspace.Session.Task.Title}» está protegida y continúa donde estaba.";
                 }
                 else
@@ -118,7 +121,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 }
             }
             Store.CreateDailySnapshotIfNeeded();
-            CheckWitnessTamper();
+            if (_enablePlatformWatchers) CheckWitnessTamper();
             Persist();
         }
         catch (Exception ex)
@@ -130,16 +133,46 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         if (Workspace.GeneralRules.Any(r => r.Enabled && r.AlwaysProtected && r.Protection != SessionProtection.None))
             Workspace.Settings.RelaunchGuard = true;
 
-        if (Workspace.Settings.RelaunchGuard && !RelaunchGuard.IsInstalled())
-            RelaunchGuard.Install();
-        else if (Workspace.Settings.RelaunchGuard)
-            RelaunchGuard.StartWatcherProcessIfMissing();
-
-        RefreshValveServer();
+        EnsureWatcherIfNeeded();
+        if (_enablePlatformWatchers) RefreshValveServer();
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => Tick();
-        _timer.Start();
+        if (_enablePlatformWatchers) _timer.Start();
+    }
+
+    public void EnsureWatcherIfNeeded()
+    {
+        if (!_enablePlatformWatchers) return;
+        var needsWatcher = Workspace.Settings.RelaunchGuard ||
+            (Workspace.Session is { EndedAt: null } s && s.Task.Protection != SessionProtection.None) ||
+            Workspace.GeneralRules.Any(r => r.Enabled && r.Protection != SessionProtection.None);
+
+        if (Workspace.Settings.RelaunchGuard && !RelaunchGuard.IsInstalled())
+            RelaunchGuard.Install();
+        else if (needsWatcher)
+            RelaunchGuard.StartWatcherProcessIfMissing();
+    }
+
+    public (SessionProtection Protection, int UnlockChars, int StopDelayMinutes, string ContextLabel)? GetActiveProtectionGate(DateTimeOffset? at = null)
+    {
+        var t = at ?? DateTimeOffset.Now;
+        if (Workspace.Session is { EndedAt: null } s && s.Task.Protection != SessionProtection.None && s.Remaining(t) > 0)
+            return (s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"mientras «{s.Task.Title}» está en marcha");
+
+        var armedTask = Workspace.Tasks.FirstOrDefault(task =>
+            !task.Completed && task.Id != Workspace.Session?.Task.Id && IsTaskProtected(task, t));
+        if (armedTask != null)
+            return (armedTask.Protection, armedTask.UnlockChars, armedTask.StopDelayMinutes, $"antes del inicio de «{armedTask.Title}»");
+
+        var protectedRule = Workspace.GeneralRules
+            .Where(r => IsRuleProtected(r, t))
+            .OrderByDescending(r => r.Protection.Strength())
+            .FirstOrDefault();
+        if (protectedRule != null)
+            return (protectedRule.Protection, protectedRule.UnlockChars, protectedRule.StopDelayMinutes, $"mientras la regla «{protectedRule.Name}» está protegida");
+
+        return null;
     }
 
     private void OnPropertyChanged([CallerMemberName] string? name = null) =>
@@ -165,6 +198,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
 
     public void RefreshWitness()
     {
+        if (!_enablePlatformWatchers) return;
         var s = Workspace.Session;
         var payload = new DpapiWitness.WitnessPayload
         {
@@ -351,6 +385,15 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         {
             ObserveForeground(now);
             CheckClipboardGuard();
+        }
+        if (_ticks % 15 == 0)
+        {
+            if (Workspace.Session is { Paused: false, EndedAt: null } runningSess)
+            {
+                runningSess.Checkpoint(now);
+                Persist();
+            }
+            EnsureWatcherIfNeeded();
         }
         if (_ticks % 60 == 0)
         {
@@ -895,15 +938,30 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         if (fg == null) return;
 
         var procClean = fg.ProcessName.ToLowerInvariant().Replace(".exe", "");
-        if (FocusRules.SystemExemptProcesses.Contains(procClean))
+        var cont = TrustedClock.ContinuousSeconds();
+
+        if (_ticks % 6 == 0)
+            SweepBackgroundWindows(fg.ProcessId, now, cont);
+
+        // Guard Task Manager, Regedit, and sensitive Windows Settings panes before SystemExempt short-circuits.
+        var sessionGuardsPanes = Workspace.Session is { Paused: false, EndedAt: null } gs &&
+                                 gs.Task.GuardSystemPanes && gs.Task.Protection != SessionProtection.None &&
+                                 gs.Remaining(now, cont) > 0;
+        var ruleGuardsPanes = Workspace.GeneralRules.Any(r =>
+            r.Enabled && r.GuardSystemPanes && r.Protection != SessionProtection.None && IsRuleEnforcing(r, now));
+        if (sessionGuardsPanes || ruleGuardsPanes)
         {
-            if (Workspace.Session is { Paused: false, EndedAt: null } sess && sess.Task.GuardSystemPanes && sess.Task.Protection != SessionProtection.None)
+            var hit = SystemSettingsGuard.CheckGuardedPane(fg);
+            if (hit != null)
             {
-                var hit = SystemSettingsGuard.CheckGuardedPane(fg);
-                if (hit != null) { WindowsActivity.CloseWindow(fg.Hwnd); Notice = $"Bloqueado {hit} durante la sesión protegida."; }
+                WindowsActivity.CloseWindow(fg.Hwnd);
+                Notice = $"Bloqueado {hit} durante la protección activa.";
+                return;
             }
-            return;
         }
+
+        if (FocusRules.SystemExemptProcesses.Contains(procClean))
+            return;
 
         // Read browser URL off the UI thread so UIAutomation never freezes the WPF window.
         if (StudyActivityVerifier.IsBrowser(procClean) && !_webReadBusy && (now - _lastWebReadAt).TotalSeconds >= 2.5)
@@ -930,8 +988,8 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             });
         }
 
-        var cont = TrustedClock.ContinuousSeconds();
-        if (Workspace.Session is { Paused: false, EndedAt: null } s)
+        if (Workspace.Session is { Paused: false, EndedAt: null } s &&
+            s.Task.PomodoroPhase(s.Elapsed(now, cont))?.IsBreak != true)
         {
             var gameHit = s.Task.BlockGameLibraries ? GameLibraryRules.MatchesGameApp(procClean, fg.ExecutablePath) : null;
             var allowed = Workspace.IsTemporarilyAllowedApp(procClean, now, cont) ||
@@ -940,7 +998,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
                 allowed = false;
 
             s.ObserveForeground(procClean, fg.ProcessName, fg.WindowTitle, allowed, now);
-            if (!allowed && s.Task.Strict)
+            if (!allowed && (s.Task.Strict || gameHit != null || FocusRules.MatchesTitleKeyword(fg.WindowTitle, s.Task.BlockedTitleKeywords, s.Task.WholeWordKeywords) != null))
             {
                 var verb = WindowsActivity.ApplyBlockAction(fg, s.Punisher.IsActive(cont) ? s.Task.BlockAction.Escalated() : s.Task.BlockAction);
                 s.BlocksApplied++;
@@ -1051,13 +1109,45 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         return false;
     }
 
+    private void SweepBackgroundWindows(int foregroundPid, DateTimeOffset now, double cont)
+    {
+        var activeSess = Workspace.Session is { Paused: false, EndedAt: null } s &&
+                         s.Task.PomodoroPhase(s.Elapsed(now, cont))?.IsBreak != true &&
+                         s.Task.Strict && s.Task.Apps.Count > 0
+            ? s
+            : null;
+        var activeAppRules = Workspace.GeneralRules
+            .Where(r => r.Enabled && !r.IsMicroPaused(now, cont) && r.BlockApps && r.Apps.Count > 0 && IsRuleEnforcing(r, now))
+            .ToList();
+        if (activeSess == null && activeAppRules.Count == 0) return;
+
+        foreach (var win in WindowsActivity.VisibleWindows())
+        {
+            if (win.ProcessId == foregroundPid) continue;
+            var clean = win.ProcessName.ToLowerInvariant().Replace(".exe", "");
+            if (FocusRules.SystemExemptProcesses.Contains(clean)) continue;
+            if (Workspace.IsTemporarilyAllowedApp(clean, now, cont)) continue;
+
+            var blocked = false;
+            if (activeSess != null && !FocusRules.AppAllowed(clean, activeSess.Task.Apps, activeSess.Task.AppListMode))
+                blocked = true;
+            if (!blocked && activeAppRules.Any(r => !FocusRules.AppAllowed(clean, r.Apps, r.AppListMode)))
+                blocked = true;
+
+            if (blocked)
+                WindowsActivity.MinimizeWindow(win.Hwnd);
+        }
+    }
+
     private void EvaluateWebRules(ForegroundAppInfo fg, string host, string path, DateTimeOffset now)
     {
         var cont = TrustedClock.ContinuousSeconds();
         if (Workspace.IsTemporarilyAllowed(host, path, now, cont)) return;
         var visitKey = $"{host}{path}";
 
-        if (Workspace.Session is { Paused: false, EndedAt: null } s && (s.Task.WebBlockAction != WebBlockAction.Warn || s.Task.BlockSearchMedia))
+        if (Workspace.Session is { Paused: false, EndedAt: null } s &&
+            s.Task.PomodoroPhase(s.Elapsed(now, cont))?.IsBreak != true &&
+            (s.Task.WebBlockAction != WebBlockAction.Warn || s.Task.BlockSearchMedia))
         {
             var searchHit = s.Task.BlockSearchMedia ? SearchMediaRules.Matches(host, path) : null;
             var allowed = searchHit == null && (s.Task.WebBlockAction == WebBlockAction.Warn || FocusRules.WebAllowed(host, path, s.Task.Domains, s.Task.WebListMode));
@@ -1125,6 +1215,19 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             if (text == _lastClipboardText || string.IsNullOrWhiteSpace(text)) return;
             _lastClipboardText = text;
             var now = DateTimeOffset.Now;
+
+            if (Workspace.Session is { Paused: false, EndedAt: null } s && s.Remaining(now) > 0)
+            {
+                var hit = ClipboardGuardRules.Violation(text, s.Task.Domains, s.Task.WebListMode, s.Task.WebBlockAction);
+                if (hit != null)
+                {
+                    System.Windows.Clipboard.Clear();
+                    _lastClipboardText = "";
+                    Notice = $"Portapapeles limpiado ({hit}).";
+                    return;
+                }
+            }
+
             foreach (var rule in Workspace.GeneralRules.Where(r => IsRuleEnforcing(r, now)))
             {
                 var hit = ClipboardGuardRules.Violation(text, rule.Domains, rule.WebListMode, rule.WebBlockAction);
@@ -1196,6 +1299,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         Error = "";
         Notice = $"«{task.Title}» en marcha ({task.Minutes} min).";
         Persist();
+        EnsureWatcherIfNeeded();
     }
 
     public void PauseSession()
@@ -1274,17 +1378,26 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
             if (reason != null) { Error = $"Protegida: no se puede {reason} sin desbloquear."; return; }
         }
         if (idx >= 0) Workspace.GeneralRules[idx] = rule; else Workspace.GeneralRules.Add(rule);
+        if (rule.Enabled && rule.AlwaysProtected && rule.Protection != SessionProtection.None)
+            Workspace.Settings.RelaunchGuard = true;
         Error = "";
         Persist();
-        RefreshValveServer();
+        EnsureWatcherIfNeeded();
+        if (_enablePlatformWatchers) RefreshValveServer();
         Notice = $"Regla «{rule.Name}» guardada.";
     }
 
-    public void DeleteGeneralRule(GeneralBlockRule rule)
+    public void DeleteGeneralRule(GeneralBlockRule rule, bool bypassProtection = false)
     {
+        if (!bypassProtection && IsRuleProtected(rule))
+        {
+            Error = $"La regla «{rule.Name}» está protegida y requiere desbloqueo para borrarse.";
+            return;
+        }
         Workspace.GeneralRules.RemoveAll(r => r.Id == rule.Id);
+        Error = "";
         Persist();
-        RefreshValveServer();
+        if (_enablePlatformWatchers) RefreshValveServer();
         Notice = $"Regla «{rule.Name}» eliminada.";
     }
 
@@ -1352,7 +1465,7 @@ public sealed class AppEngine : INotifyPropertyChanged, IDisposable
         Workspace = imported;
         Error = "";
         Persist();
-        RefreshValveServer();
+        if (_enablePlatformWatchers) RefreshValveServer();
         Notice = "Copia importada correctamente.";
     }
 

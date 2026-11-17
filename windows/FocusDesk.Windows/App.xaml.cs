@@ -23,6 +23,13 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        if (e.Args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))
+        {
+            var exitCode = SmokeCheck.Run();
+            Environment.Exit(exitCode);
+            return;
+        }
+
         if (e.Args.Contains(RelaunchGuard.WatcherArg, StringComparer.OrdinalIgnoreCase))
         {
             RelaunchGuard.RunWatcherLoop();
@@ -156,8 +163,12 @@ public partial class App : System.Windows.Application
                 _engine.Workspace.RecordAudit("Salida de emergencia", $"Cierre de FocusDesk con regla «{protectedRule.Name}» protegida.");
         }
 
+        if (_engine.Workspace.Session is { Paused: false, EndedAt: null } runningSess)
+            runningSess.Pause(DateTimeOffset.Now);
+
         _engine.Workspace.ClosedBySystemAt = DateTimeOffset.UtcNow;
         _engine.Persist();
+        RelaunchGuard.StopWatcherProcess();
         _mainWindow?.AllowClose();
         _mainWindow?.Close();
         _trayIcon?.Dispose();

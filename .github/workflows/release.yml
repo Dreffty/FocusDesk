@@ -73,10 +73,17 @@ jobs:
             -p:EnableCompressionInSingleFile=true `
             -o dist-win
 
-      - name: Package Windows executable
+      - name: Run Windows smoke-test and package executable
         shell: pwsh
         run: |
           if (!(Test-Path dist-win/FocusDesk.exe)) { throw "FocusDesk.exe was not produced by dotnet publish" }
+          $proc = Start-Process -FilePath "dist-win/FocusDesk.exe" -ArgumentList "--smoke-test" -Wait -PassThru -NoNewWindow
+          if (Test-Path windows-smoke-report.txt) {
+            Get-Content windows-smoke-report.txt
+          }
+          if ($proc.ExitCode -ne 0) {
+            throw "Windows smoke-test failed with exit code $($proc.ExitCode)"
+          }
           Copy-Item dist-win/FocusDesk.exe FocusDesk-Windows-x64.exe
 
       - name: Upload Windows artifact

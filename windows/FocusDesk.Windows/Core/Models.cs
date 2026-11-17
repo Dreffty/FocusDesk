@@ -666,6 +666,8 @@ public sealed class WorkSession
         RunningSince = t;
         RunningUptime = uptime ?? TrustedClock.ContinuousSeconds();
         Budget = Math.Max(60, task.Minutes * 60.0);
+        if (Task.Protection != SessionProtection.None)
+            ResumeOnLaunchUntil = t.AddSeconds(Budget);
     }
 
     [JsonIgnore] public bool Paused => RunningSince == null;
@@ -694,12 +696,40 @@ public sealed class WorkSession
         return deadline.HasValue && t < deadline.Value;
     }
 
+    public void Checkpoint(DateTimeOffset now, double? uptime = null)
+    {
+        if (Paused || EndedAt != null) return;
+        CloseOpenActivity(now, uptime);
+        Accumulated = Elapsed(now, uptime);
+        RunningSince = now;
+        RunningUptime = uptime ?? TrustedClock.ContinuousSeconds();
+        LastActivityAt = now;
+        LastActivityUptime = RunningUptime;
+        if (Task.Protection != SessionProtection.None)
+            ResumeOnLaunchUntil = now.AddSeconds(Math.Max(0, Budget - Accumulated));
+    }
+
+    public void RecoverAfterUncleanExit(DateTimeOffset now)
+    {
+        if (RunningSince.HasValue && EndedAt == null)
+        {
+            var span = Math.Clamp((now - RunningSince.Value).TotalSeconds, 0, Math.Max(0, Budget - Accumulated));
+            Accumulated += span;
+        }
+        RunningSince = null;
+        RunningUptime = null;
+        LastActivityAt = null;
+        LastActivityUptime = null;
+        InDistractionEpisode = false;
+    }
+
     public void Pause(DateTimeOffset now, double? uptime = null)
     {
         if (!Paused) CloseOpenActivity(now, uptime);
         Accumulated = Elapsed(now, uptime);
         RunningSince = null;
         RunningUptime = null;
+        ResumeOnLaunchUntil = null;
         LastActivityAt = null;
         LastActivityUptime = null;
         InDistractionEpisode = false;
@@ -710,7 +740,9 @@ public sealed class WorkSession
         if (RunningSince != null || EndedAt != null) return;
         RunningSince = now;
         RunningUptime = uptime ?? TrustedClock.ContinuousSeconds();
-        ResumeOnLaunchUntil = null;
+        ResumeOnLaunchUntil = Task.Protection != SessionProtection.None
+            ? now.AddSeconds(Math.Max(0, Budget - Accumulated))
+            : null;
         LastActivityAt = now;
         LastActivityUptime = RunningUptime;
         InDistractionEpisode = false;
@@ -926,7 +958,7 @@ public sealed class Settings
     {
         new() { Title = "Descanso / Comida", StartHour = 14, StartMinute = 0, DurationMinutes = 60 }
     };
-    public bool RelaunchGuard { get; set; }
+    public bool RelaunchGuard { get; set; } = true;
     public int RunUpMinutes { get; set; } = 10;
     public bool EnforceBreaks { get; set; } = true;
     public bool PreBlockRemindersEnabled { get; set; } = true;
@@ -942,7 +974,7 @@ public sealed class Settings
         "Suelta el teclado un momento para volver con la mente despejada."
     };
     public int DayRolloverHour { get; set; }
-    public bool ProtectClipboard { get; set; }
+    public bool ProtectClipboard { get; set; } = true;
     public bool ProtectActivityHistory { get; set; }
     public List<StudySource> StudySources { get; set; } = Core.StudySources.Defaults();
 }

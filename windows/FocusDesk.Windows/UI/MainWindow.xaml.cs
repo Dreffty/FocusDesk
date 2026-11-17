@@ -386,6 +386,7 @@ public partial class MainWindow : Window
             var add10 = new System.Windows.Controls.Button { Content = "+10 min", Margin = new Thickness(0, 0, 8, 0) };
             add10.Click += (_, _) => _engine.AddSessionMinutes(10);
             var fin = PrimaryButton("He terminado");
+            fin.Margin = new Thickness(0, 0, 8, 0);
             fin.Click += (_, _) =>
             {
                 if (s.Remaining(DateTimeOffset.Now) > 0 && s.Task.Protection != SessionProtection.None)
@@ -397,9 +398,25 @@ public partial class MainWindow : Window
                 }
                 _engine.FinishSession();
             };
+            var cancelBtn = new System.Windows.Controls.Button
+            {
+                Content = s.Task.Protection == SessionProtection.Forced ? "Salida de emergencia" : "Cancelar"
+            };
+            cancelBtn.Click += (_, _) =>
+            {
+                if (s.Remaining(DateTimeOffset.Now) > 0 && s.Task.Protection != SessionProtection.None)
+                {
+                    if (!Dialogs.RequestUnlock(s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"cancelar «{s.Task.Title}»", this))
+                        return;
+                    if (s.Task.Protection == SessionProtection.Forced)
+                        _engine.Workspace.RecordAudit("Salida de emergencia", $"Cancelación de emergencia de «{s.Task.Title}».");
+                }
+                _engine.CancelSession();
+            };
             btns.Children.Add(pauseBtn);
             btns.Children.Add(add10);
             btns.Children.Add(fin);
+            btns.Children.Add(cancelBtn);
             sp.Children.Add(btns);
             PageContent.Children.Add(Card(sp, s.Paused ? "#4A3A1E" : "#275943"));
         }
@@ -604,6 +621,7 @@ public partial class MainWindow : Window
                     rule.ActivePomodoroDeadline = null;
                 }
                 _engine.Persist();
+                _engine.EnsureWatcherIfNeeded();
             };
 
             var edit = new System.Windows.Controls.Button { Content = "Editar", Margin = new Thickness(0, 0, 6, 0) };
@@ -612,14 +630,16 @@ public partial class MainWindow : Window
             var del = new System.Windows.Controls.Button { Content = "Borrar" };
             del.Click += (_, _) =>
             {
+                var bypass = false;
                 if (_engine.IsRuleProtected(rule))
                 {
                     if (!Dialogs.RequestUnlock(rule.Protection, rule.UnlockChars, rule.StopDelayMinutes, $"borrar «{rule.Name}»", this))
                         return;
                     if (rule.Protection == SessionProtection.Forced)
                         _engine.Workspace.RecordAudit("Salida de emergencia", $"Borrada regla protegida «{rule.Name}».");
+                    bypass = true;
                 }
-                _engine.DeleteGeneralRule(rule);
+                _engine.DeleteGeneralRule(rule, bypassProtection: bypass);
             };
 
             actions.Children.Add(toggle);
@@ -744,6 +764,21 @@ public partial class MainWindow : Window
             PageContent.Children.Add(Card(new TextBlock { Text = "Todavía no has completado ninguna sesión.", Foreground = BrushHex("#94A3B8") }));
     }
 
+    private bool RequireProtectionGateForSettings(string actionDescription)
+    {
+        var gate = _engine.GetActiveProtectionGate();
+        if (gate == null) return true;
+        var ok = Dialogs.RequestUnlock(
+            gate.Value.Protection,
+            gate.Value.UnlockChars,
+            gate.Value.StopDelayMinutes,
+            $"{actionDescription} ({gate.Value.ContextLabel})",
+            this);
+        if (ok && gate.Value.Protection == SessionProtection.Forced)
+            _engine.Workspace.RecordAudit("Salida de emergencia", $"Ajuste modificado: {actionDescription}.");
+        return ok;
+    }
+
     private void BuildSettingsPage()
     {
         PageContent.Children.Add(PageHeader("Ajustes", "A tu manera."));
@@ -755,7 +790,16 @@ public partial class MainWindow : Window
             Content = "Vigilante de relanzado (--watcher al iniciar Windows: vuelve a abrir FocusDesk si se cierra)",
             IsChecked = _engine.Workspace.Settings.RelaunchGuard
         };
-        guardCheck.Click += (_, _) => _engine.SetRelaunchGuard(guardCheck.IsChecked == true);
+        guardCheck.Click += (_, _) =>
+        {
+            var wantEnabled = guardCheck.IsChecked == true;
+            if (!wantEnabled && !RequireProtectionGateForSettings("desactivar el vigilante de relanzado"))
+            {
+                guardCheck.IsChecked = true;
+                return;
+            }
+            _engine.SetRelaunchGuard(wantEnabled);
+        };
         guardPanel.Children.Add(guardCheck);
 
         var clipCheck = new System.Windows.Controls.CheckBox
@@ -764,7 +808,17 @@ public partial class MainWindow : Window
             IsChecked = _engine.Workspace.Settings.ProtectClipboard,
             Margin = new Thickness(0, 10, 0, 0)
         };
-        clipCheck.Click += (_, _) => { _engine.Workspace.Settings.ProtectClipboard = clipCheck.IsChecked == true; _engine.Persist(); };
+        clipCheck.Click += (_, _) =>
+        {
+            var wantEnabled = clipCheck.IsChecked == true;
+            if (!wantEnabled && !RequireProtectionGateForSettings("desactivar la protección del portapapeles"))
+            {
+                clipCheck.IsChecked = true;
+                return;
+            }
+            _engine.Workspace.Settings.ProtectClipboard = wantEnabled;
+            _engine.Persist();
+        };
         guardPanel.Children.Add(clipCheck);
 
         var quitBtn = new System.Windows.Controls.Button { Content = "Salir de FocusDesk", Margin = new Thickness(0, 14, 0, 0), HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
@@ -822,6 +876,8 @@ public partial class MainWindow : Window
         var impBtn = new System.Windows.Controls.Button { Content = "Importar copia (.json)" };
         impBtn.Click += (_, _) =>
         {
+            if (!RequireProtectionGateForSettings("importar una copia de seguridad"))
+                return;
             var dlg = new Microsoft.Win32.OpenFileDialog { Filter = "JSON (*.json)|*.json" };
             if (dlg.ShowDialog() != true) return;
             try { _engine.ImportBackup(dlg.FileName); }

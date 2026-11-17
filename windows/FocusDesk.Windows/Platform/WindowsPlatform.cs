@@ -205,6 +205,8 @@ public static class WindowsActivity
 
     public static void CloseWindow(IntPtr hwnd) => PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
 
+    public static void MinimizeWindow(IntPtr hwnd) => ShowWindow(hwnd, SW_MINIMIZE);
+
     public static List<(int Pid, string Name, string? ExePath, string Title)> RunningProcesses()
     {
         var nowTick = Environment.TickCount64;
@@ -456,10 +458,16 @@ public static class SystemSettingsGuard
         var proc = app.ProcessName.ToLowerInvariant().Replace(".exe", "");
         if (proc == "taskmgr") return "Administrador de tareas";
         if (proc == "regedit") return "Editor del Registro";
-        if (proc == "systemsettings")
+        if (proc is "systemsettings" or "applicationframehost")
         {
             var title = app.WindowTitle.ToLowerInvariant();
             if (GuardedTokens.Any(t => title.Contains(t))) return "Configuración de Windows";
+        }
+        if (proc is "cmd" or "powershell" or "pwsh" or "windowsterminal")
+        {
+            var title = app.WindowTitle.ToLowerInvariant();
+            if (title.Contains("taskkill") || title.Contains("stop-process"))
+                return "Terminal (intento de cerrar FocusDesk)";
         }
         return null;
     }
@@ -593,6 +601,7 @@ public static class RelaunchGuard
     public const string WatcherArg = "--watcher";
     private const string SingleInstanceMutexName = @"Local\FocusDesk_Articdia_SingleInstance";
     private const string WatcherMutexName = @"Local\FocusDesk_Watcher_Running";
+    private const string WatcherStopEventName = @"Local\FocusDesk_Watcher_Stop";
 
     public static bool IsInstalled()
     {
@@ -625,6 +634,19 @@ public static class RelaunchGuard
             key?.DeleteValue(ValueName, throwOnMissingValue: false);
         }
         catch { }
+        StopWatcherProcess();
+    }
+
+    public static void StopWatcherProcess()
+    {
+        try
+        {
+            if (EventWaitHandle.TryOpenExisting(WatcherStopEventName, out var stopEvent))
+            {
+                using (stopEvent) stopEvent.Set();
+            }
+        }
+        catch { }
     }
 
     public static void StartWatcherProcessIfMissing(string? exePath = null)
@@ -647,17 +669,50 @@ public static class RelaunchGuard
         catch { }
     }
 
+    /// <summary>
+    /// Decides whether the background watcher should reopen FocusDesk after the GUI process disappeared.
+    /// Returns false when the user quit FocusDesk legitimately (after unlocking) or Windows shut down (`ClosedBySystemAt`),
+    /// and true when FocusDesk was force-killed while a protected session, protected rule, or run-up task was active.
+    /// </summary>
+    public static bool ShouldRelaunch(Workspace ws, DateTimeOffset now, double? continuous = null)
+    {
+        if (ws.ClosedBySystemAt.HasValue && Math.Abs((now - ws.ClosedBySystemAt.Value).TotalSeconds) < 120)
+            return false;
+
+        var cont = continuous ?? TrustedClock.ContinuousSeconds();
+        if (ws.Session != null && ws.Session.ShouldResumeAfterRelaunch(now))
+            return true;
+
+        var localNow = now.ToLocalTime();
+        if (ws.Tasks.Any(t => !t.Completed && FocusRules.IsTaskInRunUp(t, ws.Settings.RunUpMinutes, localNow)))
+            return true;
+
+        return ws.GeneralRules.Any(r =>
+        {
+            var worked = r.VerifyActiveStudy ? ws.VerifiedStudySecondsToday(localNow) : 0;
+            return r.IsProtectedNow(
+                localNow,
+                ws.UsedSecondsToday(r.Id, now: localNow),
+                worked,
+                ws.LaunchesToday(r.Id, localNow),
+                ws.MatchesToday(r.Id, localNow),
+                false,
+                ws.Settings.RunUpMinutes,
+                cont);
+        });
+    }
+
     public static void RunWatcherLoop()
     {
         using var watcherMutex = new Mutex(true, WatcherMutexName, out var acquired);
         if (!acquired) return;
+        using var stopEvent = new EventWaitHandle(false, EventResetMode.ManualReset, WatcherStopEventName);
 
         var store = new WorkspaceStore();
         var recentRelaunches = new Queue<DateTimeOffset>();
 
-        while (true)
+        while (!stopEvent.WaitOne(2000))
         {
-            Thread.Sleep(2000);
             try
             {
                 var guiRunning = false;
@@ -678,22 +733,14 @@ public static class RelaunchGuard
                 if (recentRelaunches.Count >= 4) continue;
 
                 var ws = store.LoadWithoutHistory();
-                var cont = TrustedClock.ContinuousSeconds();
-                var sessionShouldResume = ws.Session != null && ws.Session.ShouldResumeAfterRelaunch(now);
-                var ruleProtected = ws.GeneralRules.Any(r =>
-                {
-                    var worked = r.VerifyActiveStudy ? ws.VerifiedStudySecondsToday(now) : 0;
-                    return r.IsProtectedNow(now, ws.UsedSecondsToday(r.Id, now: now), worked, ws.LaunchesToday(r.Id, now), ws.MatchesToday(r.Id, now), false, ws.Settings.RunUpMinutes, cont);
-                });
-
-                if (sessionShouldResume || ruleProtected)
+                if (ShouldRelaunch(ws, now))
                 {
                     var exe = Environment.ProcessPath;
                     if (!string.IsNullOrEmpty(exe))
                     {
                         recentRelaunches.Enqueue(now);
                         Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
-                        Thread.Sleep(6000);
+                        if (stopEvent.WaitOne(5000)) break;
                     }
                 }
             }

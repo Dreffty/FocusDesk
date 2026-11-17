@@ -275,7 +275,7 @@ public static class Dialogs
                 Padding = new Thickness(14),
                 Margin = new Thickness(0, 0, 0, 12)
             };
-            codeBorder.Child = new TextBlock
+            var codeText = new TextBlock
             {
                 Text = expected,
                 FontFamily = new System.Windows.Media.FontFamily("Consolas"),
@@ -283,14 +283,20 @@ public static class Dialogs
                 Foreground = BrushHex("#64E3A1"),
                 TextWrapping = TextWrapping.Wrap
             };
+            codeBorder.Child = codeText;
             root.Children.Add(codeBorder);
 
             var input = new System.Windows.Controls.TextBox
             {
                 FontFamily = new System.Windows.Media.FontFamily("Consolas"),
-                FontSize = 14
+                FontSize = 14,
+                ContextMenu = null
             };
             DataObject.AddPastingHandler(input, (_, e) => e.CancelCommand());
+            CommandManager.AddPreviewExecutedHandler(input, (_, e) =>
+            {
+                if (e.Command == ApplicationCommands.Paste) e.Handled = true;
+            });
             root.Children.Add(input);
 
             var progress = new TextBlock
@@ -304,11 +310,25 @@ public static class Dialogs
 
             var confirmBtn = MakePrimaryButton("Desbloquear");
             confirmBtn.IsEnabled = false;
+            var resetting = false;
 
             input.TextChanged += (_, _) =>
             {
-                var ok = UnlockChallenge.Matches(input.Text, expected);
+                if (resetting) return;
                 var prefix = UnlockChallenge.CorrectPrefix(input.Text, expected);
+                if (prefix < input.Text.Length)
+                {
+                    resetting = true;
+                    expected = UnlockChallenge.Make(len);
+                    codeText.Text = expected;
+                    input.Text = "";
+                    resetting = false;
+                    progress.Text = $"Carácter incorrecto · código nuevo generado (0 / {expected.Length})";
+                    progress.Foreground = BrushHex("#F26D6D");
+                    confirmBtn.IsEnabled = false;
+                    return;
+                }
+                var ok = UnlockChallenge.Matches(input.Text, expected);
                 progress.Text = $"{prefix} / {expected.Length} caracteres correctos";
                 progress.Foreground = BrushHex(ok ? "#64E3A1" : "#F5B95F");
                 confirmBtn.IsEnabled = ok;
