@@ -1235,7 +1235,20 @@ public sealed partial class AppEngine : INotifyPropertyChanged, IDisposable, ISt
             var titleHit = FocusRules.MatchesTitleKeyword(fg.WindowTitle, s.Task.BlockedTitleKeywords, s.Task.WholeWordKeywords);
             if (!allowed)
             {
-                if (titleHit != null || (gameHit != null && !s.Task.Strict))
+                // A blocked word in a browser's title blocks that page only, like a blocked website:
+                // hiding the whole browser threw the person out of every other tab too.
+                if (titleHit != null && StudyActivityVerifier.IsBrowser(procClean))
+                {
+                    if (!PageBlockThrottled($"titulo:{titleHit}", now, 2.5))
+                    {
+                        var punisherMessage = RegisterSessionBlock(s, cont);
+                        var closeTab = s.Task.WebBlockAction == WebBlockAction.CloseTab ||
+                                       (s.Task.PunisherEnabled && s.Punisher.IsActive(cont) && s.Task.WebBlockAction == WebBlockAction.Redirect);
+                        ActOnBlockedTab(fg.Hwnd, $"«{titleHit}»", s.Task.Title, s.Remaining(now), s.Task.MotivationalMessage, closeTab, s.Task.CustomRedirectURL, verifyPage: false);
+                        if (punisherMessage != null) Notice = punisherMessage;
+                    }
+                }
+                else if (titleHit != null || (gameHit != null && !s.Task.Strict))
                 {
                     var verb = WindowsActivity.ApplyBlockAction(fg, SessionBlockAction(s, cont));
                     var punisherMessage = RegisterSessionBlock(s, cont);
@@ -1295,6 +1308,17 @@ public sealed partial class AppEngine : INotifyPropertyChanged, IDisposable, ISt
 
             if (FocusRules.MatchesTitleKeyword(fg.WindowTitle, rule.BlockedTitleKeywords, rule.WholeWordKeywords) is string kw)
             {
+                // In a browser the word blocks that page (redirect or close the tab), not the whole browser.
+                if (StudyActivityVerifier.IsBrowser(procClean))
+                {
+                    if (PageBlockThrottled($"titulo:{kw}", now, 4)) return;
+                    rule.ApplyPomodoroPenaltyIfNeeded(now);
+                    var hardened = rule.RegisterBlock() || rule.Punisher.IsActive(cont);
+                    var closeTab = rule.WebBlockAction == WebBlockAction.CloseTab || (hardened && rule.WebBlockAction == WebBlockAction.Redirect);
+                    var rem = rule.RemainingLockSeconds(now, Workspace.UsedSecondsToday(rule.Id, now: now), EffectiveWorkedSeconds(rule, now), Workspace.LaunchesToday(rule.Id, now), Workspace.MatchesToday(rule.Id, now), IsMatchInProgress(rule, now), cont);
+                    ActOnBlockedTab(fg.Hwnd, $"«{kw}»", rule.Name, rem, rule.MotivationalMessage, closeTab, rule.CustomRedirectURL, verifyPage: false);
+                    return;
+                }
                 rule.ApplyPomodoroPenaltyIfNeeded(now);
                 rule.RegisterBlock();
                 var verb = WindowsActivity.ApplyBlockAction(fg, rule.ActiveBlockAction());
@@ -1431,7 +1455,17 @@ public sealed partial class AppEngine : INotifyPropertyChanged, IDisposable, ISt
         }
     }
 
-    private void ActOnBlockedTab(IntPtr hwnd, string host, string title, double remSeconds, string msg, bool closeTab, string customRedirect)
+    private bool PageBlockThrottled(string key, DateTimeOffset now, double seconds)
+    {
+        if (_lastWebBlockHost == key && (now - _lastWebBlockAt).TotalSeconds < seconds) return true;
+        _lastWebBlockHost = key;
+        _lastWebBlockAt = now;
+        return false;
+    }
+
+    // verifyPage: false when the block comes from the window title just read from this same window (there is no
+    // address to compare with); the address check only guards blocks decided from a URL read a moment earlier.
+    private void ActOnBlockedTab(IntPtr hwnd, string host, string title, double remSeconds, string msg, bool closeTab, string customRedirect, bool verifyPage = true)
     {
         string? redirect = null;
         if (!closeTab)
@@ -1441,7 +1475,7 @@ public sealed partial class AppEngine : INotifyPropertyChanged, IDisposable, ISt
                 ? custom.AbsoluteUri
                 : BlockPageGenerator.Write(title, host, remSeconds, msg, Array.Empty<string>(), Store.DirectoryPath);
         }
-        if (BrowserInspector.RedirectOrCloseTab(hwnd, closeTab, redirect, host))
+        if (BrowserInspector.RedirectOrCloseTab(hwnd, closeTab, redirect, verifyPage ? host : null))
             Notice = closeTab ? $"{host} bloqueada: pestaña cerrada." : $"{host} bloqueada: redirigida.";
     }
 
