@@ -163,7 +163,7 @@ public partial class MainWindow
 
         // General
         var general = new StackPanel();
-        general.Children.Add(SectionLabel("GENERAL", 0, "#64E3A1"));
+        general.Children.Add(SectionLabel("GENERAL", 0, "#38A169"));
         general.Children.Add(Labeled("Tamaño del texto", ChoiceBox(new[]
         {
             new ComboOption<double>(1.0, "Normal"), new ComboOption<double>(1.15, "Grande"), new ComboOption<double>(1.3, "Muy grande")
@@ -192,7 +192,7 @@ public partial class MainWindow
 
         // Avisos
         var alerts = new StackPanel();
-        alerts.Children.Add(SectionLabel("AVISOS", 0, "#64E3A1"));
+        alerts.Children.Add(SectionLabel("AVISOS", 0, "#38A169"));
         alerts.Children.Add(ToggleBox("Avisarme cuando queden 5 min y 1 min de un presupuesto diario o visita", s.PreBlockRemindersEnabled,
             v => ChangeSetting(x => x.PreBlockRemindersEnabled = v), 0));
         alerts.Children.Add(ToggleBox("Mostrar aviso y cuenta atrás cuando empiece un descanso programado", s.EnforceBreaks,
@@ -201,7 +201,7 @@ public partial class MainWindow
 
         // Agenda
         var agenda = new StackPanel();
-        agenda.Children.Add(SectionLabel("AGENDA", 0, "#64E3A1"));
+        agenda.Children.Add(SectionLabel("AGENDA", 0, "#38A169"));
         agenda.Children.Add(WrapRow(
             Labeled("Inicio de jornada (hora)", NumberBox(s.WorkStartHour, 0, 23, v => ChangeSetting(x => x.WorkStartHour = v)), 0),
             Labeled("Fin de jornada (hora)", NumberBox(s.WorkEndHour, 1, 24, v => ChangeSetting(x => x.WorkEndHour = v)), 0),
@@ -217,7 +217,7 @@ public partial class MainWindow
             void Paint()
             {
                 var on = _engine.Workspace.Settings.Workdays.Contains(num);
-                dayButton.Background = BrushHex(on ? "#64E3A1" : "#1B2230");
+                dayButton.Background = BrushHex(on ? "#38A169" : "#1B2230");
                 dayButton.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
             }
             Paint();
@@ -270,7 +270,7 @@ public partial class MainWindow
         var addProfile = SmallButton("+ Nuevo perfil", () => Dialogs.ShowProfileEditor(_engine, null, this), true, 0);
         DockPanel.SetDock(addProfile, Dock.Right);
         profileHead.Children.Add(addProfile);
-        profileHead.Children.Add(SectionLabel("PERFILES DE TAREA", 0, "#64E3A1"));
+        profileHead.Children.Add(SectionLabel("PERFILES DE TAREA", 0, "#38A169"));
         profiles.Children.Add(profileHead);
         foreach (var profile in _engine.Workspace.Profiles)
         {
@@ -292,7 +292,7 @@ public partial class MainWindow
 
         // Study sources
         var studyPanel = new StackPanel();
-        studyPanel.Children.Add(SectionLabel("QUÉ CUENTA COMO ESTUDIO ACTIVO", 0, "#64E3A1"));
+        studyPanel.Children.Add(SectionLabel("QUÉ CUENTA COMO ESTUDIO ACTIVO", 0, "#38A169"));
         studyPanel.Children.Add(MutedText("Lo que añadas hoy empieza a contar mañana para evitar atajos de último minuto.", 12, 0));
         var addRow = new WrapPanel { Margin = new Thickness(0, 10, 0, 12) };
         var webInput = new System.Windows.Controls.TextBox { Width = 220, Margin = new Thickness(0, 0, 8, 0) };
@@ -333,7 +333,7 @@ public partial class MainWindow
 
         // Privacy and protection
         var guardPanel = new StackPanel();
-        guardPanel.Children.Add(SectionLabel("PRIVACIDAD Y PROTECCIÓN", 0, "#64E3A1"));
+        guardPanel.Children.Add(SectionLabel("PRIVACIDAD Y PROTECCIÓN", 0, "#38A169"));
         var guardCheck = ToggleBox("Volver a abrirse si lo matan durante una sesión protegida (vigilante al iniciar Windows)", s.RelaunchGuard, v => { }, 0);
         guardCheck.Click += (_, _) =>
         {
@@ -366,7 +366,7 @@ public partial class MainWindow
 
         // Data and copies
         var backupPanel = new StackPanel();
-        backupPanel.Children.Add(SectionLabel("DATOS Y COPIAS DE SEGURIDAD", 0, "#64E3A1"));
+        backupPanel.Children.Add(SectionLabel("DATOS Y COPIAS DE SEGURIDAD", 0, "#38A169"));
         var expBtn = SmallButton("Exportar copia (.json)", () =>
         {
             var dlg = new Microsoft.Win32.SaveFileDialog { FileName = "FocusDesk-backup.json", Filter = "JSON (*.json)|*.json" };

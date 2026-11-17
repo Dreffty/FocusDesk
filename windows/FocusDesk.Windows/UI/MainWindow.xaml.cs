@@ -170,7 +170,7 @@ public partial class MainWindow : Window
         {
             NoticeBanner.Visibility = Visibility.Visible;
             NoticeText.Text = msg;
-            NoticeText.Foreground = BrushHex(!string.IsNullOrEmpty(_engine.Error) ? "#F26D6D" : "#64E3A1");
+            NoticeText.Foreground = BrushHex(!string.IsNullOrEmpty(_engine.Error) ? "#F26D6D" : "#38A169");
             NoticeBanner.BorderBrush = BrushHex(!string.IsNullOrEmpty(_engine.Error) ? "#5C262B" : "#242E40");
         }
         else
@@ -209,7 +209,7 @@ public partial class MainWindow : Window
         {
             var st = _engine.GameRuleStatus(rule, now);
             titleBlock.Text = $"{rule.Game?.Name ?? rule.Name} · {st.Text}";
-            titleBlock.Foreground = BrushHex(st.Warning ? "#F5B95F" : "#64E3A1");
+            titleBlock.Foreground = BrushHex(st.Warning ? "#F5B95F" : "#38A169");
             subBlock.Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(rule, now))} · {_engine.Workspace.MatchesToday(rule.Id, now)}/{Math.Max(1, rule.MaxDailyMatches)} {rule.MatchUnitPlural}";
         }
     }
@@ -223,8 +223,8 @@ public partial class MainWindow : Window
         foreach (var child in NavStack.Children.OfType<System.Windows.Controls.Button>())
         {
             var active = string.Equals(child.Tag as string, _engine.ActivePage, StringComparison.Ordinal);
-            child.Background = BrushHex(active ? "#64E3A1" : "Transparent");
-            child.BorderBrush = BrushHex(active ? "#64E3A1" : "Transparent");
+            child.Background = BrushHex(active ? "#38A169" : "Transparent");
+            child.BorderBrush = BrushHex(active ? "#38A169" : "Transparent");
             child.Foreground = BrushHex(active ? "#0B0E14" : "#CBD5E1");
             child.FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal;
         }
@@ -298,9 +298,9 @@ public partial class MainWindow : Window
     private static System.Windows.Controls.Button PrimaryButton(string label) => new()
     {
         Content = label,
-        Background = BrushHex("#64E3A1"),
+        Background = BrushHex("#38A169"),
         Foreground = BrushHex("#0B0E14"),
-        BorderBrush = BrushHex("#64E3A1"),
+        BorderBrush = BrushHex("#38A169"),
         FontWeight = FontWeights.SemiBold
     };
 

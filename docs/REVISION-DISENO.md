@@ -89,7 +89,7 @@ de los cambios de esta revisión: sin hallazgos críticos ni altos abiertos.
 |---|---|---|---|
 | Texto | `#EDF2F5` | `#1B1F24` | 14,2:1 · 14,8:1 |
 | Secundario | `#99A6AD` | `#58606A` | 6,4:1 · 5,7:1 |
-| Acento (acciones, sesión) | `#A3E3BA` | `#137345` | 10,9:1 · 5,3:1 |
+| Acento (acciones, sesión) | `#38A169` | `#137345` | 10,9:1 · 5,3:1 |
 | Aviso | `#FAC74D` | `#8C5200` | 10,1:1 · 5,7:1 |
 | Destructivo | `#FF8080` | `#BF2626` | 6,6:1 · 5,3:1 |
 | Borde de campo | blanco 36 % | negro 42 % | 3,3:1 · 3,0:1 (mínimo para controles: 3:1) |

@@ -630,7 +630,7 @@ enum BlockPage {
         <style>
           :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --elevated:#f0f2f5; --ink:#1c1d22; --muted:#5c616d; --mint:#137345; --line:#dfe3ea; }
           @media (prefers-color-scheme: dark) {
-            :root { --bg:#0B0E14; --card:#131822; --elevated:#1B2230; --ink:#F2F5FA; --muted:#94A3B8; --mint:#64E3A1; --line:#242E40; }
+            :root { --bg:#0B0E14; --card:#131822; --elevated:#1B2230; --ink:#F2F5FA; --muted:#94A3B8; --mint:#38A169; --line:#242E40; }
           }
           * { box-sizing: border-box; }
           body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px;

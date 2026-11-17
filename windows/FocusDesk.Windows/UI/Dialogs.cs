@@ -52,7 +52,7 @@ public static partial class Dialogs
             Text = heading.ToUpperInvariant(),
             FontSize = 10.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = BrushHex("#64E3A1"),
+            Foreground = BrushHex("#38A169"),
             Margin = new Thickness(0, 0, 0, subtitle == null ? 10 : 3)
         });
         if (!string.IsNullOrEmpty(subtitle))
@@ -176,9 +176,9 @@ public static partial class Dialogs
         var btn = new System.Windows.Controls.Button
         {
             Content = text,
-            Background = BrushHex("#64E3A1"),
+            Background = BrushHex("#38A169"),
             Foreground = BrushHex("#0B0E14"),
-            BorderBrush = BrushHex("#64E3A1"),
+            BorderBrush = BrushHex("#38A169"),
             FontWeight = FontWeights.SemiBold,
             Padding = new Thickness(16, 8, 16, 8)
         };
@@ -315,7 +315,7 @@ public static partial class Dialogs
                 Text = expected,
                 FontFamily = new System.Windows.Media.FontFamily("Consolas"),
                 FontSize = 15,
-                Foreground = BrushHex("#64E3A1"),
+                Foreground = BrushHex("#38A169"),
                 TextWrapping = TextWrapping.Wrap
             };
             codeBorder.Child = codeText;
@@ -365,7 +365,7 @@ public static partial class Dialogs
                 }
                 var ok = UnlockChallenge.Matches(input.Text, expected);
                 progress.Text = $"{prefix} / {expected.Length} caracteres correctos";
-                progress.Foreground = BrushHex(ok ? "#64E3A1" : "#F5B95F");
+                progress.Foreground = BrushHex(ok ? "#38A169" : "#F5B95F");
                 confirmBtn.IsEnabled = ok;
             };
             input.KeyDown += (_, e) =>
@@ -432,7 +432,7 @@ public static partial class Dialogs
                         return;
                     }
                     label.Text = $"Espera completada · confirma en {FocusRules.Clock(confirmLeft)}";
-                    label.Foreground = BrushHex("#64E3A1");
+                    label.Foreground = BrushHex("#38A169");
                     confirmBtn.IsEnabled = true;
                 }
                 else
@@ -661,9 +661,9 @@ public static partial class Dialogs
             void RefreshRepeatDayStyle()
             {
                 var on = repeatDays.Contains(dayNum);
-                dayBtn.Background = BrushHex(on ? "#64E3A1" : "#1B2230");
+                dayBtn.Background = BrushHex(on ? "#38A169" : "#1B2230");
                 dayBtn.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
-                dayBtn.BorderBrush = BrushHex(on ? "#64E3A1" : "#2E3A4F");
+                dayBtn.BorderBrush = BrushHex(on ? "#38A169" : "#2E3A4F");
                 dayBtn.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
             }
             RefreshRepeatDayStyle();
@@ -693,9 +693,9 @@ public static partial class Dialogs
                     var label = child.Content as string ?? "";
                     var num = label switch { "Lun" => 2, "Mar" => 3, "Mié" => 4, "Jue" => 5, "Vie" => 6, "Sáb" => 7, _ => 1 };
                     var on = repeatDays.Contains(num);
-                    child.Background = BrushHex(on ? "#64E3A1" : "#1B2230");
+                    child.Background = BrushHex(on ? "#38A169" : "#1B2230");
                     child.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
-                    child.BorderBrush = BrushHex(on ? "#64E3A1" : "#2E3A4F");
+                    child.BorderBrush = BrushHex(on ? "#38A169" : "#2E3A4F");
                     child.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
                 }
             }
@@ -1099,8 +1099,8 @@ public static partial class Dialogs
         {
             root.Children.Add(new Border
             {
-                Background = BrushHex("#11261E"),
-                BorderBrush = BrushHex("#275943"),
+                Background = BrushHex("#12261A"),
+                BorderBrush = BrushHex("#2A5A3F"),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(12, 9, 12, 9),
@@ -1108,7 +1108,7 @@ public static partial class Dialogs
                 Child = new TextBlock
                 {
                     Text = $"Regla activa y protegida («{existing.Protection.Label()}»). Endurecerla es inmediato; ablandarla pedirá desbloqueo al guardar.",
-                    Foreground = BrushHex("#64E3A1"),
+                    Foreground = BrushHex("#38A169"),
                     FontSize = 12,
                     TextWrapping = TextWrapping.Wrap
                 }
@@ -1136,15 +1136,15 @@ public static partial class Dialogs
         var gameCombo = MakeCombo(gameOptions, draft.GameId);
         var gameBanner = new Border
         {
-            Background = BrushHex("#152420"),
-            BorderBrush = BrushHex("#24483A"),
+            Background = BrushHex("#15241B"),
+            BorderBrush = BrushHex("#244A36"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(9),
             Padding = new Thickness(12, 9, 12, 9),
             Margin = new Thickness(0, 10, 0, 0),
             Visibility = Visibility.Collapsed
         };
-        var gameBannerText = new TextBlock { Foreground = BrushHex("#64E3A1"), FontSize = 12, TextWrapping = TextWrapping.Wrap };
+        var gameBannerText = new TextBlock { Foreground = BrushHex("#38A169"), FontSize = 12, TextWrapping = TextWrapping.Wrap };
         gameBanner.Child = gameBannerText;
 
         var goalMinBox = MakeTextBox(draft.GoalMinutesRequired.ToString(CultureInfo.InvariantCulture));
@@ -1198,9 +1198,9 @@ public static partial class Dialogs
             void RefreshDayStyle()
             {
                 var on = selectedDays.Contains(dayNum);
-                btn.Background = BrushHex(on ? "#64E3A1" : "#1B2230");
+                btn.Background = BrushHex(on ? "#38A169" : "#1B2230");
                 btn.Foreground = BrushHex(on ? "#0B0E14" : "#E2E8F0");
-                btn.BorderBrush = BrushHex(on ? "#64E3A1" : "#2E3A4F");
+                btn.BorderBrush = BrushHex(on ? "#38A169" : "#2E3A4F");
                 btn.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
             }
             RefreshDayStyle();

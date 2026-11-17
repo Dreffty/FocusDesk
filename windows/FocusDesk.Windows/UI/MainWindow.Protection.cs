@@ -47,7 +47,7 @@ public partial class MainWindow
             {
                 Text = game.Detection.IsExact() ? game.Detection.Label() : $"{game.TypicalMatchMinutes} min + prórroga",
                 FontSize = 11.5,
-                Foreground = BrushHex("#64E3A1"),
+                Foreground = BrushHex("#38A169"),
                 Margin = new Thickness(0, 3, 0, 0)
             });
             btn.Content = sp;
@@ -149,7 +149,7 @@ public partial class MainWindow
             titleStack.Children.Add(new TextBlock { Text = rule.Name, FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
             var pills = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
             pills.Children.Add(PillBadge(rule.Kind.GalleryTitle()));
-            pills.Children.Add(PillBadge(enforcing ? "Bloqueando" : rule.Enabled ? "Activa" : "Apagada", enforcing ? "#64E3A1" : rule.Enabled ? "#E2E8F0" : "#64748B", enforcing ? "#173228" : "#1B2230"));
+            pills.Children.Add(PillBadge(enforcing ? "Bloqueando" : rule.Enabled ? "Activa" : "Apagada", enforcing ? "#38A169" : rule.Enabled ? "#E2E8F0" : "#64748B", enforcing ? "#16291F" : "#1B2230"));
             pills.Children.Add(PillBadge(rule.Protection.Label(), rule.Protection == SessionProtection.None ? "#94A3B8" : "#F5B95F", rule.Protection == SessionProtection.None ? "#1B2230" : "#251D10"));
             if (rule.AlwaysProtected) pills.Children.Add(PillBadge("Obligatoria 24/7", "#F5B95F", "#251D10"));
             titleStack.Children.Add(pills);
@@ -167,12 +167,12 @@ public partial class MainWindow
                     DockPanel.SetDock(finBtn, Dock.Right);
                     finBtn.Click += (_, _) => _engine.FinishTimedMatch(rule, TimedMatchPlanner.FinishReason.UserFinished);
                     gRow.Children.Add(finBtn);
-                    gRow.Children.Add(new TextBlock { Text = st.Text, Foreground = BrushHex(st.Warning ? "#F5B95F" : "#64E3A1"), FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+                    gRow.Children.Add(new TextBlock { Text = st.Text, Foreground = BrushHex(st.Warning ? "#F5B95F" : "#38A169"), FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
                     sp.Children.Add(gRow);
                 }
             }
 
-            PageContent.Children.Add(Card(sp, enforcing ? "#275943" : null));
+            PageContent.Children.Add(Card(sp, enforcing ? "#2A5A3F" : null));
         }
 
         BuildTemporaryExceptions();
@@ -256,7 +256,7 @@ public partial class MainWindow
         PageContent.Children.Add(PageHeader("Bloquear ahora", "Activa un bloqueo inmediato o inicia un perfil reutilizable con un clic."));
 
         var quickStack = new StackPanel();
-        quickStack.Children.Add(new TextBlock { Text = "BLOQUEO RÁPIDO INMEDIATO", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#64E3A1") });
+        quickStack.Children.Add(new TextBlock { Text = "BLOQUEO RÁPIDO INMEDIATO", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#38A169") });
         quickStack.Children.Add(MutedText("Una cuenta atrás de bloqueo sin crear una tarea en la agenda. Elige qué cerrar y cómo parar:", 12, 4));
         var presetOptions = new List<ComboOption<DistractionPreset?>> { new(null, "Redes sociales + Shorts y Reels") };
         presetOptions.AddRange(DistractionPreset.All.Select(p => new ComboOption<DistractionPreset?>(p, p.Label)));
@@ -284,7 +284,7 @@ public partial class MainWindow
         restBtn.Click += (_, _) => _engine.LaunchQuickBlock(restOfDayMins, _quickProtection, _quickPreset);
         quickBtns.Children.Add(restBtn);
         quickStack.Children.Add(quickBtns);
-        PageContent.Children.Add(Card(quickStack, "#275943"));
+        PageContent.Children.Add(Card(quickStack, "#2A5A3F"));
 
         var activeRules = _engine.Workspace.GeneralRules.Where(r => _engine.IsRuleEnforcing(r)).ToList();
         if (activeRules.Count > 0)
@@ -302,10 +302,10 @@ public partial class MainWindow
                     dock.Children.Add(mpBtn);
                 }
                 var sp = new StackPanel();
-                sp.Children.Add(new TextBlock { Text = r.Name, FontSize = 14.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#64E3A1") });
+                sp.Children.Add(new TextBlock { Text = r.Name, FontSize = 14.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#38A169") });
                 sp.Children.Add(MutedText($"{r.Kind.GalleryTitle()} · Protección: {r.Protection.Label()} · {RuleInfoLine(r)}", 12, 3));
                 dock.Children.Add(sp);
-                PageContent.Children.Add(Card(dock, "#275943"));
+                PageContent.Children.Add(Card(dock, "#2A5A3F"));
             }
         }
 
@@ -363,7 +363,7 @@ public partial class MainWindow
 
         // Rest of the eyes after a long time at the computer
         var eyes = new StackPanel();
-        eyes.Children.Add(SectionLabel("DESCANSO CONTINUO DE VISTA", 0, "#64E3A1"));
+        eyes.Children.Add(SectionLabel("DESCANSO CONTINUO DE VISTA", 0, "#38A169"));
         eyes.Children.Add(ToggleBox("Sugerir un descanso breve tras usar el equipo de forma continua", s.ContinuousBreakEnabled, v =>
         {
             ChangeSetting(x => x.ContinuousBreakEnabled = v);
@@ -377,7 +377,7 @@ public partial class MainWindow
             _liveContinuousBreakText = new TextBlock
             {
                 Text = $"Descanso de vista · {FocusRules.Clock(_engine.ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot())} · {_engine.ActiveContinuousBreakMessage}",
-                Foreground = BrushHex("#64E3A1"),
+                Foreground = BrushHex("#38A169"),
                 FontSize = 13,
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 10, 0, 0)
@@ -407,7 +407,7 @@ public partial class MainWindow
 
         // Scheduled breaks (lunch, siesta…)
         var scheduled = new StackPanel();
-        scheduled.Children.Add(SectionLabel("DESCANSOS PROGRAMADOS", 0, "#64E3A1"));
+        scheduled.Children.Add(SectionLabel("DESCANSOS PROGRAMADOS", 0, "#38A169"));
         scheduled.Children.Add(ToggleBox("Mostrar aviso y cuenta atrás cuando empiece un descanso", s.EnforceBreaks, v => ChangeSetting(x => x.EnforceBreaks = v), 0));
         foreach (var br in s.Breaks.ToList())
         {

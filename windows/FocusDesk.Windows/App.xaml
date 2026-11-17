@@ -12,9 +12,9 @@
     <SolidColorBrush x:Key="FieldBgBrush" Color="#151B26"/>
     <SolidColorBrush x:Key="StrokeBrush" Color="#242E40"/>
     <SolidColorBrush x:Key="FieldStrokeBrush" Color="#38465E"/>
-    <SolidColorBrush x:Key="MintBrush" Color="#64E3A1"/>
-    <SolidColorBrush x:Key="MintBrightBrush" Color="#7EEBB2"/>
-    <SolidColorBrush x:Key="MintSoftBrush" Color="#173228"/>
+    <SolidColorBrush x:Key="MintBrush" Color="#38A169"/>
+    <SolidColorBrush x:Key="MintBrightBrush" Color="#43B077"/>
+    <SolidColorBrush x:Key="MintSoftBrush" Color="#16291F"/>
     <SolidColorBrush x:Key="OnAccentBrush" Color="#0B0E14"/>
     <SolidColorBrush x:Key="WarningBrush" Color="#F5B95F"/>
     <SolidColorBrush x:Key="DangerBrush" Color="#F26D6D"/>

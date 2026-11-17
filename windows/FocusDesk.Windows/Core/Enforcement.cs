@@ -980,7 +980,7 @@ public static class BlockPageGenerator
                   --line: #242E40;
                   --ink: #F2F5FA;
                   --muted: #94A3B8;
-                  --mint: #64E3A1;
+                  --mint: #38A169;
                 }
                 * { box-sizing: border-box; }
                 body {

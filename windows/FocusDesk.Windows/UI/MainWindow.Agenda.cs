@@ -70,12 +70,12 @@ public partial class MainWindow
             {
                 Text = $"Descanso de vista · {FocusRules.Clock(_engine.ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot())} · {_engine.ActiveContinuousBreakMessage}",
                 FontSize = 13,
-                Foreground = BrushHex("#64E3A1"),
+                Foreground = BrushHex("#38A169"),
                 TextWrapping = TextWrapping.Wrap,
                 VerticalAlignment = VerticalAlignment.Center
             };
             row.Children.Add(_liveContinuousBreakText);
-            PageContent.Children.Add(Card(row, "#275943"));
+            PageContent.Children.Add(Card(row, "#2A5A3F"));
         }
 
         // Active session card
@@ -88,7 +88,7 @@ public partial class MainWindow
                 Text = s.Paused ? $"EN PAUSA · {s.Task.Title}" : $"EN MARCHA · {s.Task.Title}",
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = BrushHex(s.Paused ? "#F5B95F" : "#64E3A1")
+                Foreground = BrushHex(s.Paused ? "#F5B95F" : "#38A169")
             });
             _liveClockText = new TextBlock
             {
@@ -162,7 +162,7 @@ public partial class MainWindow
             btns.Children.Add(fin);
             btns.Children.Add(cancelBtn);
             sp.Children.Add(btns);
-            PageContent.Children.Add(Card(sp, s.Paused ? "#4A3A1E" : "#275943"));
+            PageContent.Children.Add(Card(sp, s.Paused ? "#4A3A1E" : "#2A5A3F"));
         }
 
         // Game rules live strip
@@ -178,7 +178,7 @@ public partial class MainWindow
                 dock.Children.Add(endMatch);
             }
             var info = new StackPanel();
-            var titleBlock = new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, FontSize = 14, Foreground = BrushHex(st.Warning ? "#F5B95F" : "#64E3A1") };
+            var titleBlock = new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, FontSize = 14, Foreground = BrushHex(st.Warning ? "#F5B95F" : "#38A169") };
             var subBlock = new TextBlock { Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(gr))} · {_engine.Workspace.MatchesToday(gr.Id)}/{gr.MaxDailyMatches} {gr.MatchUnitPlural}", Foreground = BrushHex("#94A3B8"), FontSize = 12, Margin = new Thickness(0, 4, 0, 0) };
             info.Children.Add(titleBlock);
             info.Children.Add(subBlock);
@@ -283,7 +283,7 @@ public partial class MainWindow
         var left = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         left.Children.Add(new TextBlock { Text = t.Title, FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
         var meta = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
-        if (scheduled) meta.Children.Add(PillBadge($"{t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}", "#64E3A1", "#173228"));
+        if (scheduled) meta.Children.Add(PillBadge($"{t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}", "#38A169", "#16291F"));
         meta.Children.Add(PillBadge(FocusRules.DurationText(t.Minutes)));
         meta.Children.Add(PillBadge(t.Category));
         if (t.RepeatRule != RepeatRule.Never) meta.Children.Add(PillBadge("↻ " + t.RepeatRule.Label()));
@@ -347,7 +347,7 @@ public partial class MainWindow
                 Text = isToday ? $"{day:dddd d MMM} · Hoy" : day.ToString("dddd d MMM"),
                 FontSize = 14.5,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = BrushHex(isToday ? "#64E3A1" : "#F2F5FA"),
+                Foreground = BrushHex(isToday ? "#38A169" : "#F2F5FA"),
                 VerticalAlignment = VerticalAlignment.Center
             });
             sp.Children.Add(dayHeader);
@@ -357,7 +357,7 @@ public partial class MainWindow
                 sp.Children.Add(new TextBlock { Text = $"• {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min) · {t.Category}", Foreground = BrushHex("#CBD5E1"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
             foreach (var t in projected)
                 sp.Children.Add(new TextBlock { Text = $"↻ {t.ScheduledAt.LocalDateTime:HH:mm}–{t.End.LocalDateTime:HH:mm}  {t.Title} ({t.Minutes} min) · repetición", Foreground = BrushHex("#94A3B8"), FontSize = 13, Margin = new Thickness(0, 5, 0, 0) });
-            PageContent.Children.Add(Card(sp, isToday ? "#275943" : null));
+            PageContent.Children.Add(Card(sp, isToday ? "#2A5A3F" : null));
         }
     }
 

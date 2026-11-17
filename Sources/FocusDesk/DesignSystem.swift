@@ -25,9 +25,10 @@ enum Palette {
     static let offHours = dynamic(dark: NSColor(white: 0, alpha: 0.16), light: NSColor(white: 0, alpha: 0.035), darkHC: NSColor(white: 0, alpha: 0.30), lightHC: NSColor(white: 0, alpha: 0.08))
     static let text = dynamic(dark: rgb(0.93, 0.95, 0.96), light: rgb(0.106, 0.122, 0.141), darkHC: rgb(1, 1, 1), lightHC: rgb(0, 0, 0))
     static let muted = dynamic(dark: rgb(0.60, 0.65, 0.68), light: rgb(0.345, 0.376, 0.416), darkHC: rgb(0.78, 0.81, 0.84), lightHC: rgb(0.22, 0.24, 0.27))
-    /// The accent: primary actions and the running session.
-    static let mint = dynamic(dark: rgb(0.64, 0.89, 0.73), light: rgb(0.075, 0.45, 0.27), darkHC: rgb(0.70, 0.95, 0.79), lightHC: rgb(0.03, 0.33, 0.19))
-    static let mintBright = dynamic(dark: rgb(0.73, 0.95, 0.81), light: rgb(0.06, 0.38, 0.23), darkHC: rgb(0.80, 1.0, 0.86), lightHC: rgb(0.02, 0.26, 0.15))
+    /// The accent: primary actions and the running session. A solid green (#38A169 in dark mode), never a
+    /// glowing mint: it has to sit calmly on near-black.
+    static let mint = dynamic(dark: rgb(0.220, 0.631, 0.412), light: rgb(0.075, 0.45, 0.27), darkHC: rgb(0.322, 0.761, 0.522), lightHC: rgb(0.03, 0.33, 0.19))
+    static let mintBright = dynamic(dark: rgb(0.263, 0.690, 0.467), light: rgb(0.06, 0.38, 0.23), darkHC: rgb(0.373, 0.800, 0.565), lightHC: rgb(0.02, 0.26, 0.15))
     /// Text and icons drawn on top of the accent.
     static let onAccent = dynamic(dark: rgb(0.050, 0.062, 0.080), light: rgb(1, 1, 1), darkHC: rgb(0, 0, 0), lightHC: rgb(1, 1, 1))
     /// Needs attention: overdue, overlapping, paused by the system, overtime.
