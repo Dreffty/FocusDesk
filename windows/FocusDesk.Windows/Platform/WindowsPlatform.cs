@@ -533,11 +533,26 @@ public static class BrowserInspector
                 try
                 {
                     var (edit, _) = FindAddressBar(hwnd);
-                    if (edit != null && edit.TryGetCurrentPattern(ValuePattern.Pattern, out var patObj) && patObj is ValuePattern vp)
+                    if (edit != null && edit.TryGetCurrentPattern(ValuePattern.Pattern, out var patObj) && patObj is ValuePattern vp &&
+                        !vp.Current.IsReadOnly)
                     {
                         edit.SetFocus();
                         vp.SetValue(redirectUrl);
                         System.Windows.Forms.SendKeys.SendWait("{ENTER}");
+                        return "redirigida";
+                    }
+                }
+                catch { }
+                // A browser that does not let its address bar be written from outside (Opera): do what a person does —
+                // Ctrl+L to the address bar, type the block page, Enter.
+                try
+                {
+                    var again = WindowsActivity.GetForegroundApp();
+                    if (again != null && again.Hwnd == hwnd)
+                    {
+                        System.Windows.Forms.SendKeys.SendWait("^l");
+                        Thread.Sleep(150);
+                        System.Windows.Forms.SendKeys.SendWait(EscapeForSendKeys(redirectUrl) + "{ENTER}");
                         return "redirigida";
                     }
                 }
@@ -555,6 +570,18 @@ public static class BrowserInspector
         }
         catch { }
         return null;
+    }
+
+    /// <summary>Text typed with SendKeys: + ^ % ~ ( ) { } [ ] are commands there, so each goes inside braces.</summary>
+    private static string EscapeForSendKeys(string text)
+    {
+        var sb = new StringBuilder(text.Length + 8);
+        foreach (var c in text)
+        {
+            if ("+^%~(){}[]".IndexOf(c) >= 0) sb.Append('{').Append(c).Append('}');
+            else sb.Append(c);
+        }
+        return sb.ToString();
     }
 
     /// <summary>Number of tabs in a browser window (UI Automation «TabItem»s), or -1 when it cannot be read.</summary>
