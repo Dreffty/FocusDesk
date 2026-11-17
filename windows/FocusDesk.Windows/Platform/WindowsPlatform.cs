@@ -419,6 +419,24 @@ public static class BrowserInspector
         }
 
         if (fallbackEdit != null) return (fallbackEdit, fallbackRaw);
+
+        // Last pass, only when the walk found no address (Opera): the address sits in a read-only «Address field»
+        // that the walk skips; the editable bar is the empty «Address bar». Read from one, write into the other.
+        try
+        {
+            var all = root.FindAll(TreeScope.Descendants, new OrCondition(
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox)));
+            foreach (AutomationElement e in all)
+            {
+                if (!(e.TryGetCurrentPattern(ValuePattern.Pattern, out var p) && p is ValuePattern v)) continue;
+                var val = v.Current.Value?.Trim() ?? "";
+                var nm = (e.Current.Name ?? "").ToLowerInvariant();
+                if (LooksLikeUrl(val) && (nm.Contains("address") || nm.Contains("direcci") || nm.Contains("url")))
+                    return (emptyNamedBar ?? (v.Current.IsReadOnly ? null : e), val);
+            }
+        }
+        catch { }
         return (emptyNamedBar, emptyNamedBar != null ? "" : null);
     }
 
