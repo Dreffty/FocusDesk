@@ -30,6 +30,19 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // Real end-to-end check with real browsers (CI). Runs on this dispatcher so the engine works as in the app.
+        if (e.Args.Contains("--e2e-test", StringComparer.OrdinalIgnoreCase))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Dispatcher.InvokeAsync(async () =>
+            {
+                var code = 1;
+                try { code = await EndToEndCheck.RunAsync(); } catch { }
+                Environment.Exit(code);
+            });
+            return;
+        }
+
         if (e.Args.Contains(RelaunchGuard.WatcherArg, StringComparer.OrdinalIgnoreCase))
         {
             RelaunchGuard.RunWatcherLoop();

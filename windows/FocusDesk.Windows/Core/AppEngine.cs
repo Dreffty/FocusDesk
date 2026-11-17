@@ -1467,17 +1467,24 @@ public sealed partial class AppEngine : INotifyPropertyChanged, IDisposable, ISt
     // address to compare with); the address check only guards blocks decided from a URL read a moment earlier.
     private void ActOnBlockedTab(IntPtr hwnd, string host, string title, double remSeconds, string msg, bool closeTab, string customRedirect, bool verifyPage = true)
     {
-        string? redirect = null;
-        if (!closeTab)
-        {
-            var custom = FocusRules.NormalizedRedirectUrl(customRedirect);
-            redirect = custom != null
-                ? custom.AbsoluteUri
-                : BlockPageGenerator.Write(title, host, remSeconds, msg, Array.Empty<string>(), Store.DirectoryPath);
-        }
-        if (BrowserInspector.RedirectOrCloseTab(hwnd, closeTab, redirect, verifyPage ? host : null))
-            Notice = closeTab ? $"{host} bloqueada: pestaña cerrada." : $"{host} bloqueada: redirigida.";
+        // The block page is always prepared: even when the tab should be closed, a lone tab gets it instead
+        // (closing the last tab would close the whole browser).
+        var custom = FocusRules.NormalizedRedirectUrl(customRedirect);
+        var redirect = custom != null
+            ? custom.AbsoluteUri
+            : BlockPageGenerator.Write(title, host, remSeconds, msg, Array.Empty<string>(), Store.DirectoryPath);
+        var done = BrowserInspector.RedirectOrCloseTab(hwnd, closeTab, redirect, verifyPage ? host : null);
+        if (done != null)
+            Notice = done switch
+            {
+                "cerrada" => $"{host} bloqueada: pestaña cerrada.",
+                "minimizada" => $"{host} bloqueada: ventana minimizada (no se pudo escribir en la barra de direcciones).",
+                _ => $"{host} bloqueada: redirigida."
+            };
     }
+
+    /// <summary>One engine tick on demand, for the end-to-end check (the timer is off there).</summary>
+    internal void TickForTests() => Tick();
 
     private void CheckClipboardGuard()
     {

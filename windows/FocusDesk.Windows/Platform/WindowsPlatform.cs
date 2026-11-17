@@ -433,23 +433,28 @@ public static class BrowserInspector
         return null;
     }
 
-    public static bool RedirectOrCloseTab(IntPtr hwnd, bool closeTab, string? redirectUrl, string? expectedPageKey = null)
+    /// <summary>
+    /// Blocks the page in front: closes its tab, or writes the block page in the address bar. Never closes the last
+    /// tab — that closes the whole browser window and throws the person out of the browser — so a lone tab gets the
+    /// block page instead. Returns what was done («cerrada», «redirigida», «minimizada») or null when nothing was.
+    /// </summary>
+    public static string? RedirectOrCloseTab(IntPtr hwnd, bool closeTab, string? redirectUrl, string? expectedPageKey = null)
     {
         try
         {
             var current = WindowsActivity.GetForegroundApp();
-            if (current == null || current.Hwnd != hwnd) return false;
+            if (current == null || current.Hwnd != hwnd) return null;
             // The address was read a moment ago. If the person changed tab since, do not touch the new one:
             // Ctrl+W would close a page that was never blocked.
             if (!string.IsNullOrEmpty(expectedPageKey))
             {
                 var now = ReadActiveUrl(hwnd, current.ProcessName.ToLowerInvariant());
-                if (!now.HasValue || $"{now.Value.Host}{now.Value.Path}" != expectedPageKey) return false;
+                if (!now.HasValue || $"{now.Value.Host}{now.Value.Path}" != expectedPageKey) return null;
             }
-            if (closeTab)
+            if (closeTab && CountTabs(hwnd) >= 2)
             {
                 System.Windows.Forms.SendKeys.SendWait("^w");
-                return true;
+                return "cerrada";
             }
             if (!string.IsNullOrEmpty(redirectUrl))
             {
@@ -461,17 +466,60 @@ public static class BrowserInspector
                         edit.SetFocus();
                         vp.SetValue(redirectUrl);
                         System.Windows.Forms.SendKeys.SendWait("{ENTER}");
-                        return true;
+                        return "redirigida";
                     }
                 }
                 catch { }
-                // Fallback when the browser is in full-screen or hides its address bar: close the blocked tab so it never stays open.
-                System.Windows.Forms.SendKeys.SendWait("^w");
-                return true;
             }
+            // No address bar to write in (full screen, kiosk…): close the tab if there are others, otherwise put the
+            // window away. The blocked page never stays in front, and the browser is never closed.
+            if (CountTabs(hwnd) >= 2)
+            {
+                System.Windows.Forms.SendKeys.SendWait("^w");
+                return "cerrada";
+            }
+            WindowsActivity.MinimizeWindow(hwnd);
+            return "minimizada";
         }
         catch { }
-        return false;
+        return null;
+    }
+
+    /// <summary>Number of tabs in a browser window (UI Automation «TabItem»s), or -1 when it cannot be read.</summary>
+    public static int CountTabs(IntPtr hwnd)
+    {
+        try
+        {
+            var root = AutomationElement.FromHandle(hwnd);
+            if (root == null) return -1;
+            var walker = TreeWalker.ControlViewWalker;
+            var queue = new Queue<(AutomationElement Element, int Depth)>();
+            queue.Enqueue((root, 0));
+            var visited = 0;
+            var tabs = 0;
+            while (queue.Count > 0 && visited < 700)
+            {
+                var (cur, depth) = queue.Dequeue();
+                visited++;
+                ControlType? ct;
+                try { ct = cur.Current.ControlType; } catch { continue; }
+                if (ct == ControlType.Document) continue;
+                if (ct == ControlType.TabItem) { tabs++; continue; }
+                if (depth >= 14) continue;
+                try
+                {
+                    var child = walker.GetFirstChild(cur);
+                    while (child != null && visited + queue.Count < 700)
+                    {
+                        queue.Enqueue((child, depth + 1));
+                        child = walker.GetNextSibling(child);
+                    }
+                }
+                catch { }
+            }
+            return tabs;
+        }
+        catch { return -1; }
     }
 }
 

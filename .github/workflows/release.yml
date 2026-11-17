@@ -86,6 +86,29 @@ jobs:
           }
           Copy-Item dist-win/FocusDesk.exe FocusDesk-Windows-x64.exe
 
+      # Real blocking on a real Windows desktop: Edge, Chrome and Firefox on a local test site, «Bloquear ahora»,
+      # a task session and an app rule. No release is published if this fails.
+      - name: End-to-end test with real browsers
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          Add-Content -Path "$env:SystemRoot\System32\drivers\etc\hosts" -Value "`r`n127.0.0.1 prueba-focusdesk.test"
+          New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Force | Out-Null
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Name HideFirstRunExperience -Value 1 -Type DWord
+          $proc = Start-Process -FilePath "dist-win/FocusDesk.exe" -ArgumentList "--e2e-test" -Wait -PassThru -NoNewWindow
+          if (Test-Path e2e-report.txt) { Get-Content e2e-report.txt }
+          if ($proc.ExitCode -ne 0) { throw "End-to-end test failed with exit code $($proc.ExitCode)" }
+
+      - name: Upload end-to-end screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FocusDesk-Windows-e2e
+          path: |
+            e2e-capturas/
+            e2e-report.txt
+          if-no-files-found: ignore
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
