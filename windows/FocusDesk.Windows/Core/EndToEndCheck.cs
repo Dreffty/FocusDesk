@@ -583,7 +583,6 @@ public static class EndToEndCheck
     private static async Task CheckUiTour(AppEngine engine)
     {
         Info("—— Ventana de FocusDesk ——");
-        DiagnoseTextBox();
         engine.Workspace.Tasks.Add(new FocusTask { Title = "Repasar apuntes de historia", Minutes = 45, ScheduledAt = DateTimeOffset.Now.AddHours(1), Category = "Estudio" });
         engine.Workspace.Tasks.Add(new FocusTask { Title = "Entregar práctica", Minutes = 30, ScheduledAt = DateTimeOffset.Now.AddHours(3), Category = "Universidad" });
         var running = new FocusTask { Title = "Escribir el guion", Minutes = 50, ScheduledAt = DateTimeOffset.Now, Checklist = "Estructura\nGanchos\nCierre" };

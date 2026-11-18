@@ -122,9 +122,11 @@
                     Background="{TemplateBinding Background}"
                     BorderBrush="{TemplateBinding BorderBrush}"
                     BorderThickness="{TemplateBinding BorderThickness}"
-                    CornerRadius="9"
-                    Padding="{TemplateBinding Padding}"
+                    CornerRadius="10"
+                    Padding="0"
                     SnapsToDevicePixels="True">
+              <!-- The text box already applies its Padding inside PART_ContentHost: putting it on the border too doubled it
+                   (the typed text started 29 px in instead of 14). -->
               <ScrollViewer x:Name="PART_ContentHost"
                             Focusable="False"
                             HorizontalScrollBarVisibility="Hidden"
