@@ -29,16 +29,16 @@ public partial class MainWindow
         var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
         if (glyph != null)
         {
-            var g = Glyph(glyph, 11, fg);
-            g.Margin = new Thickness(0, 0, 6, 0);
+            var g = Glyph(glyph, 13, fg);
+            g.Margin = new Thickness(0, 0, 7, 0);
             row.Children.Add(g);
         }
-        row.Children.Add(new TextBlock { Text = text, FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(fg), VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(new TextBlock { Text = text, FontSize = 13.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(fg), VerticalAlignment = VerticalAlignment.Center });
         return new Border
         {
             Background = BrushHex(bg),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(9, 4, 9, 4),
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(11, 5, 11, 5),
             Margin = new Thickness(0, 0, 6, 6),
             Child = row
         };
@@ -49,10 +49,10 @@ public partial class MainWindow
     {
         var button = new System.Windows.Controls.Button
         {
-            Content = Glyph(glyph, 13, fg),
+            Content = Glyph(glyph, 15, fg),
             ToolTip = tooltip,
-            Width = 36,
-            MinHeight = 34,
+            Width = 40,
+            MinHeight = 38,
             Padding = new Thickness(0),
             Margin = new Thickness(6, 0, 0, 0),
             Background = BrushHex(bg),
@@ -67,15 +67,15 @@ public partial class MainWindow
     {
         var fg = primary ? "#0D1014" : "#EDF2F5";
         var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-        var g = Glyph(glyph, 12, fg);
-        g.Margin = new Thickness(0, 0, 8, 0);
+        var g = Glyph(glyph, 15, fg);
+        g.Margin = new Thickness(0, 0, 9, 0);
         row.Children.Add(g);
-        row.Children.Add(new TextBlock { Text = label, Foreground = BrushHex(fg), VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(new TextBlock { Text = label, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(fg), VerticalAlignment = VerticalAlignment.Center });
         var button = new System.Windows.Controls.Button
         {
             Content = row,
-            Padding = new Thickness(16, 0, 16, 0),
-            MinHeight = 38,
+            Padding = new Thickness(18, 0, 18, 0),
+            MinHeight = 40,
             Margin = new Thickness(0, 0, 8, 0)
         };
         if (primary)
@@ -103,10 +103,11 @@ public partial class MainWindow
             head.Children.Add(trailing);
         }
         var titleRow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        var g = Glyph(glyph, 14, titleColor == "#99A6AD" ? "#38A169" : titleColor);
-        g.Margin = new Thickness(0, 0, 10, 0);
+        var g = Glyph(glyph, 17, titleColor == "#99A6AD" ? "#38A169" : titleColor);
+        g.Margin = new Thickness(0, 0, 12, 0);
         titleRow.Children.Add(g);
-        titleRow.Children.Add(new TextBlock { Text = Spaced(title), FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(titleColor), VerticalAlignment = VerticalAlignment.Center });
+        // 14.5 bold capitals in a bright grey: clearly above the 13.5 descriptions and chips below it.
+        titleRow.Children.Add(new TextBlock { Text = Spaced(title), FontSize = 14.5, FontWeight = FontWeights.Bold, Foreground = BrushHex(titleColor == "#99A6AD" ? "#C9D1D6" : titleColor), VerticalAlignment = VerticalAlignment.Center });
         head.Children.Add(titleRow);
         stack.Children.Add(head);
         stack.Children.Add(content);
@@ -120,7 +121,7 @@ public partial class MainWindow
         BorderBrush = BrushHex("#2A2E34"),
         BorderThickness = new Thickness(1),
         CornerRadius = new CornerRadius(12),
-        Padding = new Thickness(16, 12, 14, 12),
+        Padding = new Thickness(18, 14, 16, 14),
         Margin = new Thickness(0, 0, 0, bottom),
         Child = child
     };
@@ -159,7 +160,7 @@ public partial class MainWindow
             FontFamily = new System.Windows.Media.FontFamily("Segoe UI Variable Display, Segoe UI")
         };
         center.Children.Add(time);
-        center.Children.Add(new TextBlock { Text = Spaced("Restante"), FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), HorizontalAlignment = System.Windows.HorizontalAlignment.Center });
+        center.Children.Add(new TextBlock { Text = Spaced("Restante"), FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), HorizontalAlignment = System.Windows.HorizontalAlignment.Center });
         grid.Children.Add(center);
 
         void Update(double fraction, string text, bool paused)
@@ -201,12 +202,12 @@ public partial class MainWindow
             when.Children.Add(new TextBlock
             {
                 Text = overdue ? t.ScheduledAt.LocalDateTime.ToString("d MMM", Spanish) : t.ScheduledAt.LocalDateTime.ToString("H:mm"),
-                FontSize = 17,
+                FontSize = 19,
                 FontWeight = FontWeights.SemiBold,
                 FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"),
                 Foreground = BrushHex(overdue ? "#FAC74D" : "#EDF2F5")
             });
-            when.Children.Add(new TextBlock { Text = overdue ? t.ScheduledAt.LocalDateTime.ToString("H:mm") + " · " + FocusRules.DurationText(t.Minutes) : FocusRules.DurationText(t.Minutes), FontSize = 12, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 2, 0, 0) });
+            when.Children.Add(new TextBlock { Text = overdue ? t.ScheduledAt.LocalDateTime.ToString("H:mm") + " · " + FocusRules.DurationText(t.Minutes) : FocusRules.DurationText(t.Minutes), FontSize = 13, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 2, 0, 0) });
             grid.Children.Add(when);
         }
 
@@ -215,7 +216,7 @@ public partial class MainWindow
         grid.Children.Add(bar);
 
         var middle = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        middle.Children.Add(new TextBlock { Text = t.Title, FontSize = 15.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = BrushHex("#EDF2F5") });
+        middle.Children.Add(new TextBlock { Text = t.Title, FontSize = 16.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = BrushHex("#EDF2F5") });
         var chips = new WrapPanel { Margin = new Thickness(0, 7, 0, -6) };
         var cat = CategoryHex(t.Category);
         chips.Children.Add(Chip(t.Category, cat, "#22262C"));

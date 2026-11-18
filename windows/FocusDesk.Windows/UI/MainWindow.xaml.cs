@@ -314,7 +314,7 @@ public partial class MainWindow : Window
         CornerRadius = new CornerRadius(6),
         Padding = new Thickness(8, 3, 8, 3),
         Margin = new Thickness(0, 0, 6, 0),
-        Child = new TextBlock { Text = text, FontSize = 11, FontWeight = FontWeights.Medium, Foreground = BrushHex(fgHex) }
+        Child = new TextBlock { Text = text, FontSize = 12.5, FontWeight = FontWeights.Medium, Foreground = BrushHex(fgHex) }
     };
 
     private void ConfirmAndDeleteTask(FocusTask task)

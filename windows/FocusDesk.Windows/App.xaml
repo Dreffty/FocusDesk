@@ -31,9 +31,9 @@
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
       <Setter Property="BorderBrush" Value="{StaticResource StrokeBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="14,8"/>
-      <Setter Property="MinHeight" Value="34"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Padding" Value="16,8"/>
+      <Setter Property="MinHeight" Value="38"/>
+      <Setter Property="FontSize" Value="14.5"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="HorizontalContentAlignment" Value="Center"/>
       <Setter Property="VerticalContentAlignment" Value="Center"/>
@@ -107,9 +107,9 @@
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
       <Setter Property="BorderBrush" Value="{StaticResource FieldStrokeBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="12,8"/>
-      <Setter Property="MinHeight" Value="38"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Padding" Value="13,8"/>
+      <Setter Property="MinHeight" Value="40"/>
+      <Setter Property="FontSize" Value="14.5"/>
       <Setter Property="VerticalContentAlignment" Value="Center"/>
       <Setter Property="CaretBrush" Value="{StaticResource MintBrush}"/>
       <Setter Property="SelectionBrush" Value="{StaticResource MintBrush}"/>
@@ -152,8 +152,8 @@
     <Style TargetType="ComboBoxItem">
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
       <Setter Property="Background" Value="Transparent"/>
-      <Setter Property="Padding" Value="12,8"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Padding" Value="12,9"/>
+      <Setter Property="FontSize" Value="14.5"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
@@ -186,8 +186,8 @@
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
       <Setter Property="BorderBrush" Value="{StaticResource FieldStrokeBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="MinHeight" Value="38"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="MinHeight" Value="40"/>
+      <Setter Property="FontSize" Value="14.5"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="SnapsToDevicePixels" Value="True"/>
       <Setter Property="Template">
@@ -271,7 +271,7 @@
     <!-- Styled Dark CheckBox with rounded 18x18 box and mint check -->
     <Style TargetType="CheckBox">
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="14.5"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="SnapsToDevicePixels" Value="True"/>
       <Setter Property="Template">
@@ -279,9 +279,9 @@
           <ControlTemplate TargetType="CheckBox">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Background="Transparent">
               <Border x:Name="Box"
-                      Width="18"
-                      Height="18"
-                      CornerRadius="5"
+                      Width="20"
+                      Height="20"
+                      CornerRadius="6"
                       Background="{StaticResource FieldBgBrush}"
                       BorderBrush="{StaticResource FieldStrokeBrush}"
                       BorderThickness="1.2"
@@ -320,7 +320,7 @@
     <Style x:Key="Switch" TargetType="CheckBox">
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="FontSize" Value="13.5"/>
+      <Setter Property="FontSize" Value="14.5"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
@@ -366,12 +366,12 @@
     </Style>
     <Style TargetType="MenuItem">
       <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontSize" Value="14"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="MenuItem">
-            <Border x:Name="Bd" Background="Transparent" CornerRadius="6" Padding="12,7" MinWidth="200">
+            <Border x:Name="Bd" Background="Transparent" CornerRadius="7" Padding="14,9" MinWidth="220">
               <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>

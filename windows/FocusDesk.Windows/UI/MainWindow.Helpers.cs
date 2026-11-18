@@ -52,11 +52,11 @@ public partial class MainWindow
     }
 
     // Section titles in small capitals with wide spacing, like the Mac cards («GENERAL», «BLOQUEO RÁPIDO»).
-    private static TextBlock SectionLabel(string text, double top = 14, string color = "#99A6AD") => new()
+    private static TextBlock SectionLabel(string text, double top = 14, string color = "#B7C0C5") => new()
     {
         Text = Spaced(text),
-        FontSize = 11,
-        FontWeight = FontWeights.SemiBold,
+        FontSize = 13,
+        FontWeight = FontWeights.Bold,
         Foreground = BrushHex(color),
         Margin = new Thickness(0, top, 0, 8)
     };
@@ -91,7 +91,7 @@ public partial class MainWindow
         panel.Children.Add(new TextBlock
         {
             Text = Spaced(label),
-            FontSize = 10.5,
+            FontSize = 12,
             FontWeight = FontWeights.SemiBold,
             Foreground = BrushHex("#99A6AD"),
             Margin = new Thickness(0, 0, 0, 5)
@@ -128,7 +128,7 @@ public partial class MainWindow
         // Settings toggles are Mac switches: the text on the left, the switch on the right.
         var box = new System.Windows.Controls.CheckBox
         {
-            Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, FontSize = 13.5 },
+            Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, FontSize = 14.5 },
             IsChecked = on,
             Margin = new Thickness(0, top + 4, 0, 4),
             HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch

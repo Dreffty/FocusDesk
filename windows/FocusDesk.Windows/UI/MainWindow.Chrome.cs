@@ -42,10 +42,10 @@ public partial class MainWindow
     private static TextBlock SidebarSection(string text, double top) => new()
     {
         Text = Spaced(text),
-        FontSize = 10.5,
-        FontWeight = FontWeights.SemiBold,
-        Foreground = BrushHex("#7C868C"),
-        Margin = new Thickness(10, top, 0, 6)
+        FontSize = 12.5,
+        FontWeight = FontWeights.Bold,
+        Foreground = BrushHex("#8A949A"),
+        Margin = new Thickness(10, top, 0, 7)
     };
 
     private void BuildNavigation()
@@ -70,12 +70,12 @@ public partial class MainWindow
         {
             Text = glyph,
             FontFamily = new System.Windows.Media.FontFamily(IconFont),
-            FontSize = 15,
-            Width = 22,
+            FontSize = 17,
+            Width = 24,
             VerticalAlignment = VerticalAlignment.Center
         };
-        var text = new TextBlock { Text = label, FontSize = 14, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 6, 0) };
-        var badgeText = new TextBlock { FontSize = 11, FontWeight = FontWeights.SemiBold };
+        var text = new TextBlock { Text = label, FontSize = 15.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 6, 0) };
+        var badgeText = new TextBlock { FontSize = 12.5, FontWeight = FontWeights.SemiBold };
         var badge = new Border
         {
             CornerRadius = new CornerRadius(9),
@@ -99,7 +99,7 @@ public partial class MainWindow
             Tag = tag,
             Content = grid,
             Padding = new Thickness(10, 0, 8, 0),
-            MinHeight = 38,
+            MinHeight = 42,
             Margin = new Thickness(0, 1, 0, 1),
             HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch,
             BorderThickness = new Thickness(0),
@@ -229,11 +229,11 @@ public partial class MainWindow
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        stack.Children.Add(new TextBlock { Text = Spaced(eyebrow), FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD") });
+        stack.Children.Add(new TextBlock { Text = Spaced(eyebrow), FontSize = 12.5, FontWeight = FontWeights.Bold, Foreground = BrushHex("#99A6AD") });
         stack.Children.Add(new TextBlock
         {
             Text = headline,
-            FontSize = 25,
+            FontSize = 31,
             FontWeight = FontWeights.SemiBold,
             Foreground = BrushHex("#EDF2F5"),
             FontFamily = new System.Windows.Media.FontFamily("Segoe UI Variable Display, Segoe UI"),

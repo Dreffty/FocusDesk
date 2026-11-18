@@ -35,7 +35,7 @@ public static partial class Dialogs
         root.Children.Add(new TextBlock
         {
             Text = $"Sesión terminada: {session.Task.Title}",
-            FontSize = 18,
+            FontSize = 20,
             FontWeight = FontWeights.SemiBold,
             TextWrapping = TextWrapping.Wrap
         });
@@ -43,7 +43,7 @@ public static partial class Dialogs
         {
             Text = $"Tiempo trabajado: {FocusRules.Clock(session.Elapsed(DateTimeOffset.Now))} · Interrupciones: {session.InterruptionCount}",
             Foreground = BrushHex("#99A6AD"),
-            FontSize = 12.5,
+            FontSize = 13.5,
             Margin = new Thickness(0, 6, 0, 12)
         });
 
@@ -51,7 +51,7 @@ public static partial class Dialogs
         var steps = AppEngine.ChecklistSteps(session.Task.Checklist);
         if (steps.Count > 0)
         {
-            root.Children.Add(new TextBlock { Text = "CHECKLIST", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 0, 0, 5) });
+            root.Children.Add(new TextBlock { Text = "CHECKLIST", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 0, 0, 5) });
             for (var i = 0; i < steps.Count; i++)
             {
                 var key = i.ToString();
@@ -88,11 +88,11 @@ public static partial class Dialogs
         }
         if (!string.IsNullOrWhiteSpace(session.Task.Folder) || manualFiles.Count > 0)
         {
-            root.Children.Add(new TextBlock { Text = "ARCHIVOS DEL RESULTADO", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 12, 0, 5) });
+            root.Children.Add(new TextBlock { Text = "ARCHIVOS DEL RESULTADO", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 12, 0, 5) });
             if (!string.IsNullOrWhiteSpace(session.FinalEvidenceMessage))
-                root.Children.Add(new TextBlock { Text = session.FinalEvidenceMessage, FontSize = 12, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap });
+                root.Children.Add(new TextBlock { Text = session.FinalEvidenceMessage, FontSize = 13, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap });
             if ((session.FinalChangedFiles?.Count ?? 0) == 0)
-                root.Children.Add(new TextBlock { Text = "No se ha detectado ningún archivo cambiado en la carpeta. Puedes adjuntar uno a mano.", FontSize = 12, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+                root.Children.Add(new TextBlock { Text = "No se ha detectado ningún archivo cambiado en la carpeta. Puedes adjuntar uno a mano.", FontSize = 13, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
             RebuildFiles();
             root.Children.Add(new ScrollViewer { MaxHeight = 120, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = filesPanel });
             var attach = new System.Windows.Controls.Button { Content = "Adjuntar archivo…", Margin = new Thickness(0, 6, 0, 0), HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
@@ -191,7 +191,7 @@ public static partial class Dialogs
         Grid.SetRow(scroll, 0);
         shell.Children.Add(scroll);
 
-        var inlineErrorText = new TextBlock { Foreground = BrushHex("#FF8080"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 12), Visibility = Visibility.Collapsed };
+        var inlineErrorText = new TextBlock { Foreground = BrushHex("#FF8080"), FontSize = 13.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 12), Visibility = Visibility.Collapsed };
         root.Children.Add(inlineErrorText);
 
         var nameBox = MakeTextBox(draft.Name);

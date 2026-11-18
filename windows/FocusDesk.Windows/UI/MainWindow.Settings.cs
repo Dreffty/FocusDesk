@@ -116,7 +116,7 @@ public partial class MainWindow
             Foreground = BrushHex("#EDF2F5")
         };
         var root = new DockPanel { Margin = new Thickness(16) };
-        var search = new System.Windows.Controls.TextBox { Margin = new Thickness(0, 0, 0, 10), FontSize = 15 };
+        var search = new System.Windows.Controls.TextBox { Margin = new Thickness(0, 0, 0, 10), FontSize = 16.5 };
         DockPanel.SetDock(search, Dock.Top);
         var list = new System.Windows.Controls.ListBox { Background = BrushHex("#161B21"), BorderBrush = BrushHex("#262A30") };
         root.Children.Add(search);
@@ -240,7 +240,7 @@ public partial class MainWindow
                 CornerRadius = new CornerRadius(6),
                 Padding = new Thickness(10, 4, 10, 4),
                 Margin = new Thickness(0, 0, 6, 6),
-                Child = new TextBlock { Text = "● " + category.Name, Foreground = swatch, FontSize = 12.5 }
+                Child = new TextBlock { Text = "● " + category.Name, Foreground = swatch, FontSize = 13.5 }
             });
         }
         agenda.Children.Add(categoryList);
@@ -279,7 +279,7 @@ public partial class MainWindow
             }, true, 0));
             DockPanel.SetDock(buttons, Dock.Right);
             line.Children.Add(buttons);
-            line.Children.Add(new TextBlock { Text = $"{profile.Name} · {profile.Category} · {profile.Minutes} min", FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
+            line.Children.Add(new TextBlock { Text = $"{profile.Name} · {profile.Category} · {profile.Minutes} min", FontSize = 15, VerticalAlignment = VerticalAlignment.Center });
             line.Margin = new Thickness(0);
             profiles.Children.Add(InnerRow(line, 8));
         }
@@ -317,7 +317,7 @@ public partial class MainWindow
                 Margin = new Thickness(0, 0, 6, 6),
                 Padding = new Thickness(10, 4, 10, 4),
                 MinHeight = 28,
-                FontSize = 12
+                FontSize = 13
             };
             pill.Click += (_, _) => _engine.RemoveStudySource(src);
             wrap.Children.Add(pill);

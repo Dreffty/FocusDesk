@@ -53,7 +53,7 @@ public partial class MainWindow
             _liveScheduledBreakText = new TextBlock
             {
                 Text = $"{activeBreak.Period.Title} · quedan {FocusRules.Clock(activeBreak.Remaining)}",
-                FontSize = 15,
+                FontSize = 16.5,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = BrushHex("#FAC74D"),
                 VerticalAlignment = VerticalAlignment.Center
@@ -68,7 +68,7 @@ public partial class MainWindow
             _liveContinuousBreakText = new TextBlock
             {
                 Text = $"{FocusRules.Clock(_engine.ActiveContinuousBreakDeadline.RemainingAfterPossibleReboot())} · {_engine.ActiveContinuousBreakMessage}",
-                FontSize = 14,
+                FontSize = 15,
                 Foreground = BrushHex("#38A169"),
                 TextWrapping = TextWrapping.Wrap,
                 VerticalAlignment = VerticalAlignment.Center
@@ -95,7 +95,7 @@ public partial class MainWindow
                 chips.Children.Add(phaseChip);
             }
             sp.Children.Add(chips);
-            sp.Children.Add(new TextBlock { Text = s.Task.Title, FontSize = 25, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 14),
+            sp.Children.Add(new TextBlock { Text = s.Task.Title, FontSize = 28, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 14),
                 FontFamily = new System.Windows.Media.FontFamily("Segoe UI Variable Display, Segoe UI") });
 
             var btns = new WrapPanel();
@@ -166,8 +166,8 @@ public partial class MainWindow
             DockPanel.SetDock(icon, Dock.Left);
             row.Children.Add(icon);
             var info = new StackPanel();
-            var titleBlock = new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, FontSize = 14.5, Foreground = BrushHex(st.Warning ? "#FAC74D" : "#38A169") };
-            var subBlock = new TextBlock { Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(gr))} · {_engine.Workspace.MatchesToday(gr.Id)}/{gr.MaxDailyMatches} {gr.MatchUnitPlural}", Foreground = BrushHex("#99A6AD"), FontSize = 12.5, Margin = new Thickness(0, 4, 0, 0) };
+            var titleBlock = new TextBlock { Text = $"{gr.Game?.Name ?? gr.Name} · {st.Text}", FontWeight = FontWeights.SemiBold, FontSize = 15, Foreground = BrushHex(st.Warning ? "#FAC74D" : "#38A169") };
+            var subBlock = new TextBlock { Text = $"Estudio hoy: {FocusRules.Clock(_engine.EffectiveWorkedSeconds(gr))} · {_engine.Workspace.MatchesToday(gr.Id)}/{gr.MaxDailyMatches} {gr.MatchUnitPlural}", Foreground = BrushHex("#99A6AD"), FontSize = 13.5, Margin = new Thickness(0, 4, 0, 0) };
             info.Children.Add(titleBlock);
             info.Children.Add(subBlock);
             row.Children.Add(info);
@@ -290,7 +290,7 @@ public partial class MainWindow
         nav.Children.Add(new TextBlock
         {
             Text = $"{startOfWeek.ToString("d MMM", Spanish)} – {endOfWeek.ToString("d MMM yyyy", Spanish)}",
-            FontSize = 17,
+            FontSize = 19,
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(14, 0, 8, 0)
@@ -332,8 +332,8 @@ public partial class MainWindow
 
             var col = new StackPanel();
             var head = new Grid { Margin = new Thickness(4, 2, 2, 10) };
-            head.Children.Add(new TextBlock { Text = Spaced(abbreviations[i]), FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(weekend ? "#FAC74D" : "#99A6AD"), VerticalAlignment = VerticalAlignment.Center });
-            var number = new TextBlock { Text = day.Day.ToString(), FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(isToday ? "#0D1014" : "#EDF2F5"), HorizontalAlignment = System.Windows.HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            head.Children.Add(new TextBlock { Text = Spaced(abbreviations[i]), FontSize = 12.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(weekend ? "#FAC74D" : "#99A6AD"), VerticalAlignment = VerticalAlignment.Center });
+            var number = new TextBlock { Text = day.Day.ToString(), FontSize = 22, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(isToday ? "#0D1014" : "#EDF2F5"), HorizontalAlignment = System.Windows.HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             UIElement numberView = isToday
                 ? new Border { Width = 34, Height = 34, CornerRadius = new CornerRadius(17), Background = BrushHex("#38A169"), Child = number, HorizontalAlignment = System.Windows.HorizontalAlignment.Right }
                 : new Border { Child = number, HorizontalAlignment = System.Windows.HorizontalAlignment.Right };
@@ -352,12 +352,12 @@ public partial class MainWindow
                     DockPanel.SetDock(rep, Dock.Right);
                     top.Children.Add(rep);
                 }
-                top.Children.Add(new TextBlock { Text = t.ScheduledAt.LocalDateTime.ToString("HH:mm"), FontSize = 11.5, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), Foreground = BrushHex("#99A6AD") });
+                top.Children.Add(new TextBlock { Text = t.ScheduledAt.LocalDateTime.ToString("HH:mm"), FontSize = 12.5, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), Foreground = BrushHex("#99A6AD") });
                 inner.Children.Add(top);
-                var title = new TextBlock { Text = t.Title, FontSize = 13, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 3), Foreground = BrushHex(t.Completed ? "#99A6AD" : "#EDF2F5") };
+                var title = new TextBlock { Text = t.Title, FontSize = 14, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 3), Foreground = BrushHex(t.Completed ? "#99A6AD" : "#EDF2F5") };
                 if (t.Completed) title.TextDecorations = TextDecorations.Strikethrough;
                 inner.Children.Add(title);
-                inner.Children.Add(new TextBlock { Text = FocusRules.DurationText(t.Minutes), FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(color) });
+                inner.Children.Add(new TextBlock { Text = FocusRules.DurationText(t.Minutes), FontSize = 12.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(color) });
                 var block = new System.Windows.Controls.Button
                 {
                     Content = new Border { BorderBrush = BrushHex(color), BorderThickness = new Thickness(3, 0, 0, 0), Padding = new Thickness(8, 6, 6, 6), Child = inner },
@@ -473,8 +473,8 @@ public partial class MainWindow
         tile.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(tile);
         var text = new StackPanel { Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        text.Children.Add(new TextBlock { Text = value, FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5") });
-        text.Children.Add(new TextBlock { Text = label, FontSize = 12, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap });
+        text.Children.Add(new TextBlock { Text = value, FontSize = 22, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5") });
+        text.Children.Add(new TextBlock { Text = label, FontSize = 13, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap });
         row.Children.Add(text);
         return new Border
         {
@@ -502,14 +502,14 @@ public partial class MainWindow
             foreach (var item in _engine.Workspace.AuditLog.Take(100))
             {
                 var line = new DockPanel();
-                var when = new TextBlock { Text = item.At.LocalDateTime.ToString("d MMM · HH:mm", Spanish), FontSize = 12.5, Foreground = BrushHex("#99A6AD"), Width = 110, VerticalAlignment = VerticalAlignment.Center };
+                var when = new TextBlock { Text = item.At.LocalDateTime.ToString("d MMM · HH:mm", Spanish), FontSize = 13.5, Foreground = BrushHex("#99A6AD"), Width = 110, VerticalAlignment = VerticalAlignment.Center };
                 DockPanel.SetDock(when, Dock.Left);
                 line.Children.Add(when);
                 var chip = Chip(item.Category, "#FAC74D", "#2E2614");
                 chip.Margin = new Thickness(0, 0, 10, 0);
                 DockPanel.SetDock(chip, Dock.Left);
                 line.Children.Add(chip);
-                line.Children.Add(new TextBlock { Text = item.Summary, TextWrapping = TextWrapping.Wrap, FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
+                line.Children.Add(new TextBlock { Text = item.Summary, TextWrapping = TextWrapping.Wrap, FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
                 list.Children.Add(InnerRow(line, 6));
             }
             if (_engine.Workspace.AuditLog.Count == 0)
@@ -529,7 +529,7 @@ public partial class MainWindow
         // Search and filters, in one card
         var filterStack = new StackPanel();
         var searchRow = new Grid();
-        var searchBox = new System.Windows.Controls.TextBox { Text = _historySearch, Padding = new Thickness(34, 8, 12, 8), MinHeight = 42, FontSize = 14 };
+        var searchBox = new System.Windows.Controls.TextBox { Text = _historySearch, Padding = new Thickness(34, 8, 12, 8), MinHeight = 42, FontSize = 15 };
         searchBox.KeyDown += (_, e) =>
         {
             if (e.Key != Key.Enter) return;
@@ -543,14 +543,14 @@ public partial class MainWindow
         lens.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
         lens.IsHitTestVisible = false;
         searchRow.Children.Add(lens);
-        var hint = new TextBlock { Text = "Buscar por tarea, nota, área o archivo… (Intro)", Foreground = BrushHex("#7C868C"), FontSize = 14, Margin = new Thickness(35, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false,
+        var hint = new TextBlock { Text = "Buscar por tarea, nota, área o archivo… (Intro)", Foreground = BrushHex("#7C868C"), FontSize = 15, Margin = new Thickness(35, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false,
             Visibility = string.IsNullOrEmpty(_historySearch) ? Visibility.Visible : Visibility.Collapsed };
         searchBox.TextChanged += (_, _) => hint.Visibility = string.IsNullOrEmpty(searchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
         searchRow.Children.Add(hint);
         filterStack.Children.Add(searchRow);
 
         var filters = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
-        filters.Children.Add(new TextBlock { Text = "Estado", FontSize = 13.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 10, 0) });
+        filters.Children.Add(new TextBlock { Text = "Estado", FontSize = 14.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 10, 0) });
         var state = ChoiceBox(new[]
         {
             new ComboOption<int>(0, "Todas"), new ComboOption<int>(1, "Completadas"),
@@ -558,7 +558,7 @@ public partial class MainWindow
         }, _historyState, v => { _historyState = v; _historyVisible = 25; RefreshUI(); }, 160);
         state.Margin = new Thickness(0, 0, 22, 0);
         filters.Children.Add(state);
-        filters.Children.Add(new TextBlock { Text = "Periodo", FontSize = 13.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+        filters.Children.Add(new TextBlock { Text = "Periodo", FontSize = 14.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
         filters.Children.Add(Segmented(new[] { "Todo", "Esta semana", "Este mes" }, _historyPeriod, i => { _historyPeriod = i; _historyVisible = 25; RefreshUI(); }));
         filterStack.Children.Add(filters);
 
@@ -597,8 +597,8 @@ public partial class MainWindow
             var name = day == DateTime.Today ? "Hoy" : day == DateTime.Today.AddDays(-1) ? "Ayer" : day.ToString("dddd d 'de' MMMM", Spanish);
             var dayAll = all.Where(r => r.Session.StartedAt.LocalDateTime.Date == day).ToList();
             var title = new TextBlock { Margin = new Thickness(0, 10, 0, 10) };
-            title.Inlines.Add(new System.Windows.Documents.Run(char.ToUpper(name[0]) + name[1..]) { FontSize = 17, FontWeight = FontWeights.SemiBold });
-            title.Inlines.Add(new System.Windows.Documents.Run($"   {dayAll.Count} {(dayAll.Count == 1 ? "sesión" : "sesiones")} · {dayAll.Count(r => r.Completed)} completada{(dayAll.Count(r => r.Completed) == 1 ? "" : "s")} · {FocusRules.DurationText((int)Math.Round(dayAll.Sum(Worked) / 60))}") { FontSize = 13.5, Foreground = BrushHex("#99A6AD") });
+            title.Inlines.Add(new System.Windows.Documents.Run(char.ToUpper(name[0]) + name[1..]) { FontSize = 19, FontWeight = FontWeights.SemiBold });
+            title.Inlines.Add(new System.Windows.Documents.Run($"   {dayAll.Count} {(dayAll.Count == 1 ? "sesión" : "sesiones")} · {dayAll.Count(r => r.Completed)} completada{(dayAll.Count(r => r.Completed) == 1 ? "" : "s")} · {FocusRules.DurationText((int)Math.Round(dayAll.Sum(Worked) / 60))}") { FontSize = 14.5, Foreground = BrushHex("#99A6AD") });
             PageContent.Children.Add(title);
             foreach (var rec in group) PageContent.Children.Add(HistoryCard(rec, Worked(rec)));
         }
@@ -631,7 +631,7 @@ public partial class MainWindow
         var open = _historyOpen.Contains(rec.Id);
         var sp = new StackPanel();
         var titleRow = new WrapPanel();
-        titleRow.Children.Add(new TextBlock { Text = rec.Session.Task.Title, FontSize = 17, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+        titleRow.Children.Add(new TextBlock { Text = rec.Session.Task.Title, FontSize = 19, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
         var chip = Chip(label, rec.Completed ? "#38A169" : fg, rec.Completed ? "#15291F" : bg);
         chip.Margin = new Thickness(0, 2, 0, 0);
         titleRow.Children.Add(chip);
@@ -640,7 +640,7 @@ public partial class MainWindow
         var end = (rec.Session.EndedAt ?? rec.Session.StartedAt).LocalDateTime;
         sp.Children.Add(MutedText($"{start:HH:mm}–{end:HH:mm} · {FocusRules.DurationText((int)Math.Round(worked / 60))} · {rec.Session.Task.Category}", 12.5, 6));
         if (!string.IsNullOrWhiteSpace(rec.Note))
-            sp.Children.Add(new TextBlock { Text = rec.Note, FontSize = 13.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
+            sp.Children.Add(new TextBlock { Text = rec.Note, FontSize = 14.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
         if (open)
         {
             var apps = rec.AppSummaries.Take(6).ToList();
@@ -648,20 +648,20 @@ public partial class MainWindow
             {
                 sp.Children.Add(SectionLabel("Dónde estuvo el tiempo", 12));
                 foreach (var app in apps)
-                    sp.Children.Add(new TextBlock { Text = $"{app.Name} · {FocusRules.Clock(app.Seconds)}", FontSize = 12.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
+                    sp.Children.Add(new TextBlock { Text = $"{app.Name} · {FocusRules.Clock(app.Seconds)}", FontSize = 13.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
             }
             var steps = AppEngine.ChecklistSteps(rec.Session.Task.Checklist);
             if (steps.Count > 0)
             {
                 sp.Children.Add(SectionLabel("Checklist", 12));
                 for (var i = 0; i < steps.Count; i++)
-                    sp.Children.Add(new TextBlock { Text = (rec.Session.Checked.Contains(i.ToString()) ? "☑ " : "☐ ") + steps[i], FontSize = 12.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
+                    sp.Children.Add(new TextBlock { Text = (rec.Session.Checked.Contains(i.ToString()) ? "☑ " : "☐ ") + steps[i], FontSize = 13.5, Foreground = BrushHex("#D5DBDF"), Margin = new Thickness(0, 2, 0, 0) });
             }
             if (rec.ConfirmedFiles.Count > 0 || rec.ManualFiles.Count > 0)
             {
                 sp.Children.Add(SectionLabel("Archivos del resultado", 12));
                 foreach (var file in rec.ConfirmedFiles.Concat(rec.ManualFiles).Distinct().Take(12))
-                    sp.Children.Add(new TextBlock { Text = file, FontSize = 12, Foreground = BrushHex("#D5DBDF"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+                    sp.Children.Add(new TextBlock { Text = file, FontSize = 13, Foreground = BrushHex("#D5DBDF"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
             }
             if (rec.Session.BlocksApplied > 0)
                 sp.Children.Add(MutedText($"Bloqueos aplicados: {rec.Session.BlocksApplied}", 12, 8));
@@ -679,9 +679,9 @@ public partial class MainWindow
         grid.Children.Add(sp);
 
         var rightCol = new StackPanel { HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(12, 0, 0, 0) };
-        rightCol.Children.Add(new TextBlock { Text = FocusRules.DurationText((int)Math.Round(worked / 60)), FontSize = 22, FontWeight = FontWeights.SemiBold, HorizontalAlignment = System.Windows.HorizontalAlignment.Right });
-        rightCol.Children.Add(new TextBlock { Text = $"de {rec.Session.Task.Minutes} previstos", FontSize = 12.5, Foreground = BrushHex("#99A6AD"), HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 4, 0, 0) });
-        rightCol.Children.Add(new TextBlock { Text = $"{rec.Session.InterruptionCount} interrupciones", FontSize = 12.5, Foreground = BrushHex("#99A6AD"), HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 2, 0, 8) });
+        rightCol.Children.Add(new TextBlock { Text = FocusRules.DurationText((int)Math.Round(worked / 60)), FontSize = 24, FontWeight = FontWeights.SemiBold, HorizontalAlignment = System.Windows.HorizontalAlignment.Right });
+        rightCol.Children.Add(new TextBlock { Text = $"de {rec.Session.Task.Minutes} previstos", FontSize = 13.5, Foreground = BrushHex("#99A6AD"), HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 4, 0, 0) });
+        rightCol.Children.Add(new TextBlock { Text = $"{rec.Session.InterruptionCount} interrupciones", FontSize = 13.5, Foreground = BrushHex("#99A6AD"), HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 2, 0, 8) });
         var del = IconButton("", "Borrar sesión del historial", () =>
         {
             var answer = System.Windows.MessageBox.Show(this, $"¿Borrar «{rec.Session.Task.Title}» del historial?", "Borrar sesión · FocusDesk",

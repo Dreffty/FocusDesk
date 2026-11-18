@@ -50,9 +50,9 @@ public partial class MainWindow
     private static UIElement PageSectionTitle(string title, string caption, double top = 6)
     {
         var tb = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, top, 0, 14) };
-        tb.Inlines.Add(new System.Windows.Documents.Run(title) { FontSize = 19, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5") });
+        tb.Inlines.Add(new System.Windows.Documents.Run(title) { FontSize = 21, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5") });
         if (!string.IsNullOrEmpty(caption))
-            tb.Inlines.Add(new System.Windows.Documents.Run("   " + caption) { FontSize = 13.5, Foreground = BrushHex("#99A6AD") });
+            tb.Inlines.Add(new System.Windows.Documents.Run("   " + caption) { FontSize = 14.5, Foreground = BrushHex("#99A6AD") });
         return tb;
     }
 
@@ -63,8 +63,8 @@ public partial class MainWindow
         var tile = IconTile(glyph, false, 36);
         tile.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
         sp.Children.Add(tile);
-        sp.Children.Add(new TextBlock { Text = title, FontSize = 15.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5"), Margin = new Thickness(0, 12, 0, 4), TextWrapping = TextWrapping.Wrap });
-        sp.Children.Add(new TextBlock { Text = text, FontSize = 12.5, FontWeight = FontWeights.Normal, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap });
+        sp.Children.Add(new TextBlock { Text = title, FontSize = 16.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5"), Margin = new Thickness(0, 12, 0, 4), TextWrapping = TextWrapping.Wrap });
+        sp.Children.Add(new TextBlock { Text = text, FontSize = 13.5, FontWeight = FontWeights.Normal, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap });
         var button = new System.Windows.Controls.Button
         {
             Content = sp,
@@ -146,11 +146,11 @@ public partial class MainWindow
             var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
             row.Children.Add(IconTile("", false, 34));
             var text = new StackPanel { Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-            text.Children.Add(new TextBlock { Text = game.Name, FontSize = 14.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5"), TextWrapping = TextWrapping.Wrap });
+            text.Children.Add(new TextBlock { Text = game.Name, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5"), TextWrapping = TextWrapping.Wrap });
             text.Children.Add(new TextBlock
             {
                 Text = game.Detection.IsExact() ? "Detección exacta de cada partida" : $"{game.TypicalMatchMinutes} min por partida + prórroga",
-                FontSize = 12,
+                FontSize = 13,
                 FontWeight = FontWeights.Normal,
                 Foreground = BrushHex("#99A6AD"),
                 TextWrapping = TextWrapping.Wrap,
@@ -205,7 +205,7 @@ public partial class MainWindow
         grid.Children.Add(tile);
 
         var middle = new StackPanel { Margin = new Thickness(16, 0, 12, 0) };
-        middle.Children.Add(new TextBlock { Text = rule.Name, FontSize = 17, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = BrushHex(rule.Enabled ? "#EDF2F5" : "#99A6AD") });
+        middle.Children.Add(new TextBlock { Text = rule.Name, FontSize = 19, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = BrushHex(rule.Enabled ? "#EDF2F5" : "#99A6AD") });
         var chips = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         chips.Children.Add(Chip(rule.Kind.GalleryTitle(), "#99A6AD", "#22262C", RuleKindGlyph(rule.Kind)));
         if (enforcing) chips.Children.Add(Chip("Bloqueando ahora", "#38A169", "#15291F", ""));
@@ -367,7 +367,7 @@ public partial class MainWindow
                 line.Children.Add(new TextBlock
                 {
                     Text = $"{(entry.IsAppBundleId ? "Programa" : "Web")} · {entry.Target} · quedan {FocusRules.Clock(left)}",
-                    FontSize = 13,
+                    FontSize = 14,
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 sp.Children.Add(line);
@@ -392,7 +392,7 @@ public partial class MainWindow
     {
         var box = new System.Windows.Controls.CheckBox
         {
-            Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, FontSize = 13.5 },
+            Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, FontSize = 14.5 },
             IsChecked = on,
             Margin = new Thickness(0, top, 0, 0),
             HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch
@@ -425,14 +425,14 @@ public partial class MainWindow
             DockPanel.SetDock(clock, Dock.Left);
             running.Children.Add(clock);
             var what = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            what.Children.Add(new TextBlock { Text = "Bloqueando " + quick.Name.Replace("Bloqueo rápido · ", "").ToLower(Spanish), FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+            what.Children.Add(new TextBlock { Text = "Bloqueando " + quick.Name.Replace("Bloqueo rápido · ", "").ToLower(Spanish), FontSize = 16.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
             what.Children.Add(MutedText($"Termina a las {DateTime.Now.AddSeconds(left):H:mm} · {(quick.Protection == SessionProtection.None ? "Se puede parar" : quick.Protection.Label())}", 12.5, 3));
             running.Children.Add(what);
             quickStack.Children.Add(new Border { Background = BrushHex("#122019"), BorderBrush = BrushHex("#24452F"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12), Padding = new Thickness(18, 14, 14, 14), Margin = new Thickness(0, 0, 0, 16), Child = running });
         }
 
         var whatRow = new WrapPanel();
-        var whatLabel = new TextBlock { Text = "Qué bloquear", FontSize = 13.5, Foreground = BrushHex("#99A6AD"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 6) };
+        var whatLabel = new TextBlock { Text = "Qué bloquear", FontSize = 14.5, Foreground = BrushHex("#99A6AD"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 6) };
         whatRow.Children.Add(whatLabel);
         var choices = new List<(DistractionPreset? Preset, string Label)> { (null, "Redes + Shorts") };
         choices.AddRange(DistractionPreset.All.Select(p => ((DistractionPreset?)p, p.Label)));
@@ -477,7 +477,7 @@ public partial class MainWindow
         quickStack.Children.Add(quickBtns);
 
         var stopHow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
-        stopHow.Children.Add(new TextBlock { Text = "Si quiero pararlo", FontSize = 13, Foreground = BrushHex("#EDF2F5"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+        stopHow.Children.Add(new TextBlock { Text = "Si quiero pararlo", FontSize = 14, Foreground = BrushHex("#EDF2F5"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
         stopHow.Children.Add(ChoiceBox(new[]
         {
             new ComboOption<SessionProtection>(SessionProtection.None, "Sin protección"),
@@ -502,8 +502,8 @@ public partial class MainWindow
                 tile.VerticalAlignment = VerticalAlignment.Center;
                 row.Children.Add(tile);
                 var info = new StackPanel { Margin = new Thickness(14, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center };
-                info.Children.Add(new TextBlock { Text = r.Name, FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
-                info.Children.Add(new TextBlock { Text = $"{r.Kind.GalleryTitle()} · {RuleInfoLine(r)}", FontSize = 12.5, Foreground = BrushHex("#38A169"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) });
+                info.Children.Add(new TextBlock { Text = r.Name, FontSize = 16.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+                info.Children.Add(new TextBlock { Text = $"{r.Kind.GalleryTitle()} · {RuleInfoLine(r)}", FontSize = 13.5, Foreground = BrushHex("#38A169"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) });
                 Grid.SetColumn(info, 1);
                 row.Children.Add(info);
                 var acts = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
@@ -567,7 +567,7 @@ public partial class MainWindow
             DockPanel.SetDock(buttons, Dock.Right);
             dock.Children.Add(buttons);
             var sp = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            sp.Children.Add(new TextBlock { Text = profile.Name, FontSize = 15, FontWeight = FontWeights.SemiBold });
+            sp.Children.Add(new TextBlock { Text = profile.Name, FontSize = 16.5, FontWeight = FontWeights.SemiBold });
             sp.Children.Add(MutedText($"{profile.Category} · {profile.Minutes} min · {profile.Protection.Label()} · {(string.IsNullOrEmpty(profile.Domains) ? "sin lista web" : profile.Domains)}", 12, 4));
             dock.Children.Add(sp);
             profiles.Children.Add(InnerRow(dock));
@@ -599,7 +599,7 @@ public partial class MainWindow
     private UIElement Stepper(string prefix, int value, int min, int max, int step, Action<int> onChange)
     {
         var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Margin = new Thickness(0, 0, 26, 0) };
-        row.Children.Add(new TextBlock { Text = $"{prefix} {value} min", FontSize = 14, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+        row.Children.Add(new TextBlock { Text = $"{prefix} {value} min", FontSize = 15, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
         var arrows = new StackPanel();
         var up = new System.Windows.Controls.Button { Content = Glyph("", 9, "#D5DBDF"), MinHeight = 16, Height = 16, Width = 26, Padding = new Thickness(0), Margin = new Thickness(0, 0, 0, 1) };
         var down = new System.Windows.Controls.Button { Content = Glyph("", 9, "#D5DBDF"), MinHeight = 16, Height = 16, Width = 26, Padding = new Thickness(0) };
@@ -622,7 +622,7 @@ public partial class MainWindow
         var eyes = new StackPanel();
         var counterRow = new WrapPanel();
         var counter = new TextBlock { FontSize = 40, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#38A169"), FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0) };
-        var counterText = new TextBlock { FontSize = 14, Foreground = BrushHex("#99A6AD"), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, MaxWidth = 560 };
+        var counterText = new TextBlock { FontSize = 15, Foreground = BrushHex("#99A6AD"), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, MaxWidth = 560 };
         counterRow.Children.Add(counter);
         counterRow.Children.Add(counterText);
         eyes.Children.Add(counterRow);
@@ -700,7 +700,7 @@ public partial class MainWindow
             DockPanel.SetDock(take, Dock.Right);
             line.Children.Add(take);
             var info = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            info.Children.Add(new TextBlock { Text = r.Name, FontSize = 14.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+            info.Children.Add(new TextBlock { Text = r.Name, FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
             info.Children.Add(MutedText($"{left} de {r.DailyMicroPausesAllowed} disponibles hoy · {r.MicroPauseMinutes} min cada una", 12.5, 2));
             line.Children.Add(info);
             micro.Children.Add(InnerRow(line, 8));
@@ -734,7 +734,7 @@ public partial class MainWindow
             DockPanel.SetDock(act, Dock.Right);
             line.Children.Add(act);
             var info = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
-            info.Children.Add(new TextBlock { Text = r.Name, FontSize = 14.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+            info.Children.Add(new TextBlock { Text = r.Name, FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
             info.Children.Add(MutedText($"{(r.Enabled ? RuleInfoLine(r) : "Apagada")} · descansos de {r.PomodoroShortBreakMinutes} min, y de {r.PomodoroLongBreakMinutes} min cada {r.PomodoroLongBreakEvery} ciclos", 12.5, 2));
             line.Children.Add(info);
             pomo.Children.Add(InnerRow(line, 8));
@@ -756,10 +756,10 @@ public partial class MainWindow
             }, "#FF8080", "#2A161B");
             DockPanel.SetDock(remove, Dock.Right);
             line.Children.Add(remove);
-            var time = new TextBlock { Text = $"{br.StartHour:D2}:{br.StartMinute:D2}", FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), Width = 70, VerticalAlignment = VerticalAlignment.Center };
+            var time = new TextBlock { Text = $"{br.StartHour:D2}:{br.StartMinute:D2}", FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), Width = 70, VerticalAlignment = VerticalAlignment.Center };
             DockPanel.SetDock(time, Dock.Left);
             line.Children.Add(time);
-            line.Children.Add(new TextBlock { Text = $"{br.Title} · {br.DurationMinutes} min", FontSize = 14.5, VerticalAlignment = VerticalAlignment.Center });
+            line.Children.Add(new TextBlock { Text = $"{br.Title} · {br.DurationMinutes} min", FontSize = 15, VerticalAlignment = VerticalAlignment.Center });
             scheduled.Children.Add(InnerRow(line, 8));
         }
         if (s.Breaks.Count == 0) scheduled.Children.Add(MutedText("Sin descansos programados.", 12.5, 0));
