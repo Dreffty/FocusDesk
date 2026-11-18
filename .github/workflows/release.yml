@@ -93,14 +93,47 @@ jobs:
         continue-on-error: true
         timeout-minutes: 8
         run: |
-          # The Chocolatey server sometimes answers 503/504: try again a few times before giving up.
+          function Test-Browser($relatives) {
+            foreach ($root in $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA) {
+              foreach ($rel in $relatives) {
+                $dir = Join-Path $root (Split-Path $rel -Parent)
+                if ((Test-Path $dir) -and (Get-ChildItem $dir -Filter (Split-Path $rel -Leaf) -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)) { return $true }
+              }
+            }
+            return $false
+          }
+          function Wait-Browser($relatives, $seconds) {
+            for ($t = 0; $t -lt $seconds; $t += 5) {
+              if (Test-Browser $relatives) { return $true }
+              Start-Sleep -Seconds 5
+            }
+            return $false
+          }
+          $brave = @('BraveSoftware\Brave-Browser\Application\brave.exe')
+          $opera = @('Programs\Opera\opera.exe', 'Opera\opera.exe')
+
+          # 1) Chocolatey (its server sometimes answers 503/504: two tries)
           foreach ($pkg in 'brave','opera') {
-            for ($i = 1; $i -le 4; $i++) {
+            for ($i = 1; $i -le 2; $i++) {
               choco install $pkg -y --no-progress
               if ($LASTEXITCODE -eq 0) { break }
-              Start-Sleep -Seconds (15 * $i)
+              Start-Sleep -Seconds 20
             }
           }
+          # 2) If it is still missing, the installer straight from the browser's own site
+          if (-not (Test-Browser $brave)) {
+            Write-Host "Brave: Chocolatey failed, downloading the installer from brave.com"
+            Invoke-WebRequest -Uri 'https://laptop-updates.brave.com/latest/winx64' -OutFile "$env:RUNNER_TEMP\brave-setup.exe" -MaximumRetryCount 4 -RetryIntervalSec 10
+            Start-Process "$env:RUNNER_TEMP\brave-setup.exe" -ArgumentList '/silent','/install' -Wait
+            Wait-Browser $brave 180 | Out-Null
+          }
+          if (-not (Test-Browser $opera)) {
+            Write-Host "Opera: Chocolatey failed, downloading the installer from opera.com"
+            Invoke-WebRequest -Uri 'https://net.geo.opera.com/opera/stable/windows' -OutFile "$env:RUNNER_TEMP\opera-setup.exe" -MaximumRetryCount 4 -RetryIntervalSec 10
+            Start-Process "$env:RUNNER_TEMP\opera-setup.exe" -ArgumentList '/silent','/allusers=1','/launchopera=0','/setdefaultbrowser=0' -Wait
+            Wait-Browser $opera 180 | Out-Null
+          }
+          Write-Host "Brave: $(Test-Browser $brave) · Opera: $(Test-Browser $opera)"
 
       - name: End-to-end test with real browsers
         shell: pwsh

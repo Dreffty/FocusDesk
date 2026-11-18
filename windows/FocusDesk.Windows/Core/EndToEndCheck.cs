@@ -720,9 +720,27 @@ public static class EndToEndCheck
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
         };
-        return roots.Where(r => !string.IsNullOrEmpty(r))
+        var fixedPath = roots.Where(r => !string.IsNullOrEmpty(r))
             .SelectMany(r => relatives.Select(rel => Path.Combine(r, rel)))
             .FirstOrDefault(File.Exists);
+        if (fixedPath != null || relatives.Length == 0) return fixedPath;
+        // Installed in an unexpected sub-folder (a versioned one, for instance): look inside the vendor folder.
+        foreach (var root in roots.Where(r => !string.IsNullOrEmpty(r)))
+            foreach (var rel in relatives)
+            {
+                var dir = Path.Combine(root, Path.GetDirectoryName(rel)!);
+                var leaf = Path.GetFileName(rel);
+                try
+                {
+                    if (Directory.Exists(dir))
+                    {
+                        var hit = Directory.EnumerateFiles(dir, leaf, SearchOption.AllDirectories).FirstOrDefault();
+                        if (hit != null) return hit;
+                    }
+                }
+                catch { }
+            }
+        return null;
     }
 
     private static void KillAll(string processName)
