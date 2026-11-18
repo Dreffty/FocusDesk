@@ -9,7 +9,7 @@
        and the global shortcut; on the right a fixed header (date + headline) over the scrolling page. -->
   <Grid>
     <Grid.ColumnDefinitions>
-      <ColumnDefinition Width="244"/>
+      <ColumnDefinition Width="256"/>
       <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
 

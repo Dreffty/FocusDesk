@@ -74,7 +74,7 @@ public partial class MainWindow
             Width = 24,
             VerticalAlignment = VerticalAlignment.Center
         };
-        var text = new TextBlock { Text = label, FontSize = 15.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 6, 0) };
+        var text = new TextBlock { Text = label, FontSize = 15.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 6, 0), TextTrimming = TextTrimming.CharacterEllipsis };
         var badgeText = new TextBlock { FontSize = 12.5, FontWeight = FontWeights.SemiBold };
         var badge = new Border
         {
