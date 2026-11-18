@@ -92,11 +92,21 @@ jobs:
         shell: pwsh
         continue-on-error: true
         timeout-minutes: 8
-        run: choco install brave opera -y --no-progress
+        run: |
+          # The Chocolatey server sometimes answers 503/504: try again a few times before giving up.
+          foreach ($pkg in 'brave','opera') {
+            for ($i = 1; $i -le 4; $i++) {
+              choco install $pkg -y --no-progress
+              if ($LASTEXITCODE -eq 0) { break }
+              Start-Sleep -Seconds (15 * $i)
+            }
+          }
 
       - name: End-to-end test with real browsers
         shell: pwsh
         timeout-minutes: 25
+        env:
+          FOCUSDESK_E2E_REQUIRE_ALL: "1"
         run: |
           Add-Content -Path "$env:SystemRoot\System32\drivers\etc\hosts" -Value "`r`n127.0.0.1 prueba-focusdesk.test"
           New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Force | Out-Null

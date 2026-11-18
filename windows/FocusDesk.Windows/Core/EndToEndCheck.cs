@@ -116,6 +116,10 @@ public static class EndToEndCheck
                 .ToList();
             Info("Navegadores encontrados: " + string.Join(", ", browsers.Select(b => b.Name)));
             Check(browsers.Count > 0, "Hay al menos un navegador para probar");
+            // In CI every browser must be there: a silent gap (Brave or Opera not installed) is a failure, not a pass.
+            if (Environment.GetEnvironmentVariable("FOCUSDESK_E2E_REQUIRE_ALL") == "1")
+                foreach (var expected in new[] { "msedge", "chrome", "firefox", "brave", "opera" })
+                    Check(browsers.Any(b => b.Name == expected), $"{expected} está instalado en la máquina de pruebas");
 
             foreach (var (name, exe) in browsers)
                 await CheckBrowser(engine, quick, name, exe!);
