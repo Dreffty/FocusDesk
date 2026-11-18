@@ -550,9 +550,40 @@ public static class EndToEndCheck
 
     /// <summary>Opens FocusDesk's own window, goes through every page and the main editors, and photographs them:
     /// a page that throws while drawing, or a button that cannot be built, shows up here instead of on someone's PC.</summary>
+    /// <summary>Logs where each part of a text box sits, to see what indents the typed text.</summary>
+    private static void DiagnoseTextBox()
+    {
+        try
+        {
+            var tb = new System.Windows.Controls.TextBox { Text = "Nueva regla", Width = 340 };
+            var host = new System.Windows.Window
+            {
+                Content = tb, Width = 420, Height = 200, WindowStyle = System.Windows.WindowStyle.None,
+                ShowInTaskbar = false, Left = -3000, Top = -3000
+            };
+            host.Show();
+            tb.UpdateLayout();
+            Info($"TextBox: Padding={tb.Padding} Border={tb.BorderThickness} FontSize={tb.FontSize}");
+            void Walk(System.Windows.DependencyObject d, int depth)
+            {
+                if (d is System.Windows.FrameworkElement fe && depth < 9)
+                {
+                    var p = fe.TransformToAncestor(tb).Transform(new System.Windows.Point(0, 0));
+                    Info($"  {new string(' ', depth * 2)}{fe.GetType().Name} x={p.X:0.#} ancho={fe.ActualWidth:0.#} margen={fe.Margin}");
+                }
+                for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(d); i++)
+                    Walk(System.Windows.Media.VisualTreeHelper.GetChild(d, i), depth + 1);
+            }
+            Walk(tb, 0);
+            host.Close();
+        }
+        catch (Exception ex) { Info("Diagnóstico del campo de texto: " + ex.Message); }
+    }
+
     private static async Task CheckUiTour(AppEngine engine)
     {
         Info("—— Ventana de FocusDesk ——");
+        DiagnoseTextBox();
         engine.Workspace.Tasks.Add(new FocusTask { Title = "Repasar apuntes de historia", Minutes = 45, ScheduledAt = DateTimeOffset.Now.AddHours(1), Category = "Estudio" });
         engine.Workspace.Tasks.Add(new FocusTask { Title = "Entregar práctica", Minutes = 30, ScheduledAt = DateTimeOffset.Now.AddHours(3), Category = "Universidad" });
         var running = new FocusTask { Title = "Escribir el guion", Minutes = 50, ScheduledAt = DateTimeOffset.Now, Checklist = "Estructura\nGanchos\nCierre" };

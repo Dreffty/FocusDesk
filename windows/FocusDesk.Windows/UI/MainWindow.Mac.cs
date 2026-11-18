@@ -110,7 +110,17 @@ public partial class MainWindow
         g.Margin = new Thickness(0, 0, 12, 0);
         titleRow.Children.Add(g);
         // 14.5 bold capitals in a bright grey: clearly above the 13.5 descriptions and chips below it.
-        var titleText = new TextBlock { Text = Spaced(title), FontSize = 14.5, FontWeight = FontWeights.Bold, Foreground = BrushHex(titleColor == "#99A6AD" ? "#C9D1D6" : titleColor), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+        // One block per word: a long title breaks between words, never in the middle of one.
+        var titleText = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
+        foreach (var word in title.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            titleText.Children.Add(new TextBlock
+            {
+                Text = Spaced(word),
+                FontSize = 14.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = BrushHex(titleColor == "#99A6AD" ? "#C9D1D6" : titleColor),
+                Margin = new Thickness(0, 0, 11, 0)
+            });
         Grid.SetColumn(titleText, 1);
         titleRow.Children.Add(titleText);
         head.Children.Add(titleRow);
