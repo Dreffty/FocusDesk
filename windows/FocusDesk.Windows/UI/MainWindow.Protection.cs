@@ -667,7 +667,7 @@ public partial class MainWindow
             Text = string.Join(Environment.NewLine, s.BreakMessages),
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
-            Height = 84,
+            Height = 112,
             VerticalContentAlignment = VerticalAlignment.Top
         };
         messagesBox.LostFocus += (_, _) =>

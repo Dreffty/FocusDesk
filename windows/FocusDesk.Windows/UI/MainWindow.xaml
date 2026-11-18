@@ -115,15 +115,18 @@
         </Border>
 
         <!-- Sections (built in code with their icons and counters) and «Nueva tarea» -->
-        <StackPanel>
-          <StackPanel x:Name="NavStack"/>
-          <Button Click="SidebarNewTaskClick" Margin="0,14,0,0" MinHeight="36" Background="#12151A" BorderBrush="#2A2E34">
-            <StackPanel Orientation="Horizontal">
-              <TextBlock Text="&#xE710;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center" Margin="0,0,9,0"/>
-              <TextBlock Text="Nueva tarea" FontWeight="SemiBold" VerticalAlignment="Center"/>
-            </StackPanel>
-          </Button>
-        </StackPanel>
+        <!-- Scrolls when the window is short (a laptop with the session card open), so no section is ever out of reach. -->
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel>
+            <StackPanel x:Name="NavStack"/>
+            <Button Click="SidebarNewTaskClick" Margin="0,14,0,4" MinHeight="40" Background="#12151A" BorderBrush="#2A2E34">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="&#xE710;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" Margin="0,0,9,0"/>
+                <TextBlock Text="Nueva tarea" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              </StackPanel>
+            </Button>
+          </StackPanel>
+        </ScrollViewer>
       </DockPanel>
     </Border>
 

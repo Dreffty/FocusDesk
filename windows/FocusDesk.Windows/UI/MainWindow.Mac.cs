@@ -102,12 +102,17 @@ public partial class MainWindow
             DockPanel.SetDock(trailing, Dock.Right);
             head.Children.Add(trailing);
         }
-        var titleRow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        // Icon + title in two columns so a long title wraps inside a narrow card instead of being cut off.
+        var titleRow = new Grid { VerticalAlignment = VerticalAlignment.Center };
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var g = Glyph(glyph, 17, titleColor == "#99A6AD" ? "#38A169" : titleColor);
         g.Margin = new Thickness(0, 0, 12, 0);
         titleRow.Children.Add(g);
         // 14.5 bold capitals in a bright grey: clearly above the 13.5 descriptions and chips below it.
-        titleRow.Children.Add(new TextBlock { Text = Spaced(title), FontSize = 14.5, FontWeight = FontWeights.Bold, Foreground = BrushHex(titleColor == "#99A6AD" ? "#C9D1D6" : titleColor), VerticalAlignment = VerticalAlignment.Center });
+        var titleText = new TextBlock { Text = Spaced(title), FontSize = 14.5, FontWeight = FontWeights.Bold, Foreground = BrushHex(titleColor == "#99A6AD" ? "#C9D1D6" : titleColor), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+        Grid.SetColumn(titleText, 1);
+        titleRow.Children.Add(titleText);
         head.Children.Add(titleRow);
         stack.Children.Add(head);
         stack.Children.Add(content);
