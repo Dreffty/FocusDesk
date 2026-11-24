@@ -1226,7 +1226,11 @@ public sealed partial class AppEngine : INotifyPropertyChanged, IDisposable, ISt
             if (FocusRules.MatchesTitleKeyword(fg.WindowTitle, s.Task.BlockedTitleKeywords, s.Task.WholeWordKeywords) != null)
                 allowed = false;
 
-            var isNewInterruption = s.ObserveForeground(procClean, fg.ProcessName, fg.WindowTitle, allowed, now);
+            // The title is still read to block by keyword; it is only KEPT in the record when the person asked for it
+            // (off by default, as on macOS) and the program is not one of the excluded ones.
+            var keepTitle = Workspace.Settings.ObserveTitles &&
+                            !Workspace.Settings.ExcludedTitleApps.Any(a => string.Equals(FocusRules.CleanAppId(a.Id), procClean, StringComparison.OrdinalIgnoreCase));
+            var isNewInterruption = s.ObserveForeground(procClean, fg.ProcessName, keepTitle ? fg.WindowTitle : null, allowed, now);
             if (allowed)
             {
                 _strictTracker.RegisterAllowedAppObserved();

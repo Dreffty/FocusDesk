@@ -36,6 +36,9 @@ public partial class MainWindow : Window
     private const int HOTKEY_SHOW = 9001;
     private const int HOTKEY_PAUSE = 9002;
     private const int HOTKEY_FINISH = 9003;
+    private const int HOTKEY_START = 9004;
+    private const int HOTKEY_ADD = 9005;
+    private const int HOTKEY_BLOCK = 9006;
     private const uint MOD_ALT = 0x0001;
     private const uint MOD_CONTROL = 0x0002;
     private const uint MOD_WIN = 0x0008;
@@ -65,6 +68,9 @@ public partial class MainWindow : Window
         ApplyHotKeys();                                           // Ctrl+Alt+Win+F (changeable in Ajustes)
         RegisterHotKey(helper.Handle, HOTKEY_PAUSE, mods, 0x50);  // Ctrl+Alt+Win+P
         RegisterHotKey(helper.Handle, HOTKEY_FINISH, mods, 0x54); // Ctrl+Alt+Win+T
+        RegisterHotKey(helper.Handle, HOTKEY_START, mods, 0x53);  // Ctrl+Alt+Win+S: start the next task
+        RegisterHotKey(helper.Handle, HOTKEY_ADD, mods, 0x41);    // Ctrl+Alt+Win+A: ten more minutes
+        RegisterHotKey(helper.Handle, HOTKEY_BLOCK, mods, 0x42);  // Ctrl+Alt+Win+B: block for 30 minutes now
     }
 
     protected override void OnClosing(CancelEventArgs e)
@@ -85,6 +91,9 @@ public partial class MainWindow : Window
             UnregisterHotKey(handle, HOTKEY_SHOW);
             UnregisterHotKey(handle, HOTKEY_PAUSE);
             UnregisterHotKey(handle, HOTKEY_FINISH);
+            UnregisterHotKey(handle, HOTKEY_START);
+            UnregisterHotKey(handle, HOTKEY_ADD);
+            UnregisterHotKey(handle, HOTKEY_BLOCK);
         }
         base.OnClosed(e);
     }
@@ -141,6 +150,27 @@ public partial class MainWindow : Window
                         }
                         _engine.FinishSession();
                     }
+                    handled = true;
+                    break;
+
+                case HOTKEY_START:
+                    if (_engine.Workspace.Session == null)
+                    {
+                        Show();
+                        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+                        Activate();
+                        StartNextTask();
+                    }
+                    handled = true;
+                    break;
+
+                case HOTKEY_ADD:
+                    if (_engine.Workspace.Session is { EndedAt: null }) _engine.AddSessionMinutes(10);
+                    handled = true;
+                    break;
+
+                case HOTKEY_BLOCK:
+                    _engine.LaunchQuickBlock(30, _quickProtection, _quickPreset);
                     handled = true;
                     break;
             }
@@ -204,6 +234,8 @@ public partial class MainWindow : Window
         UpdateSidebarSession(now);
         UpdateNavBadges(now);
         _livePageTick?.Invoke(now);
+        _liveNextStepTick?.Invoke(now);
+        _liveTimelineTick?.Invoke(now);
 
         if (_liveRingUpdate != null && _engine.Workspace.Session is { EndedAt: null } rs)
             _liveRingUpdate(rs.Budget > 0 ? rs.Remaining(now) / rs.Budget : 0, FocusRules.Clock(Math.Max(0, rs.Remaining(now))), rs.Paused);
@@ -250,6 +282,8 @@ public partial class MainWindow : Window
         _liveClockText = null;
         _liveRingUpdate = null;
         _livePageTick = null;
+        _liveNextStepTick = null;
+        _liveTimelineTick = null;
         _livePomodoroText = null;
         _liveBreakText = null;
         _liveGameStrips.Clear();

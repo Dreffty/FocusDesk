@@ -43,8 +43,28 @@ public partial class MainWindow
     private void OnWindowKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control) return;
+        if ((Keyboard.Modifiers & (ModifierKeys.Alt | ModifierKeys.Windows)) != ModifierKeys.None) return;
         var typing = Keyboard.FocusedElement is System.Windows.Controls.TextBox;
-        if (e.Key == Key.K)
+        var shift = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+        // The same shortcuts as the Mac app, with Ctrl in the place of ⌘.
+        string? page = e.Key switch
+        {
+            Key.D1 or Key.NumPad1 => "Hoy",
+            Key.D2 or Key.NumPad2 => "Semana",
+            Key.D3 or Key.NumPad3 => "Historial",
+            Key.D4 or Key.NumPad4 => "Bloquear",
+            Key.D5 or Key.NumPad5 => "Reglas",
+            Key.D6 or Key.NumPad6 => "Descansos",
+            Key.OemComma => "Ajustes",
+            _ => null
+        };
+        if (page != null && !typing)
+        {
+            e.Handled = true;
+            if (page == "Historial") _auditView = false;
+            _engine.ActivePage = page;
+        }
+        else if (e.Key == Key.K)
         {
             e.Handled = true;
             ShowCommandPalette();
@@ -54,104 +74,27 @@ public partial class MainWindow
             e.Handled = true;
             Dialogs.ShowTaskEditor(_engine, null, this);
         }
+        else if (e.Key == Key.T && !typing)
+        {
+            e.Handled = true;
+            _engine.SelectedDate = DateTimeOffset.Now;
+        }
+        else if ((e.Key == Key.Left || e.Key == Key.Right) && !typing && _engine.ActivePage is "Hoy" or "Semana")
+        {
+            e.Handled = true;
+            var step = (_engine.ActivePage == "Semana" ? 7 : 1) * (e.Key == Key.Left ? -1 : 1);
+            _engine.SelectedDate = _engine.SelectedDate.AddDays(step);
+        }
         else if (e.Key == Key.Z && !typing)
         {
             e.Handled = true;
-            if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift) _engine.RedoAgenda(); else _engine.UndoAgenda();
+            if (shift) _engine.RedoAgenda(); else _engine.UndoAgenda();
         }
         else if (e.Key == Key.Y && !typing)
         {
             e.Handled = true;
             _engine.RedoAgenda();
         }
-    }
-
-    // MARK: - Command palette (Ctrl+K)
-
-    private void ShowCommandPalette()
-    {
-        var commands = new List<(string Title, Action Run)>();
-        foreach (var page in new[] { ("Hoy", "Hoy"), ("Semana", "Semana"), ("Historial", "Historial"), ("Reglas y juegos", "Reglas"),
-                                     ("Bloquear ahora", "Bloquear"), ("Descansos", "Descansos"), ("Ajustes", "Ajustes") })
-        {
-            var tag = page.Item2;
-            commands.Add(($"Ir a {page.Item1}", () => _engine.ActivePage = tag));
-        }
-        commands.Add(("Nueva tarea", () => Dialogs.ShowTaskEditor(_engine, null, this)));
-        commands.Add(("Nueva regla", () => Dialogs.ShowRuleEditor(_engine, null, null, this)));
-        commands.Add(("Nuevo perfil", () => Dialogs.ShowProfileEditor(_engine, null, this)));
-        commands.Add(("Bloqueo rápido de 30 minutos", () => _engine.LaunchQuickBlock(30, _quickProtection, _quickPreset)));
-        commands.Add(("Bloqueo rápido de 1 hora", () => _engine.LaunchQuickBlock(60, _quickProtection, _quickPreset)));
-        if (_engine.Workspace.Session is { EndedAt: null } running)
-        {
-            commands.Add((running.Paused ? "Reanudar la sesión" : "Pausar la sesión", () =>
-            {
-                if (running.Paused) _engine.ResumeSession();
-                else if (Dialogs.RequestSessionStop("pausar", running, this)) _engine.PauseSession();
-            }));
-            commands.Add(("Añadir 10 minutos a la sesión", () => _engine.AddSessionMinutes(10)));
-            commands.Add(("Terminar la sesión (He terminado)", () =>
-            {
-                if (Dialogs.RequestSessionStop("terminar antes", running, this)) _engine.FinishSession();
-            }));
-        }
-        commands.Add(("Deshacer el último cambio de la agenda", () => _engine.UndoAgenda()));
-        commands.Add(("Exportar la agenda al calendario (.ics)", ExportCalendarFile));
-        foreach (var task in _engine.Workspace.Tasks.Where(t => !t.Completed).OrderBy(t => t.ScheduledAt).Take(40))
-        {
-            var captured = task;
-            commands.Add(($"Iniciar «{captured.Title}»", () => StartOrHandoffSession(captured)));
-            commands.Add(($"Editar «{captured.Title}»", () => Dialogs.ShowTaskEditor(_engine, captured, this)));
-        }
-
-        var win = new Window
-        {
-            Title = "Buscar acción · FocusDesk",
-            Width = 520,
-            Height = 420,
-            Owner = this,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ResizeMode = ResizeMode.NoResize,
-            Background = BrushHex("#0D1014"),
-            Foreground = BrushHex("#EDF2F5")
-        };
-        var root = new DockPanel { Margin = new Thickness(16) };
-        var search = new System.Windows.Controls.TextBox { Margin = new Thickness(0, 0, 0, 10), FontSize = 16.5 };
-        DockPanel.SetDock(search, Dock.Top);
-        var list = new System.Windows.Controls.ListBox { Background = BrushHex("#161B21"), BorderBrush = BrushHex("#262A30") };
-        root.Children.Add(search);
-        root.Children.Add(list);
-
-        void Refill()
-        {
-            var query = FocusRules.Fold(search.Text.Trim());
-            list.Items.Clear();
-            foreach (var command in commands)
-            {
-                if (query.Length > 0 && !FocusRules.Fold(command.Title).Contains(query, StringComparison.Ordinal)) continue;
-                list.Items.Add(new ListBoxItem { Content = command.Title, Tag = command.Run, Foreground = BrushHex("#EDF2F5") });
-            }
-            if (list.Items.Count > 0) list.SelectedIndex = 0;
-        }
-        void RunSelected()
-        {
-            if (list.SelectedItem is not ListBoxItem item || item.Tag is not Action action) return;
-            win.Close();
-            action();
-        }
-        search.TextChanged += (_, _) => Refill();
-        search.PreviewKeyDown += (_, e) =>
-        {
-            if (e.Key == Key.Down && list.SelectedIndex < list.Items.Count - 1) { list.SelectedIndex++; e.Handled = true; }
-            else if (e.Key == Key.Up && list.SelectedIndex > 0) { list.SelectedIndex--; e.Handled = true; }
-            else if (e.Key == Key.Enter) { RunSelected(); e.Handled = true; }
-            else if (e.Key == Key.Escape) { win.Close(); e.Handled = true; }
-        };
-        list.MouseDoubleClick += (_, _) => RunSelected();
-        Refill();
-        win.Content = root;
-        win.Loaded += (_, _) => search.Focus();
-        win.ShowDialog();
     }
 
     // MARK: - Ajustes
@@ -181,12 +124,15 @@ public partial class MainWindow
             ChangeSetting(x => x.HotKeyChoice = v);
             ApplyHotKeys();
         }, 240), 8));
-        general.Children.Add(MutedText("Ctrl+Alt+Win+P pausa o reanuda la sesión y Ctrl+Alt+Win+T la termina. Ctrl+K busca cualquier acción.", 12, 6));
+        general.Children.Add(MutedText("Atajos en la app: Ctrl+K Buscar función · Ctrl+1–3 Hoy, Semana, Historial · Ctrl+4–6 Bloquear ahora, Reglas y límites, Descansos · Ctrl+, Ajustes · Ctrl+← / Ctrl+→ Anterior y siguiente · Ctrl+T Hoy · Ctrl+N Nueva tarea · Ctrl+Z / Ctrl+Y Deshacer y rehacer. Desde cualquier app: Ctrl+Alt+Win+S Empezar la siguiente · P Pausar · T He terminado · A Ampliar 10 min · B Bloquear 30 min.", 12, 6));
         general.Children.Add(ToggleBox("Abrir FocusDesk al iniciar sesión en Windows", LaunchAtLogin.IsEnabled(), v => LaunchAtLogin.Set(v)));
         general.Children.Add(Labeled("Protegerla desde (antes de que empiece una tarea o regla protegida)", ChoiceBox(
             new[] { 0, 5, 10, 15, 30, 60 }.Select(m => new ComboOption<int>(m, m == 0 ? "No protegerla antes" : $"{m} min antes")),
             s.RunUpMinutes, SetRunUpMinutes, 220), 10));
-        general.Children.Add(Row(SmallButton("Salir de FocusDesk", () => _onQuitRequested(), true, 0)));
+        general.Children.Add(WrapRow(
+            SmallButton("Atajos de teclado…", ShowShortcutsHelp),
+            SmallButton("Novedades…", ShowWhatsNew),
+            SmallButton("Salir de FocusDesk", () => _onQuitRequested(), true, 0)));
         PageContent.Children.Add(GroupCard("General", "\uE713", general));
 
         // Avisos
@@ -230,17 +176,42 @@ public partial class MainWindow
         agenda.Children.Add(days);
         agenda.Children.Add(SectionLabel("Categorías", 14));
         var categoryList = new WrapPanel();
-        foreach (var category in s.Categories)
+        foreach (var category in s.Categories.ToList())
         {
             var swatch = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(
                 (byte)Math.Round(category.Red * 255), (byte)Math.Round(category.Green * 255), (byte)Math.Round(category.Blue * 255)));
+            var chipRow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+            chipRow.Children.Add(new TextBlock { Text = "● " + category.Name, Foreground = swatch, FontSize = 13.5, VerticalAlignment = VerticalAlignment.Center });
+            var categoryName2 = category.Name;
+            var removeCategory = new System.Windows.Controls.Button
+            {
+                Content = Glyph("\uE711", 9, "#99A6AD"),
+                Width = 22,
+                Height = 22,
+                MinHeight = 22,
+                Padding = new Thickness(0),
+                Margin = new Thickness(8, 0, -4, 0),
+                Background = System.Windows.Media.Brushes.Transparent,
+                BorderBrush = System.Windows.Media.Brushes.Transparent,
+                ToolTip = $"Borrar la categoría «{category.Name}»",
+                IsEnabled = s.Categories.Count > 1
+            };
+            removeCategory.Click += (_, _) =>
+            {
+                var answer = System.Windows.MessageBox.Show(this, $"¿Borrar la categoría «{categoryName2}»? Las tareas que la usan conservan su nombre.",
+                    "Borrar categoría · FocusDesk", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (answer != MessageBoxResult.Yes) return;
+                _engine.DeleteCategory(categoryName2);
+                RefreshUI();
+            };
+            chipRow.Children.Add(removeCategory);
             categoryList.Children.Add(new Border
             {
                 Background = BrushHex("#1D2229"),
                 CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(10, 4, 10, 4),
+                Padding = new Thickness(10, 3, 8, 3),
                 Margin = new Thickness(0, 0, 6, 6),
-                Child = new TextBlock { Text = "● " + category.Name, Foreground = swatch, FontSize = 13.5 }
+                Child = chipRow
             });
         }
         agenda.Children.Add(categoryList);
@@ -355,6 +326,22 @@ public partial class MainWindow
             v => ChangeSetting(x => x.ProtectActivityHistory = v)));
         guardPanel.Children.Add(ToggleBox("Anotar las webs que visitas durante una sesión (para el historial)", s.ObserveBrowserSites,
             v => ChangeSetting(x => x.ObserveBrowserSites = v)));
+        guardPanel.Children.Add(ToggleBox("Guardar los títulos de ventana en el detalle de la sesión", s.ObserveTitles,
+            v => { ChangeSetting(x => x.ObserveTitles = v); RefreshUI(); }));
+        guardPanel.Children.Add(MutedText("Solo durante una sesión activa. No se registran teclas ni se capturan pantallas. Para bloquear por palabras del título, FocusDesk lee el título aunque esto esté apagado, pero no lo guarda.", 12, 2));
+        if (s.ObserveTitles)
+        {
+            var excludedBox = new System.Windows.Controls.TextBox { Text = string.Join(", ", s.ExcludedTitleApps.Select(a => a.Id)) };
+            excludedBox.LostFocus += (_, _) =>
+            {
+                var apps = excludedBox.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(id => new AllowedApp(FocusRules.CleanAppId(id), id, ""))
+                    .Where(a => !string.IsNullOrEmpty(a.Id))
+                    .ToList();
+                ChangeSetting(x => x.ExcludedTitleApps = apps);
+            };
+            guardPanel.Children.Add(Labeled("Programas excluidos de la lectura de títulos (.exe separados por coma: gestores de contraseñas, mensajería…)", excludedBox, 10));
+        }
         PageContent.Children.Add(GroupCard("Privacidad y protección", "\uE72E", guardPanel));
 
         // Data and copies

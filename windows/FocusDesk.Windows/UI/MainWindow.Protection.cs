@@ -113,6 +113,10 @@ public partial class MainWindow
         var headerButtons = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
         var export = GlyphButton("", "Exportar…", ExportRulesFile, plain: true);
         export.IsEnabled = _engine.Workspace.GeneralRules.Count > 0;
+        export.ToolTip = "Guardar tus reglas en un archivo JSON";
+        var import = GlyphButton("\uE896", "Importar…", ImportRulesFile, plain: true);
+        import.ToolTip = "Añadir reglas desde un archivo JSON";
+        headerButtons.Children.Add(import);
         headerButtons.Children.Add(export);
         headerButtons.Children.Add(GlyphButton("", "Nueva regla", () => Dialogs.ShowRuleEditor(_engine, null, null, this), primary: true));
         PageContent.Children.Add(PageHeader("Reglas y límites", "Tus límites, también fuera de las tareas.", headerButtons));
@@ -120,22 +124,11 @@ public partial class MainWindow
         // Create: one tile per kind of rule, as on the Mac
         PageContent.Children.Add(PageSectionTitle("Crear una regla", "Elige cómo funciona; qué bloquea lo eliges en el paso siguiente."));
         var kinds = new UniformGrid { Columns = 4, Margin = new Thickness(0, 0, -12, 10) };
-        void Kind(GeneralRuleKind kind, string title, string text, Action<GeneralBlockRule> setup)
+        foreach (var entry in RuleGallery)
         {
-            kinds.Children.Add(GalleryTile(RuleKindGlyph(kind), title, text, () =>
-            {
-                var template = new GeneralBlockRule { Kind = kind, Name = title };
-                setup(template);
-                Dialogs.ShowRuleEditor(_engine, null, template, this);
-            }, double.NaN));
+            var kind = entry.Kind;
+            kinds.Children.Add(GalleryTile(RuleKindGlyph(kind), entry.Title, entry.Text, () => OpenRuleTemplate(kind), double.NaN));
         }
-        Kind(GeneralRuleKind.DailyLimit, "Presupuesto de uso", "20 min al día de YouTube y Shorts; luego, bloqueado.", r => r.DailyLimitMinutes = 20);
-        Kind(GeneralRuleKind.Pomodoro, "Pomodoro", "25 min de foco y 5 de descanso; si te distraes, vuelve a empezar.", _ => { });
-        Kind(GeneralRuleKind.WorkGoal, "Primero el trabajo", "Tras 60 min de tareas, 20 min de ocio de premio.", r => { r.GoalMinutesRequired = 60; r.GoalRewardMinutes = 20; });
-        Kind(GeneralRuleKind.LaunchLimit, "Visitas contadas", "4 visitas al día de 5 min, con 30 min de enfriamiento.", r => { r.MaxDailyLaunches = 4; r.MaxLaunchDurationMinutes = 5; r.LaunchCooldownMinutes = 30; });
-        Kind(GeneralRuleKind.Countdown, "Cuenta atrás", "Una cuenta atrás guardada que lanzas cuando quieras.", r => r.CountdownMinutes = 60);
-        Kind(GeneralRuleKind.Schedule, "Horario", "De 22:30 a 7:30 todos los días, o en varios tramos.", r => { r.StartMinutes = 22 * 60 + 30; r.EndMinutes = 7 * 60 + 30; });
-        Kind(GeneralRuleKind.AlwaysOn, "Siempre activa", "Bloqueadas a todas horas mientras esté encendida.", _ => { });
         PageContent.Children.Add(kinds);
 
         // Games: «primero estudio, luego partida»
@@ -175,19 +168,33 @@ public partial class MainWindow
         // Your rules: blocking now first, then the rest
         var rules = _engine.Workspace.GeneralRules.ToList();
         PageContent.Children.Add(PageSectionTitle($"Tus reglas · {rules.Count}", rules.Count == 0 ? "Todavía no tienes ninguna: empieza por una de arriba." : ""));
-        var blockingNow = rules.Where(r => _engine.IsRuleEnforcing(r)).ToList();
-        var others = rules.Except(blockingNow).ToList();
-        if (blockingNow.Count > 0)
+        var blockingNow = rules.Where(r => r.Enabled && _engine.IsRuleEnforcing(r)).ToList();
+        var measuring = rules.Where(r => r.Enabled && !blockingNow.Contains(r) &&
+            r.Kind is GeneralRuleKind.DailyLimit or GeneralRuleKind.LaunchLimit or GeneralRuleKind.WorkGoal).ToList();
+        var waiting = rules.Where(r => r.Enabled && !blockingNow.Contains(r) && !measuring.Contains(r)).ToList();
+        var off = rules.Where(r => !r.Enabled).ToList();
+        void Group(string title, string color, List<GeneralBlockRule> group, bool enforcing)
         {
-            PageContent.Children.Add(SectionLabel("Bloqueando ahora", 0, "#38A169"));
-            foreach (var rule in blockingNow) PageContent.Children.Add(RuleCard(rule, true));
+            if (group.Count == 0) return;
+            PageContent.Children.Add(SectionLabel(title, 6, color));
+            foreach (var rule in group) PageContent.Children.Add(RuleCard(rule, enforcing));
         }
-        if (others.Count > 0)
+        Group("Bloqueando ahora", "#38A169", blockingNow, true);
+        Group("Midiendo tu uso", "#B7C0C5", measuring, false);
+        Group("En espera", "#B7C0C5", waiting, false);
+        Group("Apagadas", "#8A949A", off, false);
+        if (rules.Count > 0)
         {
-            PageContent.Children.Add(SectionLabel(blockingNow.Count > 0 ? "El resto" : "Tus reglas", 8));
-            foreach (var rule in others) PageContent.Children.Add(RuleCard(rule, false));
+            var log = GlyphButton("\uE7BA", "Ver registro", () => { _auditView = true; _engine.ActivePage = "Historial"; }, plain: true);
+            log.MinHeight = 30;
+            var foot = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
+            var footText = MutedText("Cada cambio y cada desbloqueo queda apuntado en Historial › Registro de bloqueo.", 12.5, 0);
+            footText.VerticalAlignment = VerticalAlignment.Center;
+            footText.Margin = new Thickness(0, 0, 10, 0);
+            foot.Children.Add(footText);
+            foot.Children.Add(log);
+            PageContent.Children.Add(foot);
         }
-
     }
 
     /// <summary>One of your rules: icon, name, chips, what it is doing, its actions and the on/off switch.</summary>
@@ -260,6 +267,13 @@ public partial class MainWindow
                 _engine.StartRuleCountdown(rule);
             }));
         }
+        if (rule.Kind == GeneralRuleKind.Pomodoro && rule.Enabled && rule.PomodoroPhase != PomodoroPhase.Idle)
+            actions.Children.Add(SmallButton("Reiniciar ciclo", () =>
+            {
+                var loosening = _engine.RestartLoosening(rule, GeneralRuleKind.Pomodoro);
+                if (loosening != null && !UnlockRuleFor(rule, loosening)) return;
+                _engine.StartRulePomodoro(rule);
+            }));
         if (rule.Kind == GeneralRuleKind.LaunchLimit && rule.IsInLaunchVisit(now, cont))
             actions.Children.Add(SmallButton("Terminar visita", () => _engine.EndLaunchVisit(rule)));
         var microLeft = Math.Max(0, rule.DailyMicroPausesAllowed - _engine.Workspace.MicroPausesUsedToday(rule.Id));
@@ -532,6 +546,8 @@ public partial class MainWindow
             ChangeSetting(x => x.ProtectClipboard = wantEnabled);
         };
         whileBlocking.Children.Add(clip);
+        whileBlocking.Children.Add(SwitchRow("No dejar borrar el historial mientras bloquea", s.ProtectActivityHistory, v => ChangeSetting(x => x.ProtectActivityHistory = v)));
+        whileBlocking.Children.Add(MutedText("Los mismos interruptores siguen en Ajustes.", 12, 10));
         PageContent.Children.Add(GroupCard("Mientras bloquea", "", whileBlocking));
 
         // Reusable profiles

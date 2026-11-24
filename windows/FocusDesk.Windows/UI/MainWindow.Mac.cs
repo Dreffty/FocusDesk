@@ -202,14 +202,17 @@ public partial class MainWindow
     }
 
     /// <summary>One task as the Mac draws it: hour and length on the left, the area's colour bar, title with chips,
-    /// and round actions (start, postpone, more) on the right.</summary>
-    private Border MacTaskRow(FocusTask t, bool scheduled, bool overdue = false)
+    /// and round actions (start, postpone, more) on the right. A finished task stays, crossed out, with its tick;
+    /// a coming occurrence of a series is drawn dimmed.</summary>
+    private Border MacTaskRow(FocusTask t, bool scheduled, bool overdue = false, bool overlapping = false, bool projected = false)
     {
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(scheduled ? 74 : 0) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var now = DateTimeOffset.Now;
+        var inSession = _engine.Workspace.Session is { } running && running.Task.Id == t.Id;
 
         if (scheduled)
         {
@@ -220,7 +223,7 @@ public partial class MainWindow
                 FontSize = 19,
                 FontWeight = FontWeights.SemiBold,
                 FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"),
-                Foreground = BrushHex(overdue ? "#FAC74D" : "#EDF2F5")
+                Foreground = BrushHex(overdue ? "#FAC74D" : t.Completed ? "#99A6AD" : "#EDF2F5")
             });
             when.Children.Add(new TextBlock { Text = overdue ? t.ScheduledAt.LocalDateTime.ToString("H:mm") + " · " + FocusRules.DurationText(t.Minutes) : FocusRules.DurationText(t.Minutes), FontSize = 13, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 2, 0, 0) });
             grid.Children.Add(when);
@@ -231,11 +234,19 @@ public partial class MainWindow
         grid.Children.Add(bar);
 
         var middle = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        middle.Children.Add(new TextBlock { Text = t.Title, FontSize = 16.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = BrushHex("#EDF2F5") });
+        var title = new TextBlock { Text = t.Title, FontSize = 16.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = BrushHex(t.Completed ? "#99A6AD" : "#EDF2F5") };
+        if (t.Completed) title.TextDecorations = TextDecorations.Strikethrough;
+        middle.Children.Add(title);
         var chips = new WrapPanel { Margin = new Thickness(0, 7, 0, -6) };
         var cat = CategoryHex(t.Category);
         chips.Children.Add(Chip(t.Category, cat, "#22262C"));
-        if (t.RepeatRule != RepeatRule.Never) chips.Children.Add(Chip(t.RepeatRule.Label(), "#99A6AD", "#22262C", ""));
+        if (!scheduled) chips.Children.Add(Chip(FocusRules.DurationText(t.Minutes), "#99A6AD", "#22262C", ""));
+        if (inSession) chips.Children.Add(Chip("En sesión", "#38A169", "#15291F"));
+        if (overlapping && !t.Completed) chips.Children.Add(Chip("Solapada", "#FAC74D", "#2E2614", ""));
+        if (t.RepeatRule != RepeatRule.Never || projected) chips.Children.Add(Chip(projected ? "Serie" : t.RepeatRule.Label(), "#99A6AD", "#22262C", ""));
+        if (t.UsesPomodoro) chips.Children.Add(Chip($"Pomodoro {t.PomodoroWorkMinutes}/{t.PomodoroBreakMinutes}", "#99A6AD", "#22262C", ""));
+        if (t.DueDate is { } due && !t.Completed) chips.Children.Add(DueChip(due, now));
+        if (t.BlockedFolders.Count > 0) chips.Children.Add(Chip(t.BlockedFolders.Count == 1 ? "1 carpeta bloqueada" : $"{t.BlockedFolders.Count} carpetas bloqueadas", "#99A6AD", "#22262C", ""));
         if (t.Protection != SessionProtection.None)
             chips.Children.Add(Chip(_engine.IsTaskProtected(t) ? $"Ya protegida · {t.Protection.Label()}" : t.Protection.Label(), "#FAC74D", "#2E2614", ""));
         else if (t.Enforces) chips.Children.Add(Chip(t.BlockingSummary, "#99A6AD", "#22262C", ""));
@@ -244,31 +255,80 @@ public partial class MainWindow
         grid.Children.Add(middle);
 
         var actions = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
-        actions.Children.Add(IconButton("", "Empezar ahora", () => StartOrHandoffSession(t), "#38A169"));
-        if (scheduled) actions.Children.Add(IconButton("", "Posponer 10 min", () => ConfirmAndSnoozeTask(t)));
-        var more = IconButton("", "Más acciones", () => { });
-        var menu = new ContextMenu();
-        void Item(string text, Action act)
+        if (t.Completed)
         {
-            var mi = new MenuItem { Header = text };
-            mi.Click += (_, _) => act();
-            menu.Items.Add(mi);
+            // Done: only the tick (and, with the right button, the way back).
+            var tick = Glyph("", 11, "#0D1014");
+            tick.HorizontalAlignment = System.Windows.HorizontalAlignment.Center;
+            actions.Children.Add(new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(11), Background = BrushHex("#38A169"), Child = tick, ToolTip = "Hecha" });
         }
-        if (scheduled)
+        else if (projected)
         {
-            Item("Mañana a la misma hora", () => ApplyTaskChange(t, $"mover a mañana «{t.Title}»", bypass => _engine.MoveToTomorrowSameTime(t, bypass)));
-            Item("Pasar a la bandeja", () => ApplyTaskChange(t, $"pasar a la bandeja «{t.Title}»", bypass => _engine.MoveToInbox(t, bypass)));
+            actions.Children.Add(IconButton("", "Editar esta ocurrencia o la serie", () => EditOccurrence(t)));
         }
-        else Item("Programar hoy en el primer hueco", () => ApplyTaskChange(t, $"programar «{t.Title}»", bypass => _engine.ScheduleInFirstFreeSlot(t, bypass)));
-        Item("Editar…", () => Dialogs.ShowTaskEditor(_engine, t, this));
-        menu.Items.Add(new Separator());
-        Item("Borrar…", () => ConfirmAndDeleteTask(t));
-        more.ContextMenu = menu;
-        more.Click += (_, _) => { menu.PlacementTarget = more; menu.IsOpen = true; };
-        actions.Children.Add(more);
+        else
+        {
+            if (!inSession)
+                actions.Children.Add(IconButton("", _engine.Workspace.Session == null ? "Empezar ahora" : "Empezar esta en lugar de la que está en marcha", () => StartOrHandoffSession(t), "#38A169"));
+            if (scheduled) actions.Children.Add(IconButton("", "Posponer 10 minutos", () => ConfirmAndSnoozeTask(t)));
+            else
+            {
+                var soon = GlyphButton("", "En 10 min", () => ConfirmAndSnoozeTask(t));
+                soon.ToolTip = "Programar para dentro de 10 minutos";
+                soon.MinHeight = 38;
+                soon.Margin = new Thickness(6, 0, 0, 0);
+                actions.Children.Add(soon);
+            }
+            var more = IconButton("", "Más acciones", () => { });
+            var menu = new ContextMenu();
+            void Item(string text, Action act)
+            {
+                var mi = new MenuItem { Header = text };
+                mi.Click += (_, _) => act();
+                menu.Items.Add(mi);
+            }
+            Item(t.RepeatRule != RepeatRule.Never ? "Editar ocurrencia o serie…" : "Editar…", () => Dialogs.ShowTaskEditor(_engine, t, this));
+            menu.Items.Add(new Separator());
+            if (scheduled)
+            {
+                Item("Posponer 10 minutos", () => ConfirmAndSnoozeTask(t));
+                Item("Adelantar 15 minutos", () => ApplyTaskChange(t, $"mover «{t.Title}»", bypass => _engine.ShiftTask(t, -15, bypass)));
+                Item("Retrasar 15 minutos", () => ApplyTaskChange(t, $"retrasar «{t.Title}»", bypass => _engine.ShiftTask(t, 15, bypass)));
+                Item("Alargar 15 minutos", () => ApplyTaskChange(t, $"alargar «{t.Title}»", bypass => _engine.ResizeTask(t, 15, bypass)));
+                Item("Acortar 15 minutos", () => ApplyTaskChange(t, $"acortar «{t.Title}»", bypass => _engine.ResizeTask(t, -15, bypass)));
+                menu.Items.Add(new Separator());
+                Item("Mañana a la misma hora", () => ApplyTaskChange(t, $"mover a mañana «{t.Title}»", bypass => _engine.MoveToTomorrowSameTime(t, bypass)));
+                Item("Pasar a la bandeja", () => ApplyTaskChange(t, $"pasar a la bandeja «{t.Title}»", bypass => _engine.MoveToInbox(t, bypass)));
+            }
+            else
+            {
+                Item("Programar hoy en el primer hueco", () => ApplyTaskChange(t, $"programar «{t.Title}»", bypass => _engine.ScheduleInFirstFreeSlot(t, bypass)));
+                Item("Programar en el día seleccionado", () => ApplyTaskChange(t, $"programar «{t.Title}»", bypass =>
+                    _engine.MoveTaskTo(t, _engine.SelectedDate.LocalDateTime.Date.AddHours(Math.Clamp(_engine.Workspace.Settings.WorkStartHour, 0, 23)), bypass)));
+            }
+            menu.Items.Add(new Separator());
+            Item("Borrar…", () => ConfirmAndDeleteTask(t));
+            more.ContextMenu = menu;
+            more.Click += (_, _) => { menu.PlacementTarget = more; menu.IsOpen = true; };
+            actions.Children.Add(more);
+        }
         Grid.SetColumn(actions, 3);
         grid.Children.Add(actions);
 
-        return InnerRow(grid);
+        var row = InnerRow(grid);
+        if (projected) row.Opacity = 0.78;
+        else if (!t.Completed)
+        {
+            // Double click edits; the right button opens the same menu as «⋯» (as on the Mac rows).
+            row.ToolTip = "Doble clic para editar · clic derecho para más acciones";
+            row.MouseLeftButtonDown += (_, e) =>
+            {
+                if (e.ClickCount != 2) return;
+                e.Handled = true;
+                Dialogs.ShowTaskEditor(_engine, t, this);
+            };
+            if (actions.Children.OfType<System.Windows.Controls.Button>().LastOrDefault()?.ContextMenu is { } rowMenu) row.ContextMenu = rowMenu;
+        }
+        return row;
     }
 }

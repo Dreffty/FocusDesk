@@ -289,46 +289,72 @@ public static partial class Dialogs
 
         if (isChallenge)
         {
-            var len = protection == SessionProtection.Forced ? 60 : unlockChars;
+            // The sheet of the Mac app: what you are about to do, the code with what is already right in green,
+            // a bar that fills as you type, and the way back on the left.
+            win.SizeToContent = SizeToContent.Height;
+            root.Children.Clear();
+            var emergency = protection == SessionProtection.Forced;
+            var len = emergency ? 60 : unlockChars;
             var expected = UnlockChallenge.Make(len);
-            var intro = protection == SessionProtection.Forced
-                ? $"Modo «Hasta el final»: escribe este código de emergencia de {expected.Length} caracteres (quedará anotado en auditoría, sin pegar):"
-                : $"Escribe exactamente este código de {expected.Length} caracteres (no se permite pegar):";
+            var spanish = new CultureInfo("es-ES");
+            var action = actionLabel.Length > 0 ? char.ToUpper(actionLabel[0], spanish) + actionLabel[1..] : "Desbloquear";
+            var verb = action.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "Desbloquear";
 
+            var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
+            var shield = new TextBlock
+            {
+                Text = emergency ? "" : "",
+                FontFamily = new System.Windows.Media.FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontSize = 18,
+                Foreground = BrushHex(emergency ? "#FAC74D" : "#38A169"),
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 6, 12, 0)
+            };
+            DockPanel.SetDock(shield, Dock.Left);
+            header.Children.Add(shield);
+            header.Children.Add(new TextBlock
+            {
+                Text = action,
+                FontSize = 22,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new System.Windows.Media.FontFamily("Segoe UI Variable Display, Segoe UI"),
+                Foreground = BrushHex("#EDF2F5"),
+                TextWrapping = TextWrapping.Wrap
+            });
+            root.Children.Add(header);
             root.Children.Add(new TextBlock
             {
-                Text = intro,
-                Foreground = BrushHex(protection == SessionProtection.Forced ? "#FAC74D" : "#99A6AD"),
+                Text = emergency
+                    ? $"Está en «Hasta el final». Queda esta salida de emergencia de {expected.Length} caracteres, y queda anotada en el registro."
+                    : "Está protegido. Teclea el código si de verdad quieres hacerlo ahora: lo que cuenta es el rato de teclear, y no se puede pegar.",
+                Foreground = BrushHex(emergency ? "#FAC74D" : "#99A6AD"),
                 TextWrapping = TextWrapping.Wrap,
                 FontSize = 13.5,
-                Margin = new Thickness(0, 0, 0, 12)
+                Margin = new Thickness(0, 0, 0, 16)
             });
 
-            var codeBorder = new Border
+            var typedRun = new System.Windows.Documents.Run { Foreground = BrushHex("#38A169") };
+            var restRun = new System.Windows.Documents.Run(expected) { Foreground = BrushHex("#EDF2F5") };
+            var codeText = new TextBlock { FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), FontSize = 19, TextWrapping = TextWrapping.Wrap, LineHeight = 28 };
+            codeText.Inlines.Add(typedRun);
+            codeText.Inlines.Add(restRun);
+            root.Children.Add(new Border
             {
                 Background = BrushHex("#161B21"),
-                BorderBrush = BrushHex("#262A30"),
+                BorderBrush = BrushHex("#2A2E34"),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(14),
-                Margin = new Thickness(0, 0, 0, 12)
-            };
-            var codeText = new TextBlock
-            {
-                Text = expected,
-                FontFamily = new System.Windows.Media.FontFamily("Consolas"),
-                FontSize = 16.5,
-                Foreground = BrushHex("#38A169"),
-                TextWrapping = TextWrapping.Wrap
-            };
-            codeBorder.Child = codeText;
-            root.Children.Add(codeBorder);
+                Padding = new Thickness(16, 14, 16, 14),
+                Margin = new Thickness(0, 0, 0, 14),
+                Child = codeText
+            });
 
             var input = new System.Windows.Controls.TextBox
             {
-                FontFamily = new System.Windows.Media.FontFamily("Consolas"),
-                FontSize = 15,
-                ContextMenu = null
+                FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"),
+                FontSize = 16.5,
+                ContextMenu = null,
+                ToolTip = "Tecléalo aquí"
             };
             System.Windows.DataObject.AddPastingHandler(input, (_, e) => e.CancelCommand());
             CommandManager.AddPreviewExecutedHandler(input, (_, e) =>
@@ -337,18 +363,36 @@ public static partial class Dialogs
             });
             root.Children.Add(input);
 
+            var bar = new Grid { Height = 6, VerticalAlignment = VerticalAlignment.Center };
+            var doneColumn = new ColumnDefinition { Width = new GridLength(0, GridUnitType.Star) };
+            var leftColumn = new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) };
+            bar.ColumnDefinitions.Add(doneColumn);
+            bar.ColumnDefinitions.Add(leftColumn);
+            var track = new Border { Background = BrushHex("#262A30"), CornerRadius = new CornerRadius(3) };
+            Grid.SetColumnSpan(track, 2);
+            bar.Children.Add(track);
+            bar.Children.Add(new Border { Background = BrushHex("#38A169"), CornerRadius = new CornerRadius(3) });
             var progress = new TextBlock
             {
-                Text = $"0 / {expected.Length} caracteres correctos",
+                Text = $"0 / {expected.Length}",
                 Foreground = BrushHex("#99A6AD"),
+                FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"),
                 FontSize = 13,
-                Margin = new Thickness(0, 8, 0, 16)
+                Margin = new Thickness(12, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
             };
-            root.Children.Add(progress);
+            var progressRow = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
+            DockPanel.SetDock(progress, Dock.Right);
+            progressRow.Children.Add(progress);
+            progressRow.Children.Add(bar);
+            root.Children.Add(progressRow);
+            var failNote = new TextBlock { Foreground = BrushHex("#FAC74D"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+            root.Children.Add(failNote);
 
-            var confirmBtn = MakePrimaryButton("Desbloquear");
+            var confirmBtn = MakePrimaryButton(verb);
             confirmBtn.IsEnabled = false;
             var resetting = false;
+            var attempts = 0;
 
             input.TextChanged += (_, _) =>
             {
@@ -356,20 +400,24 @@ public static partial class Dialogs
                 var prefix = UnlockChallenge.CorrectPrefix(input.Text, expected);
                 if (prefix < input.Text.Length)
                 {
+                    // A wrong character: a new code, and start again.
                     resetting = true;
+                    attempts++;
                     expected = UnlockChallenge.Make(len);
-                    codeText.Text = expected;
                     input.Text = "";
                     resetting = false;
-                    progress.Text = $"Carácter incorrecto · código nuevo generado (0 / {expected.Length})";
-                    progress.Foreground = BrushHex("#FF8080");
-                    confirmBtn.IsEnabled = false;
-                    return;
+                    prefix = 0;
+                    failNote.Text = attempts == 1
+                        ? "Fallaste una vez y el código cambió. Tómatelo con calma."
+                        : $"{attempts} intentos fallidos. Cada fallo da un código nuevo.";
+                    failNote.Visibility = Visibility.Visible;
                 }
-                var ok = UnlockChallenge.Matches(input.Text, expected);
-                progress.Text = $"{prefix} / {expected.Length} caracteres correctos";
-                progress.Foreground = BrushHex(ok ? "#38A169" : "#FAC74D");
-                confirmBtn.IsEnabled = ok;
+                typedRun.Text = expected[..prefix];
+                restRun.Text = expected[prefix..];
+                doneColumn.Width = new GridLength(prefix, GridUnitType.Star);
+                leftColumn.Width = new GridLength(Math.Max(0, expected.Length - prefix), GridUnitType.Star);
+                progress.Text = $"{prefix} / {expected.Length}";
+                confirmBtn.IsEnabled = UnlockChallenge.Matches(input.Text, expected);
             };
             input.KeyDown += (_, e) =>
             {
@@ -381,11 +429,12 @@ public static partial class Dialogs
             };
             confirmBtn.Click += (_, _) => { unlocked = true; win.Close(); };
 
-            var btns = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Right };
-            var cancel = new System.Windows.Controls.Button { Content = "Cancelar", Margin = new Thickness(0, 0, 10, 0) };
+            var btns = new DockPanel { Margin = new Thickness(0, 20, 0, 0) };
+            DockPanel.SetDock(confirmBtn, Dock.Right);
+            btns.Children.Add(confirmBtn);
+            var cancel = new System.Windows.Controls.Button { Content = "Dejarlo como está", HorizontalAlignment = System.Windows.HorizontalAlignment.Left, IsCancel = true };
             cancel.Click += (_, _) => win.Close();
             btns.Children.Add(cancel);
-            btns.Children.Add(confirmBtn);
             root.Children.Add(btns);
             win.Loaded += (_, _) => input.Focus();
         }
@@ -474,9 +523,15 @@ public static partial class Dialogs
         return RequestUnlock(s.Task.Protection, s.Task.UnlockChars, s.Task.StopDelayMinutes, $"{verb} «{s.Task.Title}»", owner);
     }
 
-    public static void ShowTaskEditor(AppEngine engine, FocusTask? existing, Window? owner)
+    /// <param name="initialStart">For a new task: the day and hour it was asked for (a slot of «Semana», a gap of the day by hours).</param>
+    /// <param name="occurrenceDate">When `existing` is a recurring task opened from one of its coming days: that day.</param>
+    public static void ShowTaskEditor(AppEngine engine, FocusTask? existing, Window? owner, DateTime? initialStart = null, DateTimeOffset? occurrenceDate = null)
     {
         var draft = existing?.Clone() ?? new FocusTask { ScheduledAt = DateTimeOffset.Now.AddMinutes(10) };
+        if (existing == null && initialStart is { } wantedStart) draft.ScheduledAt = FocusRules.FromLocal(wantedStart);
+        if (existing != null && occurrenceDate is { } shownOccurrence) draft.ScheduledAt = shownOccurrence;
+        var isSeries = existing != null && existing.RepeatRule != RepeatRule.Never && existing.IsScheduled;
+        var seriesDay = occurrenceDate ?? existing?.ScheduledAt ?? DateTimeOffset.Now;
         var win = new Window
         {
             Title = existing == null ? "Nueva tarea · FocusDesk" : "Editar tarea · FocusDesk",
@@ -564,6 +619,28 @@ public static partial class Dialogs
             root.Children.Add(protNote);
         }
 
+        // A recurring task: is the change for this day only, or for the whole series?
+        var scopeCombo = MakeCombo(new[]
+        {
+            new ComboOption<bool>(false, "Editar toda la serie"),
+            new ComboOption<bool>(true, $"Editar solo esta ocurrencia ({seriesDay.LocalDateTime.ToString("ddd d MMM", new CultureInfo("es-ES"))})")
+        }, occurrenceDate != null);
+        if (isSeries)
+        {
+            var scopeHint = new TextBlock { FontSize = 12.5, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
+            void SyncScopeHint() => scopeHint.Text = GetComboValue(scopeCombo, false)
+                ? "Solo cambia este día. El resto de la serie sigue igual."
+                : occurrenceDate != null
+                    ? "Cambia la serie entera. Si mueves la hora o el día, toda la serie se mueve igual; no empieza en este día."
+                    : "Cambia la serie entera a partir de su próxima ocurrencia.";
+            scopeCombo.SelectionChanged += (_, _) => SyncScopeHint();
+            SyncScopeHint();
+            var scopeBody = new StackPanel();
+            scopeBody.Children.Add(scopeCombo);
+            scopeBody.Children.Add(scopeHint);
+            root.Children.Add(BuildSectionCard("Cambio en tarea repetitiva", null, scopeBody));
+        }
+
         // Essential fields
         var titleBox = MakeTextBox(draft.Title);
         var categories = engine.Workspace.Settings.Categories.Select(c => c.Name).ToList();
@@ -602,9 +679,29 @@ public static partial class Dialogs
             durQuickWrap.Children.Add(MakeChipButton($"{captured}m", () => minBox.Text = captured.ToString(CultureInfo.InvariantCulture)));
         }
 
+        var overlapNote = new TextBlock { FontSize = 12.5, Foreground = BrushHex("#FAC74D"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        void SyncOverlap()
+        {
+            overlapNote.Visibility = Visibility.Collapsed;
+            if (schedCheck.IsChecked != true) return;
+            if (!DateTime.TryParseExact(dateBox.Text.Trim(), new[] { "yyyy-MM-dd HH:mm", "yyyy-MM-dd H:mm" }, CultureInfo.InvariantCulture, DateTimeStyles.None, out var startAt)) return;
+            if (!int.TryParse(minBox.Text.Trim(), out var length) || length < 1) return;
+            var beginsAt = FocusRules.FromLocal(startAt);
+            var endsAt = beginsAt.AddMinutes(length);
+            var other = engine.Workspace.Tasks.FirstOrDefault(t => t.Id != draft.Id && !t.Completed && t.IsScheduled && t.ScheduledAt < endsAt && beginsAt < t.End);
+            if (other == null) return;
+            overlapNote.Text = $"Coincide con «{other.Title}» ({other.ScheduledAt.LocalDateTime:H:mm}–{other.End.LocalDateTime:H:mm}).";
+            overlapNote.Visibility = Visibility.Visible;
+        }
+        dateBox.TextChanged += (_, _) => SyncOverlap();
+        minBox.TextChanged += (_, _) => SyncOverlap();
+        schedCheck.Click += (_, _) => SyncOverlap();
+        SyncOverlap();
+
         var dateFieldStack = new StackPanel();
         dateFieldStack.Children.Add(LabeledField("Inicio (aaaa-MM-dd HH:mm)", dateBox, 0));
         dateFieldStack.Children.Add(timeQuickWrap);
+        dateFieldStack.Children.Add(overlapNote);
 
         var durFieldStack = new StackPanel();
         durFieldStack.Children.Add(LabeledField("Duración (minutos)", minBox, 0));
@@ -631,6 +728,9 @@ public static partial class Dialogs
         // Repeat + Pomodoro options
         var repeatCombo = MakeCombo(Enum.GetValues<RepeatRule>().Select(r => new ComboOption<RepeatRule>(r, r.Label())), draft.RepeatRule);
         var pomoBox = MakeTextBox(draft.PomodoroWorkMinutes.ToString(CultureInfo.InvariantCulture));
+        var pomoBreakBox = MakeTextBox(draft.PomodoroBreakMinutes.ToString(CultureInfo.InvariantCulture));
+        var pomoLongBox = MakeTextBox(draft.PomodoroLongBreakMinutes.ToString(CultureInfo.InvariantCulture));
+        var pomoEveryBox = MakeTextBox(draft.PomodoroLongBreakEvery.ToString(CultureInfo.InvariantCulture));
         var autoStartCheck = new System.Windows.Controls.CheckBox
         {
             Content = "Empezar sola automáticamente a su hora",
@@ -711,7 +811,7 @@ public static partial class Dialogs
         var optionsBody = new StackPanel();
         optionsBody.Children.Add(TwoColGrid(
             LabeledField("Repetición", repeatCombo, 0),
-            LabeledField("Pomodoro · min foco (0 = continuo)", pomoBox, 0),
+            LabeledField("Pomodoro · foco (min, 0 = sin Pomodoro)", pomoBox, 0),
             topMargin: 0));
         optionsBody.Children.Add(repeatDaysPanel);
         SyncRepeatDays();
@@ -721,6 +821,34 @@ public static partial class Dialogs
             topMargin: 10));
         optionsBody.Children.Add(autoStartCheck);
         optionsBody.Children.Add(fixedCheck);
+
+        // Pomodoro inside the task: focus blocks and breaks (short, and a long one every few blocks)
+        var pomoDetail = ThreeColGrid(
+            LabeledField("Descanso (min)", pomoBreakBox, 0),
+            LabeledField("Descanso largo (min)", pomoLongBox, 0),
+            LabeledField("Largo cada (bloques)", pomoEveryBox, 0),
+            topMargin: 12);
+        var pomoSummary = new TextBlock { FontSize = 12.5, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
+        void SyncPomodoro()
+        {
+            var on = int.TryParse(pomoBox.Text.Trim(), out var work) && work > 0;
+            pomoDetail.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            if (!on)
+            {
+                pomoSummary.Text = "Trabajar en Pomodoro: pon los minutos de foco (25, por ejemplo) para alternar foco y descansos dentro de la tarea.";
+                return;
+            }
+            var pause = int.TryParse(pomoBreakBox.Text.Trim(), out var pb) ? Math.Clamp(pb, 1, 60) : 5;
+            var longPause = int.TryParse(pomoLongBox.Text.Trim(), out var pl) ? Math.Clamp(pl, 1, 120) : 15;
+            var every = int.TryParse(pomoEveryBox.Text.Trim(), out var pe) ? Math.Clamp(pe, 2, 12) : 4;
+            var total = int.TryParse(minBox.Text.Trim(), out var tm) ? tm : draft.Minutes;
+            var blocks = Math.Max(1, (int)Math.Ceiling(total / (double)(work + pause)));
+            pomoSummary.Text = $"En {total} min: {blocks} bloque(s) de foco de {work} min con descansos de {pause} min, y uno largo de {longPause} min tras cada {every} bloques. En los descansos el bloqueo se suelta.";
+        }
+        foreach (var box in new[] { pomoBox, pomoBreakBox, pomoLongBox, pomoEveryBox, minBox }) box.TextChanged += (_, _) => SyncPomodoro();
+        SyncPomodoro();
+        optionsBody.Children.Add(pomoDetail);
+        optionsBody.Children.Add(pomoSummary);
 
         // Blocking card
         var strictCheck = new System.Windows.Controls.CheckBox { Content = "Bloquear aplicaciones durante la tarea", IsChecked = draft.Strict };
@@ -869,19 +997,30 @@ public static partial class Dialogs
         var cancelBtn = new System.Windows.Controls.Button { Content = "Cancelar", Margin = new Thickness(0, 0, 10, 0) };
         cancelBtn.Click += (_, _) => win.Close();
         var saveBtn = MakePrimaryButton("Guardar tarea");
+        var saveProfileBtn = new System.Windows.Controls.Button
+        {
+            Content = "Guardar como perfil…",
+            Margin = new Thickness(0, 0, 10, 0),
+            Background = System.Windows.Media.Brushes.Transparent,
+            BorderBrush = System.Windows.Media.Brushes.Transparent,
+            ToolTip = "Guarda las apps, webs, protección, duración, checklist y carpeta para aplicarlas en un clic"
+        };
 
         var btnRight = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        btnRight.Children.Add(saveProfileBtn);
         btnRight.Children.Add(cancelBtn);
         btnRight.Children.Add(saveBtn);
         DockPanel.SetDock(btnRight, Dock.Right);
         footerDock.Children.Add(btnRight);
-        footerDock.Children.Add(new TextBlock
+        var footerNote = new TextBlock
         {
-            Text = existing == null ? "Se añadirá a tu agenda de hoy." : "Los cambios se guardan al instante.",
+            Text = existing == null ? "Se añadirá a tu agenda." : "Los cambios se aplican al guardar.",
             Foreground = BrushHex("#99A6AD"),
             FontSize = 13,
-            VerticalAlignment = VerticalAlignment.Center
-        });
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        footerDock.Children.Add(footerNote);
         footer.Child = footerDock;
         Grid.SetRow(footer, 2);
         shell.Children.Add(footer);
@@ -893,14 +1032,14 @@ public static partial class Dialogs
             scroll.ScrollToTop();
         }
 
-        saveBtn.Click += (_, _) =>
+        bool Collect()
         {
             inlineError.Visibility = Visibility.Collapsed;
             var title = titleBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(title))
             {
                 ShowInlineError("Escribe un título para la tarea.");
-                return;
+                return false;
             }
             if (schedCheck.IsChecked == true)
             {
@@ -908,7 +1047,7 @@ public static partial class Dialogs
                     !DateTime.TryParse(dateBox.Text.Trim(), out parsedDt))
                 {
                     ShowInlineError("Fecha y hora no válidas. Usa el formato aaaa-MM-dd HH:mm (ej. 2026-11-16 17:30).");
-                    return;
+                    return false;
                 }
                 // The offset that applies on the chosen DATE (daylight saving included), not today's.
                 draft.ScheduledAt = FocusRules.FromLocal(parsedDt);
@@ -916,7 +1055,7 @@ public static partial class Dialogs
             if (!int.TryParse(minBox.Text.Trim(), out var parsedMin) || parsedMin is < 1 or > 720)
             {
                 ShowInlineError("La duración debe ser un número entre 1 y 720 minutos.");
-                return;
+                return false;
             }
 
             draft.Title = title;
@@ -929,11 +1068,14 @@ public static partial class Dialogs
                 if (repeatDays.Count == 0)
                 {
                     ShowInlineError("Elige al menos un día de la semana para la repetición «Días concretos».");
-                    return;
+                    return false;
                 }
                 draft.RepeatDays = new HashSet<int>(repeatDays);
             }
             draft.PomodoroWorkMinutes = int.TryParse(pomoBox.Text.Trim(), out var pm) ? Math.Clamp(pm, 0, 120) : 0;
+            if (int.TryParse(pomoBreakBox.Text.Trim(), out var pomoBreak)) draft.PomodoroBreakMinutes = Math.Clamp(pomoBreak, 1, 60);
+            if (int.TryParse(pomoLongBox.Text.Trim(), out var pomoLong)) draft.PomodoroLongBreakMinutes = Math.Clamp(pomoLong, 1, 120);
+            if (int.TryParse(pomoEveryBox.Text.Trim(), out var pomoEvery)) draft.PomodoroLongBreakEvery = Math.Clamp(pomoEvery, 2, 12);
             draft.AutoStart = autoStartCheck.IsChecked == true;
             draft.IsFixedAppointment = fixedCheck.IsChecked == true;
             draft.LeadMinutes = int.TryParse(leadBox.Text.Trim(), out var leadParsed) ? Math.Clamp(leadParsed, 0, 60) : draft.LeadMinutes;
@@ -948,7 +1090,7 @@ public static partial class Dialogs
             else
             {
                 ShowInlineError("La fecha límite debe tener el formato aaaa-MM-dd (ej. 2026-12-01) o quedar vacía.");
-                return;
+                return false;
             }
             draft.Folder = string.IsNullOrWhiteSpace(folderBox.Text) ? null : folderBox.Text.Trim();
             draft.WholeWordKeywords = wholeWordCheck.IsChecked == true;
@@ -978,7 +1120,7 @@ public static partial class Dialogs
                 if (FolderGuard.ProblemWithFolder(f) is string folderProb)
                 {
                     ShowInlineError(folderProb);
-                    return;
+                    return false;
                 }
             }
             draft.MotivationalMessage = motBox.Text.Trim();
@@ -996,14 +1138,20 @@ public static partial class Dialogs
             if (draft.WebBlockAction == WebBlockAction.Redirect && redirectLoopMsg != null)
             {
                 ShowInlineError(redirectLoopMsg);
-                return;
+                return false;
             }
 
             if (!draft.Valid)
             {
                 ShowInlineError("Revisa los objetivos: si activas bloqueo de apps o webs debes indicar al menos un destino válido.");
-                return;
+                return false;
             }
+            return true;
+        }
+
+        saveBtn.Click += (_, _) =>
+        {
+            if (!Collect()) return;
 
             var bypass = false;
             if (existing != null && engine.IsTaskProtected(existing))
@@ -1020,9 +1168,30 @@ public static partial class Dialogs
                 }
             }
 
-            engine.SaveTask(draft, bypassProtection: bypass);
+            if (isSeries && GetComboValue(scopeCombo, false))
+            {
+                engine.SaveOccurrenceOnly(existing!, draft, seriesDay, bypassProtection: bypass);
+            }
+            else
+            {
+                // The series was opened from one of its coming days: what moved is the hour, not where the series stands.
+                if (isSeries && occurrenceDate is { } shown) draft.ScheduledAt = existing!.ScheduledAt + (draft.ScheduledAt - shown);
+                engine.SaveTask(draft, bypassProtection: bypass);
+            }
             if (string.IsNullOrEmpty(engine.Error)) win.Close();
             else ShowInlineError(engine.Error);
+        };
+
+        // «Guardar como perfil»: keep this set-up (apps, webs, protection, checklist) to reuse it in one click
+        saveProfileBtn.Click += (_, _) =>
+        {
+            if (!Collect()) return;
+            var name = AskText("Guardar como perfil", "Nombre del perfil (ej. Estudiar)", draft.Title, win);
+            if (name == null) return;
+            engine.SaveProfileFromTask(draft, name);
+            if (!string.IsNullOrEmpty(engine.Error)) { ShowInlineError(engine.Error); return; }
+            footerNote.Text = $"Perfil «{name.Trim()}» guardado.";
+            footerNote.Foreground = BrushHex("#38A169");
         };
 
         win.Content = shell;

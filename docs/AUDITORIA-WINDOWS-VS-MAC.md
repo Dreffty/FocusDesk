@@ -31,6 +31,49 @@ permite activarlo desde una app) y la cuadrícula de horas con arrastrar y solta
 «Mañana», «Bandeja» y «Programar hoy»). El calendario de Apple se sustituye por exportar un archivo `.ics`.
 ---
 
+## Tercera pasada (24-nov-2026): apariencia y funciones, pantalla a pantalla
+
+Esta vez sí se han comparado **las dos apps dibujadas**: las capturas que genera la de Mac (`--preview --snapshots`) frente a las
+capturas reales de Windows que deja la CI (`e2e-capturas/`), además del cruce campo a campo de los modelos de datos
+(`Settings`, `FocusTask`, `GeneralBlockRule`…) y de la lista de funciones del buscador ⌘K de Mac. El motor estaba bien portado;
+lo que faltaba era sobre todo de interfaz. Hecho en esta pasada (**sin compilar hasta lanzar la CI de Windows**):
+
+| Qué faltaba en Windows | Cómo queda |
+|---|---|
+| **Icono de la app**: el .exe, la barra de tareas, las ventanas y la bandeja salían con el icono genérico de Windows | `FocusDesk.ico`, hecho a partir de `Resources/AppIcon.icns` |
+| **Buscar función (Ctrl+K)** era una lista plana de 12 acciones | Buscador como el de Mac: grupos, icono, descripción y dónde vive cada función (unas 65 entradas), con las reglas y tareas |
+| **Novedades** y **Atajos de teclado** no existían | Las dos ventanas; Novedades sale sola la primera vez |
+| **«Tu siguiente paso»** (tarjeta de Hoy sin sesión, con «Empezar ahora», «Posponer 10 min», «Editar» y la cuenta «Empieza en») | Añadida |
+| **Hoy por horas** (cuadrícula con arrastrar para mover y borde inferior para la duración) | Añadida, con el cambio Horas/Lista que se recuerda, descansos, sesión en directo, línea de «ahora» y columnas para solapes |
+| En la lista de Hoy **no salían las tareas hechas**, ni «Solapada», ni la fecha límite, ni las próximas ocurrencias de una serie | Salen como en Mac |
+| **Semana**: sin arrastrar entre días, sin huecos «9h 12h 16h», sin aviso de solape; el «+» no creaba la tarea ese día | Arrastrar y soltar entre días y huecos, aviso de solape, «+» crea la tarea ese día, la cabecera abre el día por horas |
+| **Historial**: sin filtro por área; periodos distintos (semana/mes); sin «Actividad observada» | Área, Todo/Hoy/Ayer/7 días/30 días, y la cuarta casilla de Mac |
+| **Reglas**: sin «Importar», un solo grupo «El resto», sin «Reiniciar ciclo» | Importar (con el trinquete: no afloja una regla protegida activa), grupos Bloqueando ahora / Midiendo tu uso / En espera / Apagadas |
+| **Series**: no se podía cambiar «solo esta ocurrencia» | El editor pregunta «toda la serie» o «solo esta ocurrencia» (`SaveOccurrenceOnly`, port de `detachOccurrence`) |
+| **Pomodoro de una tarea**: solo los minutos de foco | Foco, descanso, descanso largo y cada cuántos bloques, con el resumen |
+| **Guardar como perfil** desde el editor de tarea | Añadido |
+| **Borrar una categoría** | Añadido en Ajustes |
+| **Menú de la tarea**: sin adelantar/retrasar/alargar/acortar 15 min | Añadidos (menú «⋯», clic derecho y doble clic para editar) |
+| **Atajos**: faltaban Ctrl+1–6, Ctrl+, Ctrl+T, anterior/siguiente y los globales S (empezar siguiente), A (+10 min) y B (bloquear 30 min) | Añadidos |
+| **Panel de la barra de menús** (en Windows, del icono de la bandeja): solo había un menú | Panel con el reloj de la sesión, sus controles, lo siguiente, reglas activas, bloqueo rápido y «Apuntar en la bandeja» |
+| **Código de desbloqueo**: ventana más pobre que la de Mac | Lo ya tecleado en verde, barra de progreso, «Dejarlo como está» |
+| **Cancelar sesión** no pedía confirmación | La pide, como en Mac |
+| **Privacidad**: Windows guardaba siempre los títulos de ventana; Mac solo si lo activas | Apagado por defecto + lista de programas excluidos (`observeTitles`, `excludedTitleApps`) |
+
+La prueba real de la CI ahora deja también cada página **completa** (`pagina-*.png`), el buscador, Novedades, los atajos, el panel de la
+bandeja, el código y «Hoy» sin sesión, para poder compararlas con las de Mac en cada publicación.
+
+### Lo que sigue fuera (decide Luis)
+
+- **Tema claro.** Mac sigue al sistema (claro u oscuro); Windows solo tiene el oscuro. Todos los colores están escritos a mano en el
+  código y en los XAML: hacerlo bien es una pasada propia.
+- **Ajustes en ventana aparte con cinco pestañas.** En Windows siguen siendo una página con tarjetas (mismo contenido, otra forma).
+- **Lo que Windows no permite o no tiene:** No molestar al bloquear apps, el Calendario de Apple (queda el `.ics`), webs dentro de
+  otras apps (Discord, Slack, PWAs), el contador en la barra de menús (queda el texto del icono de la bandeja).
+- **«Vistos recientemente…»** (añadir a una lista las webs y títulos que acabas de usar) y **«Normalizar URLs»** en los editores.
+- **Arrastrar desde la bandeja de pendientes** a la agenda (en Windows: «En 10 min» y «Programar en el día seleccionado»).
+- **VoiceOver / Narrador** y los avisos de permisos de macOS no aplican o no se han probado.
+
 ## 1. Lo grave (arreglar primero)
 
 ### W-01 · Un solo campo ilegible borra TODOS los datos · Confirmado

@@ -427,6 +427,84 @@ public static class SmokeCheck
                 Check(!engine3.IsRuleEnforcing(qb!) && engine3.Workspace.MicroPausesUsedToday(qb!.Id) == 1,
                     "Micro-pausa suspende temporalmente el bloqueo y descuenta del límite diario");
             }
+
+            // 8. Parity with macOS (24-nov): moving and resizing from the agenda, one occurrence of a series,
+            //    saving a task as a profile, deleting a category, importing rules and the interface preferences.
+            using (var engine4 = new AppEngine(Path.Combine(tempDir, "parity-sim"), enablePlatformWatchers: false))
+            {
+                var baseDay = DateTime.Now.Date.AddDays(2);
+                var plain = new FocusTask { Title = "Mover y alargar", Minutes = 30, ScheduledAt = FocusRules.FromLocal(baseDay.AddHours(10)) };
+                engine4.SaveTask(plain);
+                FocusTask Current(Guid id) => engine4.Workspace.Tasks.First(t => t.Id == id);
+
+                engine4.ShiftTask(Current(plain.Id), 15);
+                Check(Current(plain.Id).ScheduledAt.LocalDateTime == baseDay.AddHours(10).AddMinutes(15),
+                    "«Retrasar 15 minutos» mueve la tarea un cuarto de hora");
+                engine4.ResizeTask(Current(plain.Id), 15);
+                Check(Current(plain.Id).Minutes == 45, "«Alargar 15 minutos» deja la tarea de 30 en 45 min");
+                engine4.MoveTaskTo(Current(plain.Id), baseDay.AddDays(1).AddHours(9));
+                Check(Current(plain.Id).ScheduledAt.LocalDateTime == baseDay.AddDays(1).AddHours(9),
+                    "Arrastrar una tarea a otro día la deja ese día a la hora elegida");
+                Check(engine4.NextTask() != null, "Con tareas pendientes hay «Tu siguiente paso»");
+
+                var series = new FocusTask { Title = "Estudiar Álgebra", Minutes = 45, RepeatRule = RepeatRule.Daily, ScheduledAt = FocusRules.FromLocal(baseDay.AddHours(22)) };
+                engine4.SaveTask(series);
+                var workdays = engine4.Workspace.Settings.Workdays;
+                var second = series.NextOccurrence(series.ScheduledAt, workdays)!;
+                var editedDay = series.Clone();
+                editedDay.ScheduledAt = second.ScheduledAt;
+                editedDay.Title = "Estudiar Álgebra (repaso)";
+                editedDay.Minutes = 20;
+                engine4.SaveOccurrenceOnly(Current(series.Id), editedDay, second.ScheduledAt);
+                var head = Current(series.Id);
+                var single = engine4.Workspace.Tasks.FirstOrDefault(t => t.Title == "Estudiar Álgebra (repaso)");
+                Check(single != null && single.RepeatRule == RepeatRule.Never && single.SeriesId == series.Id && single.Minutes == 20,
+                    "«Solo esta ocurrencia» crea una tarea suelta para ese día");
+                Check(head.Title == "Estudiar Álgebra" && head.Minutes == 45 && head.ScheduledAt == series.ScheduledAt &&
+                      head.SkippedDates.Contains(FocusRules.DayKey(second.ScheduledAt)),
+                    "…y el resto de la serie sigue igual, saltándose ese día");
+                var afterSkip = head.NextOccurrence(head.ScheduledAt, workdays);
+                Check(afterSkip != null && afterSkip.ScheduledAt.LocalDateTime.Date == baseDay.AddDays(2),
+                    "La serie continúa al día siguiente del que se editó suelto");
+                var todayOnly = head.Clone();
+                todayOnly.Title = "Estudiar Álgebra (solo hoy)";
+                engine4.SaveOccurrenceOnly(head, todayOnly, head.ScheduledAt);
+                Check(Current(series.Id).ScheduledAt.LocalDateTime.Date == baseDay.AddDays(2),
+                    "Editar suelto el día en que está la serie la hace avanzar a su siguiente fecha");
+
+                var withBlock = new FocusTask { Title = "Programar", Minutes = 50, Domains = "github.com", WebBlockAction = WebBlockAction.Redirect, Checklist = "Uno\nDos" };
+                var profilesBefore = engine4.Workspace.Profiles.Count;
+                engine4.SaveProfileFromTask(withBlock, "Programación de prueba");
+                var savedProfile = engine4.Workspace.Profiles.FirstOrDefault(p => p.Name == "Programación de prueba");
+                Check(savedProfile != null && savedProfile.Minutes == 50 && savedProfile.Domains == "github.com" &&
+                      savedProfile.WebBlockAction == WebBlockAction.Redirect && engine4.Workspace.Profiles.Count == profilesBefore + 1,
+                    "«Guardar como perfil» conserva duración, webs y acción de la tarea");
+
+                engine4.AddCategory("Categoría de prueba", 0.4, 0.78, 0.9);
+                var categoriesBefore = engine4.Workspace.Settings.Categories.Count;
+                engine4.DeleteCategory("Categoría de prueba");
+                Check(engine4.Workspace.Settings.Categories.Count == categoriesBefore - 1, "Una categoría se puede borrar en Ajustes");
+
+                engine4.LaunchQuickBlock(30, SessionProtection.Challenge);
+                var guarded = engine4.Workspace.GeneralRules.First(r => r.Kind == GeneralRuleKind.Countdown);
+                var rulesFile = Path.Combine(tempDir, "reglas-exportadas.json");
+                engine4.ExportRules(rulesFile);
+                using (var engine5 = new AppEngine(Path.Combine(tempDir, "import-sim"), enablePlatformWatchers: false))
+                {
+                    engine5.ImportRules(rulesFile);
+                    Check(engine5.Workspace.GeneralRules.Any(r => r.Id == guarded.Id), "«Importar reglas» añade las reglas de un archivo exportado");
+                }
+                var loosened = guarded.Clone();
+                loosened.Protection = SessionProtection.None;
+                File.WriteAllBytes(rulesFile, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new List<GeneralBlockRule> { loosened }, WorkspaceStore.PrettyJsonOptions));
+                engine4.ImportRules(rulesFile);
+                Check(engine4.Workspace.GeneralRules.First(r => r.Id == guarded.Id).Protection == SessionProtection.Challenge,
+                    "Importar no afloja una regla protegida que está activa (trinquete)");
+
+                engine4.Prefs.HourlyLayout = false;
+                engine4.Prefs.Save();
+                Check(!UiPreferences.Load(engine4.Store.DirectoryPath).HourlyLayout, "La vista elegida en «Hoy» (horas o lista) se recuerda entre arranques");
+            }
         }
         finally
         {

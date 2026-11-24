@@ -13,5 +13,11 @@
     <Product>FocusDesk</Product>
     <Company>Articdia</Company>
     <Description>Agenda, bloqueo de distracciones y reglas estudio-partida para Windows</Description>
+    <!-- The same icon as the Mac app (made from Resources/AppIcon.icns): the .exe, the taskbar and every window. -->
+    <ApplicationIcon>FocusDesk.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Also inside the program, for the notification-area icon. -->
+    <Resource Include="FocusDesk.ico" />
+  </ItemGroup>
 </Project>

@@ -585,6 +585,12 @@ public static class EndToEndCheck
         Info("—— Ventana de FocusDesk ——");
         engine.Workspace.Tasks.Add(new FocusTask { Title = "Repasar apuntes de historia", Minutes = 45, ScheduledAt = DateTimeOffset.Now.AddHours(1), Category = "Estudio" });
         engine.Workspace.Tasks.Add(new FocusTask { Title = "Entregar práctica", Minutes = 30, ScheduledAt = DateTimeOffset.Now.AddHours(3), Category = "Universidad" });
+        // A recurring task, two that overlap, one already done and one without a time: what the Mac demo data shows.
+        var seriesTask = new FocusTask { Title = "Estudiar Álgebra", Minutes = 45, ScheduledAt = DateTimeOffset.Now.AddHours(2), Category = "Estudio", RepeatRule = RepeatRule.Daily };
+        engine.Workspace.Tasks.Add(seriesTask);
+        engine.Workspace.Tasks.Add(new FocusTask { Title = "Preparar presentación", Minutes = 60, ScheduledAt = DateTimeOffset.Now.AddHours(1).AddMinutes(15), Category = "Trabajo" });
+        engine.Workspace.Tasks.Add(new FocusTask { Title = "Revisar correo", Minutes = 20, ScheduledAt = DateTimeOffset.Now.AddMinutes(-90), Category = "Personal", Completed = true });
+        engine.Workspace.Tasks.Add(new FocusTask { Title = "Llamar para confirmar cita", Minutes = 15, IsScheduled = false, Category = "Personal", DueDate = DateTimeOffset.Now.AddDays(1) });
         var running = new FocusTask { Title = "Escribir el guion", Minutes = 50, ScheduledAt = DateTimeOffset.Now, Checklist = "Estructura\nGanchos\nCierre" };
         engine.Workspace.Tasks.Add(running);
         engine.StartSession(running);
@@ -610,16 +616,77 @@ public static class EndToEndCheck
                 engine.ActivePage = page;
                 await Task.Delay(1500);
                 Shot($"ui-{page}");
+                // The whole page, not only what fits on the screen: this is what is compared with the Mac app.
+                PageShot(window, $"pagina-{page}");
                 Check(true, $"La pantalla «{page}» se dibuja sin errores");
             }
             catch (Exception ex) { Check(false, $"La pantalla «{page}» se dibuja sin errores", ex.Message); }
         }
 
+        // «Hoy» in its other layout, and the registry of the history
+        try
+        {
+            var hourly = engine.Prefs.HourlyLayout;
+            engine.Prefs.HourlyLayout = !hourly;
+            engine.ActivePage = "Hoy";
+            await Task.Delay(1200);
+            Shot(hourly ? "ui-Hoy-lista" : "ui-Hoy-horas");
+            PageShot(window, hourly ? "pagina-Hoy-lista" : "pagina-Hoy-horas");
+            engine.Prefs.HourlyLayout = hourly;
+            Check(true, "«Hoy» se dibuja por horas y como lista");
+        }
+        catch (Exception ex) { Check(false, "«Hoy» se dibuja por horas y como lista", ex.Message); }
+
         ShowDialogAndClose(() => FocusDesk.Windows.UI.Dialogs.ShowTaskEditor(engine, null, window), "editor-tarea", window);
         ShowDialogAndClose(() => FocusDesk.Windows.UI.Dialogs.ShowRuleEditor(engine, null, null, window), "editor-regla", window);
+        ShowDialogAndClose(() => FocusDesk.Windows.UI.Dialogs.ShowTaskEditor(engine, seriesTask, window, occurrenceDate: seriesTask.ScheduledAt.AddDays(2)), "editor-serie", window);
+        ShowDialogAndClose(() => FocusDesk.Windows.UI.Dialogs.ShowProfileEditor(engine, null, window), "editor-perfil", window);
+        ShowDialogAndClose(() => window.OpenCommandPalette(), "buscar-funcion", window);
+        ShowDialogAndClose(() => window.OpenWhatsNew(), "novedades", window);
+        ShowDialogAndClose(() => window.OpenShortcutsHelp(), "atajos", window);
+        ShowDialogAndClose(() => FocusDesk.Windows.UI.Dialogs.RequestUnlock(SessionProtection.Challenge, 32, 5, "pausar «Escribir el guion»", window), "codigo-desbloqueo", window);
+
+        // The panel of the notification-area icon, with the session running
+        try
+        {
+            var panel = new FocusDesk.Windows.UI.TrayPanel(engine, () => { }, _ => { }, () => { }, () => { }, () => window);
+            panel.Show();
+            await Task.Delay(1200);
+            Shot("panel-bandeja");
+            try { panel.Close(); } catch { }
+            Check(true, "El panel del icono de la bandeja se abre con la sesión en marcha");
+        }
+        catch (Exception ex) { Check(false, "El panel del icono de la bandeja se abre con la sesión en marcha", ex.Message); }
+
+        // Finishing the session shows the result sheet; closing it leaves the task pending
+        ShowDialogAndClose(() => engine.FinishSession(), "confirmar-resultado", window);
+        if (engine.Workspace.Session != null) engine.Workspace.Session = null;
+
+        // With nothing running, «Hoy» shows «Tu siguiente paso»
+        try
+        {
+            engine.ActivePage = "Semana";
+            engine.ActivePage = "Hoy";
+            await Task.Delay(1200);
+            Shot("ui-Hoy-sin-sesion");
+            PageShot(window, "pagina-Hoy-sin-sesion");
+            Check(engine.NextTask() != null, "Sin sesión, «Hoy» propone la siguiente tarea");
+        }
+        catch (Exception ex) { Check(false, "Sin sesión, «Hoy» propone la siguiente tarea", ex.Message); }
 
         try { window.AllowClose(); window.Close(); } catch { }
         if (engine.Workspace.Session is { EndedAt: null }) engine.Workspace.Session = null;
+    }
+
+    /// <summary>The whole page of the main window (drawn by the app itself, like the Mac snapshots).</summary>
+    private static void PageShot(FocusDesk.Windows.UI.MainWindow window, string name)
+    {
+        try
+        {
+            if (!window.SavePagePng(Path.Combine(_shotsDir, $"{++_shotNumber:00}-{name}.png")))
+                Info($"página «{name}»: no se pudo dibujar completa");
+        }
+        catch (Exception ex) { Info($"página «{name}» no se pudo guardar: {ex.Message}"); }
     }
 
     /// <summary>Shows a modal editor, photographs it after two seconds and closes it (Esc for any question it asks).</summary>

@@ -38,7 +38,11 @@ El ejecutable queda en `dist-win\FocusDesk.exe`.
 - El testigo antimanipulación se cifra con DPAPI del usuario en `%LOCALAPPDATA%\FocusDesk\witness.dat`.
 - El vigilante (`--watcher` en `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) reabre FocusDesk si se cierra a la fuerza durante una regla o sesión protegida.
 - Atajos globales: `Ctrl+Alt+Win+F` (abrir; se puede cambiar o apagar en Ajustes), `Ctrl+Alt+Win+P` (pausar/reanudar), `Ctrl+Alt+Win+T` (terminar).
-- Dentro de la ventana: `Ctrl+K` busca cualquier acción, `Ctrl+N` crea una tarea, `Ctrl+Z` / `Ctrl+Y` deshacen y rehacen la agenda.
+- Más atajos globales: `Ctrl+Alt+Win+S` (empezar la siguiente tarea), `Ctrl+Alt+Win+A` (ampliar 10 min), `Ctrl+Alt+Win+B` (bloquear 30 min ya).
+- Dentro de la ventana: `Ctrl+K` busca cualquier función o ajuste, `Ctrl+N` crea una tarea, `Ctrl+1`–`Ctrl+6` cambian de sección, `Ctrl+,` abre Ajustes, `Ctrl+T` vuelve a hoy, `Ctrl+←` / `Ctrl+→` pasan de día o de semana, `Ctrl+Z` / `Ctrl+Y` deshacen y rehacen la agenda.
+- «Hoy» se puede ver por horas (arrastra un bloque para moverlo y su borde inferior para cambiar la duración) o como lista; en «Semana» las tareas se arrastran de un día a otro.
+- Un clic en el icono de la bandeja abre un panel con la sesión, lo siguiente, el bloqueo rápido y una caja para apuntar tareas (el panel de la barra de menús de macOS); doble clic abre la ventana.
+- Las preferencias de interfaz (vista de «Hoy», Novedades ya vistas) van aparte, en `%APPDATA%\FocusDesk\ui.json`.
 - La sesión se pausa sola al bloquear la pantalla, suspender o cambiar de usuario (el rato fuera no cuenta); una sesión protegida se reanuda sola al volver.
 - Si los datos no se pueden leer, la app arranca en solo lectura y no escribe encima del archivo; en Ajustes puedes recuperar la copia automática.
 - «Exportar al calendario (.ics)» en Semana es el equivalente del Calendario de macOS.

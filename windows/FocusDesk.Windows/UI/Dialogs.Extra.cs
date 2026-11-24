@@ -321,4 +321,46 @@ public static partial class Dialogs
         win.Loaded += (_, _) => nameBox.Focus();
         win.ShowDialog();
     }
+
+    // MARK: - A one-line question («Nombre del perfil»)
+
+    /// <summary>Asks for one line of text. Returns null when cancelled or left empty.</summary>
+    public static string? AskText(string title, string prompt, string initial, Window? owner)
+    {
+        string? result = null;
+        var win = new Window
+        {
+            Title = title + " · FocusDesk",
+            Width = 460,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
+            Owner = owner,
+            ResizeMode = ResizeMode.NoResize,
+            Background = BrushHex("#0D1014"),
+            Foreground = BrushHex("#EDF2F5")
+        };
+        var root = new StackPanel { Margin = new Thickness(24) };
+        root.Children.Add(new TextBlock { Text = title, FontSize = 20, FontWeight = FontWeights.SemiBold });
+        var box = MakeTextBox(initial);
+        root.Children.Add(LabeledField(prompt, box, 14));
+        var buttons = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
+        var cancel = new System.Windows.Controls.Button { Content = "Cancelar", Margin = new Thickness(0, 0, 10, 0), IsCancel = true };
+        var ok = MakePrimaryButton("Guardar");
+        ok.IsDefault = true;
+        void Accept()
+        {
+            if (string.IsNullOrWhiteSpace(box.Text)) return;
+            result = box.Text.Trim();
+            win.Close();
+        }
+        ok.Click += (_, _) => Accept();
+        cancel.Click += (_, _) => win.Close();
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(ok);
+        root.Children.Add(buttons);
+        win.Content = root;
+        win.Loaded += (_, _) => { box.Focus(); box.SelectAll(); };
+        win.ShowDialog();
+        return result;
+    }
 }

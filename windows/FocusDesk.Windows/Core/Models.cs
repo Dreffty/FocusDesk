@@ -1212,6 +1212,10 @@ public sealed class Settings
     public bool ProtectActivityHistory { get; set; }
     /// <summary>Also reads the address of the page in front during a session to list the sites visited (not only to block them).</summary>
     public bool ObserveBrowserSites { get; set; }
+    /// <summary>Keeps the titles of the windows used during a session in its activity record. Off unless asked for, as on macOS.</summary>
+    public bool ObserveTitles { get; set; }
+    /// <summary>Programs whose window titles are never kept (password managers, messaging…).</summary>
+    public List<AllowedApp> ExcludedTitleApps { get; set; } = new();
     /// <summary>Text size multiplier (1, 1.15, 1.3).</summary>
     public double TextScale { get; set; } = 1;
     /// <summary>Global shortcut Ctrl+Alt+Win + letter to open FocusDesk.</summary>

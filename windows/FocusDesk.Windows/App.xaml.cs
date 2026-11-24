@@ -123,6 +123,9 @@ public partial class App : System.Windows.Application
 
         SetupTrayIcon();
         ShowMainWindow();
+        // «Novedades», once, the first time this release is opened (as on the Mac).
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+            new Action(() => _mainWindow?.ShowWhatsNewIfPending()));
     }
 
     private void SetupTrayIcon()
@@ -161,12 +164,73 @@ public partial class App : System.Windows.Application
 
         _trayIcon = new Forms.NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = LoadAppIcon(),
             Text = "FocusDesk",
             Visible = true,
             ContextMenuStrip = menu
         };
-        _trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowMainWindow);
+        // One click opens the small panel (the menu-bar panel of macOS); a double click opens the whole window.
+        _trayIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == Forms.MouseButtons.Left) Dispatcher.BeginInvoke(ToggleTrayPanel);
+        };
+        _trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(() =>
+        {
+            _trayPanel?.Close();
+            ShowMainWindow();
+        });
+    }
+
+    /// <summary>FocusDesk's own icon for the notification area (it used to be the generic Windows program icon).</summary>
+    private static Icon LoadAppIcon()
+    {
+        try
+        {
+            var resource = GetResourceStream(new Uri("pack://application:,,,/FocusDesk.ico"));
+            if (resource != null)
+            {
+                using var stream = resource.Stream;
+                return new Icon(stream, Forms.SystemInformation.SmallIconSize);
+            }
+        }
+        catch { }
+        try
+        {
+            if (Environment.ProcessPath is { } exe && Icon.ExtractAssociatedIcon(exe) is { } own) return own;
+        }
+        catch { }
+        return SystemIcons.Application;
+    }
+
+    private TrayPanel? _trayPanel;
+    private DateTime _trayPanelClosedAt = DateTime.MinValue;
+
+    private void ToggleTrayPanel()
+    {
+        if (_engine == null) return;
+        if (_trayPanel != null)
+        {
+            _trayPanel.Close();
+            return;
+        }
+        // Clicking the icon while the panel is open closes it first (it loses the focus): do not open it again.
+        if ((DateTime.UtcNow - _trayPanelClosedAt).TotalMilliseconds < 400) return;
+        _trayPanel = new TrayPanel(_engine, ShowMainWindow, page =>
+        {
+            ShowMainWindow();
+            _engine.ActivePage = page;
+        }, () =>
+        {
+            ShowMainWindow();
+            _mainWindow?.OpenCommandPalette();
+        }, TryQuitApp, () => _mainWindow);
+        _trayPanel.Closed += (_, _) =>
+        {
+            _trayPanel = null;
+            _trayPanelClosedAt = DateTime.UtcNow;
+        };
+        _trayPanel.Show();
+        _trayPanel.Activate();
     }
 
     /// <summary>The icon's tooltip is the menu-bar countdown of macOS: what is running and how long is left.</summary>
