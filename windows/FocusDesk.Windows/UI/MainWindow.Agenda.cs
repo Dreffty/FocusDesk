@@ -314,12 +314,6 @@ public partial class MainWindow
         right.Children.Add(ics);
         DockPanel.SetDock(right, Dock.Right);
         bar.Children.Add(right);
-        var dragHint = MutedText("Arrastra bloques entre días o a una franja horaria", 12, 0);
-        dragHint.VerticalAlignment = VerticalAlignment.Center;
-        dragHint.Margin = new Thickness(0, 0, 14, 0);
-        dragHint.TextWrapping = TextWrapping.NoWrap;
-        DockPanel.SetDock(dragHint, Dock.Right);
-        bar.Children.Add(dragHint);
         var nav = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
         var prev = IconButton("", "Semana anterior", () => _engine.SelectedDate = _engine.SelectedDate.AddDays(-7));
         prev.Margin = new Thickness(0);
@@ -337,7 +331,11 @@ public partial class MainWindow
         thisWeek.Margin = new Thickness(8, 0, 0, 0);
         nav.Children.Add(thisWeek);
         bar.Children.Add(nav);
+        bar.Margin = new Thickness(0, 0, 0, 6);
         PageContent.Children.Add(bar);
+        var dragHint = MutedText("Arrastra bloques entre días o a una franja horaria · pulsa «9h», «12h» o «16h» para crear una tarea a esa hora", 12, 0);
+        dragHint.Margin = new Thickness(2, 0, 0, 14);
+        PageContent.Children.Add(dragHint);
 
         // Seven columns, one per day, as on the Mac
         var columns = new System.Windows.Controls.Primitives.UniformGrid { Columns = 7, Margin = new Thickness(0, 0, -8, 0) };
@@ -387,26 +385,26 @@ public partial class MainWindow
                 var color = CategoryHex(t.Category);
                 var overlap = !t.Completed && blocks.Any(o => FocusRules.Overlaps(t, o.Task));
                 var inner = new StackPanel();
-                var top = new DockPanel();
+                inner.Children.Add(new TextBlock { Text = t.ScheduledAt.LocalDateTime.ToString("HH:mm"), FontSize = 12.5, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), Foreground = BrushHex("#99A6AD") });
+                var title = new TextBlock { Text = t.Title, FontSize = 14, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 3), Foreground = BrushHex(t.Completed ? "#99A6AD" : "#EDF2F5") };
+                if (t.Completed) title.TextDecorations = TextDecorations.Strikethrough;
+                inner.Children.Add(title);
+                var bottom = new DockPanel();
                 if (isProjected || t.RepeatRule != RepeatRule.Never)
                 {
                     var rep = Glyph("", 10.5, "#38A169");
+                    rep.Margin = new Thickness(5, 0, 0, 0);
                     DockPanel.SetDock(rep, Dock.Right);
-                    top.Children.Add(rep);
+                    bottom.Children.Add(rep);
                 }
                 if (overlap)
                 {
                     var warn = Glyph("", 11, "#FAC74D");
-                    warn.Margin = new Thickness(0, 0, 5, 0);
                     DockPanel.SetDock(warn, Dock.Right);
-                    top.Children.Add(warn);
+                    bottom.Children.Add(warn);
                 }
-                top.Children.Add(new TextBlock { Text = t.ScheduledAt.LocalDateTime.ToString("HH:mm"), FontSize = 12.5, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), Foreground = BrushHex("#99A6AD") });
-                inner.Children.Add(top);
-                var title = new TextBlock { Text = t.Title, FontSize = 14, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 3), Foreground = BrushHex(t.Completed ? "#99A6AD" : "#EDF2F5") };
-                if (t.Completed) title.TextDecorations = TextDecorations.Strikethrough;
-                inner.Children.Add(title);
-                inner.Children.Add(new TextBlock { Text = FocusRules.DurationText(t.Minutes), FontSize = 12.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(color) });
+                bottom.Children.Add(new TextBlock { Text = FocusRules.DurationText(t.Minutes), FontSize = 12.5, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(color) });
+                inner.Children.Add(bottom);
                 var block = new System.Windows.Controls.Button
                 {
                     Content = new Border { BorderBrush = BrushHex(color), BorderThickness = new Thickness(3, 0, 0, 0), Padding = new Thickness(8, 6, 6, 6), Child = inner },
@@ -597,11 +595,14 @@ public partial class MainWindow
     /// <summary>A summary tile: icon, big number, label (the four boxes over the Mac history).</summary>
     private static Border StatTile(string glyph, string value, string label)
     {
-        var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var tile = IconTile(glyph, false, 36);
         tile.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(tile);
         var text = new StackPanel { Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(text, 1);
         text.Children.Add(new TextBlock { Text = value, FontSize = 22, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5") });
         text.Children.Add(new TextBlock { Text = label, FontSize = 13, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap });
         row.Children.Add(text);
@@ -709,10 +710,10 @@ public partial class MainWindow
         }, _historyState, v => { _historyState = v; _historyVisible = 25; RefreshUI(); }, 160);
         state.Margin = new Thickness(0, 0, 22, 8);
         filters.Children.Add(state);
-        filters.Children.Add(new TextBlock { Text = "Periodo", FontSize = 14.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
-        var periods = (FrameworkElement)Segmented(new[] { "Todo", "Hoy", "Ayer", "7 días", "30 días" }, _historyPeriod, i => { _historyPeriod = i; _historyVisible = 25; RefreshUI(); });
-        periods.Margin = new Thickness(0, 0, 0, 8);
-        filters.Children.Add(periods);
+        var periodGroup = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+        periodGroup.Children.Add(new TextBlock { Text = "Periodo", FontSize = 14.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
+        periodGroup.Children.Add(Segmented(new[] { "Todo", "Hoy", "Ayer", "7 días", "30 días" }, _historyPeriod, i => { _historyPeriod = i; _historyVisible = 25; RefreshUI(); }));
+        filters.Children.Add(periodGroup);
         filterStack.Children.Add(filters);
 
         var tools = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };

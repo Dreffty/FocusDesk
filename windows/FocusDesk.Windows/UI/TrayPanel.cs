@@ -37,7 +37,7 @@ public sealed class TrayPanel : Window
         _main = main;
 
         Title = "FocusDesk";
-        Width = 380;
+        Width = 420;
         SizeToContent = SizeToContent.Height;
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
@@ -115,7 +115,7 @@ public sealed class TrayPanel : Window
         }
         if (label.Length > 0)
             row.Children.Add(new TextBlock { Text = label, FontSize = 14.5, FontWeight = FontWeights.SemiBold, Foreground = Brush(fg), VerticalAlignment = VerticalAlignment.Center });
-        var button = new System.Windows.Controls.Button { Content = row, Padding = new Thickness(13, 0, 13, 0), MinHeight = 36, Margin = new Thickness(0, 0, 7, 0) };
+        var button = new System.Windows.Controls.Button { Content = row, Padding = new Thickness(12, 0, 12, 0), MinHeight = 36, Margin = new Thickness(0, 0, 6, 6) };
         if (primary)
         {
             button.Background = Brush("#38A169");

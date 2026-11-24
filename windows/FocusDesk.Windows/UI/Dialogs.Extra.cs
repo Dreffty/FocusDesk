@@ -20,138 +20,282 @@ public static partial class Dialogs
         var win = new Window
         {
             Title = "Confirmar resultado · FocusDesk",
-            Width = 560,
+            Width = 660,
             SizeToContent = SizeToContent.Height,
-            MaxHeight = 760,
+            MaxHeight = 800,
             WindowStartupLocation = owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
             Owner = owner,
             ResizeMode = ResizeMode.NoResize,
             Background = BrushHex("#0D1014"),
             Foreground = BrushHex("#EDF2F5")
         };
+        const string iconFont = "Segoe Fluent Icons, Segoe MDL2 Assets";
+        TextBlock Icon(string glyph, double size, string color) => new()
+        {
+            Text = glyph,
+            FontFamily = new System.Windows.Media.FontFamily(iconFont),
+            FontSize = size,
+            Foreground = BrushHex(color),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        TextBlock Caps(string glyph, string text)
+        {
+            var block = new TextBlock { Margin = new Thickness(0, 16, 0, 8) };
+            block.Inlines.Add(new System.Windows.Documents.Run(glyph + "  ") { FontFamily = new System.Windows.Media.FontFamily(iconFont), FontSize = 13, Foreground = BrushHex("#38A169") });
+            block.Inlines.Add(new System.Windows.Documents.Run(Spaced(text)) { FontSize = 12.5, FontWeight = FontWeights.Bold, Foreground = BrushHex("#B7C0C5") });
+            return block;
+        }
 
-        var root = new StackPanel { Margin = new Thickness(24) };
+        var root = new StackPanel { Margin = new Thickness(26) };
         AnimateModalIn(root);
-        root.Children.Add(new TextBlock
+
+        // Header: the seal, the question and what it means
+        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 16) };
+        var sealIcon = Icon("\uE73E", 20, "#38A169");
+        sealIcon.HorizontalAlignment = System.Windows.HorizontalAlignment.Center;
+        var seal = new Border { Width = 48, Height = 48, CornerRadius = new CornerRadius(14), Background = BrushHex("#15291F"), Child = sealIcon, Margin = new Thickness(0, 0, 16, 0), VerticalAlignment = VerticalAlignment.Top };
+        DockPanel.SetDock(seal, Dock.Left);
+        header.Children.Add(seal);
+        var titles = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        titles.Children.Add(new TextBlock { Text = "¿Qué has conseguido?", FontSize = 25, FontWeight = FontWeights.SemiBold, FontFamily = new System.Windows.Media.FontFamily("Segoe UI Variable Display, Segoe UI") });
+        titles.Children.Add(new TextBlock { Text = "La sesión ha terminado y las restricciones están desactivadas. Tú confirmas el resultado.", FontSize = 13.5, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) });
+        header.Children.Add(titles);
+        root.Children.Add(header);
+
+        // Files of the result folder that changed during the session, and the ones attached by hand
+        var selectedFiles = new HashSet<string>(session.SelectedFiles);
+        var manualFiles = new List<string>(session.ManualFiles);
+        List<string> AllFiles() => (session.FinalChangedFiles ?? new List<string>()).Concat(manualFiles).Distinct().ToList();
+        var steps = AppEngine.ChecklistSteps(session.Task.Checklist);
+
+        // The session in one card: its name and four numbers
+        var filesPill = new TextBlock { FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#38A169") };
+        void SyncFilesPill() => filesPill.Text = $"{selectedFiles.Count}/{AllFiles().Count} entregables";
+        Border Pill(string? glyph, UIElement text, bool accent)
         {
-            Text = $"Sesión terminada: {session.Task.Title}",
-            FontSize = 20,
-            FontWeight = FontWeights.SemiBold,
-            TextWrapping = TextWrapping.Wrap
-        });
-        root.Children.Add(new TextBlock
-        {
-            Text = $"Tiempo trabajado: {FocusRules.Clock(session.Elapsed(DateTimeOffset.Now))} · Interrupciones: {session.InterruptionCount}",
-            Foreground = BrushHex("#99A6AD"),
-            FontSize = 13.5,
-            Margin = new Thickness(0, 6, 0, 12)
-        });
+            var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+            if (glyph != null)
+            {
+                var icon = Icon(glyph, 12.5, accent ? "#38A169" : "#99A6AD");
+                icon.Margin = new Thickness(0, 0, 7, 0);
+                row.Children.Add(icon);
+            }
+            row.Children.Add(text);
+            return new Border { Background = BrushHex(accent ? "#15291F" : "#22262C"), CornerRadius = new CornerRadius(9), Padding = new Thickness(11, 5, 11, 5), Margin = new Thickness(0, 0, 8, 0), Child = row };
+        }
+        TextBlock PillText(string text, bool accent) => new() { Text = text, FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = BrushHex(accent ? "#38A169" : "#99A6AD") };
+        var minutes = (int)Math.Round(session.Elapsed(session.EndedAt ?? DateTimeOffset.Now) / 60);
+        var summary = new StackPanel();
+        summary.Children.Add(new TextBlock { Text = session.Task.Title, FontSize = 18, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10) });
+        var pills = new WrapPanel();
+        pills.Children.Add(Pill("\uE823", PillText($"{minutes} min de sesión", true), true));
+        pills.Children.Add(Pill("\uE8BD", PillText(session.InterruptionCount == 1 ? "1 interrupción" : $"{session.InterruptionCount} interrupciones", true), true));
+        if (steps.Count > 0) pills.Children.Add(Pill("\uE8FD", PillText(steps.Count == 1 ? "1 paso" : $"{steps.Count} pasos", false), false));
+        pills.Children.Add(Pill(null, filesPill, true));
+        summary.Children.Add(pills);
+        root.Children.Add(new Border { Background = BrushHex("#161B21"), BorderBrush = BrushHex("#262A30"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(16), Padding = new Thickness(20, 16, 20, 16), Child = summary });
 
         // The checklist can be ticked here too: work done in another app is ticked off at the end.
-        var steps = AppEngine.ChecklistSteps(session.Task.Checklist);
         if (steps.Count > 0)
         {
-            root.Children.Add(new TextBlock { Text = "CHECKLIST", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 0, 0, 5) });
+            var checklistTitle = Caps("\uE8FD", "Checklist");
+            void SyncChecklistTitle()
+            {
+                var done = Enumerable.Range(0, steps.Count).Count(i => session.Checked.Contains(i.ToString()));
+                ((System.Windows.Documents.Run)checklistTitle.Inlines.LastInline).Text = Spaced($"Checklist · {done} de {steps.Count}");
+            }
+            SyncChecklistTitle();
+            root.Children.Add(checklistTitle);
             for (var i = 0; i < steps.Count; i++)
             {
                 var key = i.ToString();
-                var box = new System.Windows.Controls.CheckBox { Content = steps[i], IsChecked = session.Checked.Contains(key), Margin = new Thickness(0, 2, 0, 0) };
-                box.Click += (_, _) => engine.SetCheck(key, box.IsChecked == true);
+                var box = new System.Windows.Controls.CheckBox { Content = steps[i], IsChecked = session.Checked.Contains(key), Margin = new Thickness(0, 3, 0, 0), FontSize = 14.5 };
+                box.Click += (_, _) =>
+                {
+                    engine.SetCheck(key, box.IsChecked == true);
+                    SyncChecklistTitle();
+                };
                 root.Children.Add(box);
             }
         }
 
-        // Files of the result folder that changed during the session
-        var selectedFiles = new HashSet<string>(session.SelectedFiles);
-        var manualFiles = new List<string>(session.ManualFiles);
+        // Evidence
+        if (!string.IsNullOrWhiteSpace(session.FinalEvidenceMessage))
+            root.Children.Add(new TextBlock { Text = session.FinalEvidenceMessage, FontSize = 12.5, Foreground = BrushHex("#FAC74D"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 0) });
+        var evidenceHead = new DockPanel();
+        var attach = new System.Windows.Controls.Button { Margin = new Thickness(0, 10, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        var attachRow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+        var clip = Icon("\uE723", 13.5, "#EDF2F5");
+        clip.Margin = new Thickness(0, 0, 9, 0);
+        attachRow.Children.Add(clip);
+        attachRow.Children.Add(new TextBlock { Text = "Adjuntar archivo manualmente…", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+        attach.Content = attachRow;
+        DockPanel.SetDock(attach, Dock.Right);
+        evidenceHead.Children.Add(attach);
+        evidenceHead.Children.Add(Caps("\uE8B7", "Evidencias y entregables"));
+        root.Children.Add(evidenceHead);
         var filesPanel = new StackPanel();
         void RebuildFiles()
         {
             filesPanel.Children.Clear();
             var changed = session.FinalChangedFiles ?? new List<string>();
-            foreach (var file in changed.Concat(manualFiles).Distinct())
+            var all = AllFiles();
+            if (all.Count == 0)
+                filesPanel.Children.Add(new TextBlock
+                {
+                    Text = string.IsNullOrWhiteSpace(session.Task.Folder)
+                        ? "Esta tarea no tiene carpeta de resultados. Puedes adjuntar el resultado manualmente o confirmar con una nota."
+                        : "No se han detectado archivos nuevos en la carpeta. Puedes adjuntar el resultado manualmente o confirmar con una nota.",
+                    FontSize = 13,
+                    Foreground = BrushHex("#99A6AD"),
+                    TextWrapping = TextWrapping.Wrap
+                });
+            foreach (var file in all)
             {
                 var captured = file;
-                var fileBox = new System.Windows.Controls.CheckBox
-                {
-                    Content = captured,
-                    IsChecked = selectedFiles.Contains(captured),
-                    Margin = new Thickness(0, 2, 0, 0),
-                    ToolTip = captured
-                };
+                var label = new StackPanel();
+                label.Children.Add(new TextBlock { Text = System.IO.Path.GetFileName(captured), FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis });
+                label.Children.Add(new TextBlock { Text = changed.Contains(captured) ? "Señal automática" : "Adjunto manual", FontSize = 12, Foreground = BrushHex("#99A6AD") });
+                var fileBox = new System.Windows.Controls.CheckBox { Content = label, IsChecked = selectedFiles.Contains(captured), Margin = new Thickness(0, 4, 0, 0), ToolTip = captured };
                 fileBox.Click += (_, _) =>
                 {
                     if (fileBox.IsChecked == true) selectedFiles.Add(captured); else selectedFiles.Remove(captured);
+                    SyncFilesPill();
                 };
                 filesPanel.Children.Add(fileBox);
             }
+            SyncFilesPill();
         }
-        if (!string.IsNullOrWhiteSpace(session.Task.Folder) || manualFiles.Count > 0)
+        RebuildFiles();
+        root.Children.Add(new ScrollViewer { MaxHeight = 130, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = filesPanel });
+        root.Children.Add(new TextBlock { Text = "Señal automática ≠ trabajo demostrado: marca cuál corresponde al entregable real.", FontSize = 12.5, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 12) });
+        attach.Click += (_, _) =>
         {
-            root.Children.Add(new TextBlock { Text = "ARCHIVOS DEL RESULTADO", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#99A6AD"), Margin = new Thickness(0, 12, 0, 5) });
-            if (!string.IsNullOrWhiteSpace(session.FinalEvidenceMessage))
-                root.Children.Add(new TextBlock { Text = session.FinalEvidenceMessage, FontSize = 13, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap });
-            if ((session.FinalChangedFiles?.Count ?? 0) == 0)
-                root.Children.Add(new TextBlock { Text = "No se ha detectado ningún archivo cambiado en la carpeta. Puedes adjuntar uno a mano.", FontSize = 13, Foreground = BrushHex("#99A6AD"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
-            RebuildFiles();
-            root.Children.Add(new ScrollViewer { MaxHeight = 120, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = filesPanel });
-            var attach = new System.Windows.Controls.Button { Content = "Adjuntar archivo…", Margin = new Thickness(0, 6, 0, 0), HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
-            attach.Click += (_, _) =>
+            var dialog = new Microsoft.Win32.OpenFileDialog { Multiselect = true };
+            if (dialog.ShowDialog() != true) return;
+            foreach (var file in dialog.FileNames)
             {
-                var dialog = new Microsoft.Win32.OpenFileDialog { Multiselect = true };
-                if (dialog.ShowDialog() != true) return;
-                foreach (var file in dialog.FileNames)
-                {
-                    if (!manualFiles.Contains(file)) manualFiles.Add(file);
-                    selectedFiles.Add(file);
-                }
-                RebuildFiles();
+                if (!manualFiles.Contains(file)) manualFiles.Add(file);
+                selectedFiles.Add(file);
+            }
+            RebuildFiles();
+        };
+
+        // The note
+        var noteBox = MakeTextBox("", multiline: true, height: 76);
+        var noteHint = new TextBlock { Text = "Resultado o próximo paso (opcional)", FontSize = 14.5, Foreground = BrushHex("#7C868C"), Margin = new Thickness(15, 10, 0, 0), IsHitTestVisible = false };
+        noteBox.TextChanged += (_, _) => noteHint.Visibility = string.IsNullOrEmpty(noteBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+        var noteHost = new Grid();
+        noteHost.Children.Add(noteBox);
+        noteHost.Children.Add(noteHint);
+        root.Children.Add(noteHost);
+
+        // What comes next, and what to do with it when this one is confirmed
+        var transition = NextTransition.KeepSchedule;
+        var nextTask = FocusRules.NextSuggestedTask(engine.Workspace.Tasks, session.Task.Id, DateTimeOffset.Now);
+        if (nextTask != null)
+        {
+            var nextBody = new StackPanel();
+            var nextHead = new DockPanel();
+            if (nextTask.IsScheduled)
+            {
+                var when = new TextBlock { Text = nextTask.ScheduledAt.LocalDateTime.ToString("H:mm"), FontSize = 13, Foreground = BrushHex("#99A6AD"), FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), VerticalAlignment = VerticalAlignment.Center };
+                DockPanel.SetDock(when, Dock.Right);
+                nextHead.Children.Add(when);
+            }
+            nextHead.Children.Add(new TextBlock { Text = $"SIGUIENTE TAREA SUGERIDA: {nextTask.Title}", FontSize = 12.5, FontWeight = FontWeights.Bold, Foreground = BrushHex("#38A169"), TextTrimming = TextTrimming.CharacterEllipsis });
+            nextBody.Children.Add(nextHead);
+            var choiceRow = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+            choiceRow.Children.Add(new TextBlock { Text = "Al confirmar", FontSize = 14.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) });
+            var strip = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+            var options = new (NextTransition Value, string Label)[]
+            {
+                (NextTransition.KeepSchedule, "Mantener su horario"),
+                (NextTransition.StartNextNow, "Empezar la siguiente"),
+                (NextTransition.Rest10Min, "Descansar 10 min")
             };
-            root.Children.Add(attach);
+            var optionButtons = new List<System.Windows.Controls.Button>();
+            void PaintOptions()
+            {
+                for (var i = 0; i < options.Length; i++)
+                {
+                    var on = options[i].Value == transition;
+                    optionButtons[i].Background = on ? BrushHex("#38A169") : System.Windows.Media.Brushes.Transparent;
+                    optionButtons[i].BorderBrush = on ? BrushHex("#38A169") : System.Windows.Media.Brushes.Transparent;
+                    ((TextBlock)optionButtons[i].Content).Foreground = BrushHex(on ? "#0D1014" : "#D5DBDF");
+                    ((TextBlock)optionButtons[i].Content).FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+                }
+            }
+            foreach (var option in options)
+            {
+                var value = option.Value;
+                var button = new System.Windows.Controls.Button { Content = new TextBlock { Text = option.Label, FontSize = 14 }, Padding = new Thickness(14, 0, 14, 0), MinHeight = 32, Margin = new Thickness(0) };
+                button.Click += (_, _) => { transition = value; PaintOptions(); };
+                optionButtons.Add(button);
+                strip.Children.Add(button);
+            }
+            PaintOptions();
+            choiceRow.Children.Add(new Border { Background = BrushHex("#22262C"), CornerRadius = new CornerRadius(10), Padding = new Thickness(2), Child = strip });
+            nextBody.Children.Add(choiceRow);
+            root.Children.Add(new Border { Background = BrushHex("#161B21"), CornerRadius = new CornerRadius(14), Padding = new Thickness(16, 12, 16, 12), Margin = new Thickness(0, 14, 0, 0), Child = nextBody });
         }
 
-        var noteBox = MakeTextBox("", multiline: true, height: 80);
-        root.Children.Add(LabeledField("Nota de resultado (opcional)", noteBox, 12));
-
-        var nextChoice = MakeCombo(new[]
+        // Cancel and go back on the left; «still pending» and «done» on the right
+        var buttons = new DockPanel { Margin = new Thickness(0, 20, 0, 0) };
+        var done = MakePrimaryButton("Sí, he terminado");
+        done.IsDefault = true;
+        done.Click += (_, _) =>
         {
-            new ComboOption<NextTransition>(NextTransition.KeepSchedule, "Nada: la siguiente conserva su horario"),
-            new ComboOption<NextTransition>(NextTransition.StartNextNow, "Empezar la siguiente ahora"),
-            new ComboOption<NextTransition>(NextTransition.Rest10Min, "Descansar 10 minutos antes de seguir")
-        }, NextTransition.KeepSchedule);
-        root.Children.Add(LabeledField("Después", nextChoice, 10));
-
-        var btns = new StackPanel
-        {
-            Orientation = System.Windows.Controls.Orientation.Horizontal,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
-            Margin = new Thickness(0, 18, 0, 0)
+            saved = true;
+            engine.ConfirmSession(true, noteBox.Text, selectedFiles, manualFiles, transition);
+            win.Close();
         };
-        var reopen = new System.Windows.Controls.Button { Content = "Reabrir la sesión", Margin = new Thickness(0, 0, 10, 0) };
+        DockPanel.SetDock(done, Dock.Right);
+        buttons.Children.Add(done);
+        var pending = new System.Windows.Controls.Button { Content = "Sigue pendiente", Margin = new Thickness(0, 0, 10, 0), ToolTip = "Guardar la sesión sin dar la tarea por terminada" };
+        pending.Click += (_, _) =>
+        {
+            saved = true;
+            engine.ConfirmSession(false, noteBox.Text, selectedFiles, manualFiles, transition);
+            win.Close();
+        };
+        DockPanel.SetDock(pending, Dock.Right);
+        buttons.Children.Add(pending);
+        var cancelSession = new System.Windows.Controls.Button
+        {
+            Content = new TextBlock { Text = "Cancelar sesión", Foreground = BrushHex("#FF8080"), FontWeight = FontWeights.SemiBold },
+            Background = BrushHex("#2A161B"),
+            BorderBrush = BrushHex("#5C262B"),
+            Margin = new Thickness(0, 0, 10, 0)
+        };
+        cancelSession.Click += (_, _) =>
+        {
+            var answer = System.Windows.MessageBox.Show(win,
+                "¿Cancelar esta sesión? La tarea seguirá pendiente y la sesión quedará registrada como cancelada.",
+                "Cancelar sesión · FocusDesk", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes) return;
+            saved = true;
+            engine.CancelSession();
+            win.Close();
+        };
+        DockPanel.SetDock(cancelSession, Dock.Left);
+        buttons.Children.Add(cancelSession);
+        var reopen = new System.Windows.Controls.Button
+        {
+            Content = "Volver a la sesión",
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+            Background = System.Windows.Media.Brushes.Transparent,
+            BorderBrush = System.Windows.Media.Brushes.Transparent,
+            ToolTip = "Deshace «He terminado» y sigue con el tiempo que te quedaba"
+        };
         reopen.Click += (_, _) =>
         {
             saved = true;   // nothing to save: the session simply runs again
             engine.ReopenSession();
             win.Close();
         };
-        var pending = new System.Windows.Controls.Button { Content = "Sigue pendiente", Margin = new Thickness(0, 0, 10, 0) };
-        pending.Click += (_, _) =>
-        {
-            saved = true;
-            engine.ConfirmSession(false, noteBox.Text, selectedFiles, manualFiles, GetComboValue(nextChoice, NextTransition.KeepSchedule));
-            win.Close();
-        };
-        var done = MakePrimaryButton("Completada");
-        done.Click += (_, _) =>
-        {
-            saved = true;
-            engine.ConfirmSession(true, noteBox.Text, selectedFiles, manualFiles, GetComboValue(nextChoice, NextTransition.KeepSchedule));
-            win.Close();
-        };
-        btns.Children.Add(reopen);
-        btns.Children.Add(pending);
-        btns.Children.Add(done);
-        root.Children.Add(btns);
+        buttons.Children.Add(reopen);
+        root.Children.Add(buttons);
 
         // If dismissed with X or Alt+F4, save as pending so the finished session never remains stuck in Workspace.Session.
         win.Closed += (_, _) =>

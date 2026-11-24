@@ -445,7 +445,12 @@ public partial class MainWindow
                 grid.Children.Add(whereText);
                 var row = new Border { CornerRadius = new CornerRadius(9), Padding = new Thickness(10, 7, 12, 7), Child = grid, Background = System.Windows.Media.Brushes.Transparent, Cursor = System.Windows.Input.Cursors.Hand };
                 var index = shown.Count;
-                row.MouseEnter += (_, _) => { selection = index; Paint(); };
+                row.MouseMove += (_, _) =>
+                {
+                    if (selection == index) return;
+                    selection = index;
+                    Paint();
+                };
                 row.MouseLeftButtonUp += (_, _) => { selection = index; Run(); };
                 shown.Add((entry, row));
                 list.Children.Add(row);

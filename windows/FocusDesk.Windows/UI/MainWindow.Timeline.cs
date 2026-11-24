@@ -271,7 +271,7 @@ public partial class MainWindow
         var endHour = Math.Min(24, Math.Max(latest, Math.Max(settings.WorkEndHour + 1, 21)));
 
         var height = (endHour - startHour) * 60 * PixelsPerMinute;
-        var surface = new Grid { Height = height + 12, Background = System.Windows.Media.Brushes.Transparent };
+        var surface = new Grid { Height = height + 34, Background = System.Windows.Media.Brushes.Transparent };
 
         // Hour rows
         for (var hour = startHour; hour <= endHour; hour++)
@@ -425,7 +425,7 @@ public partial class MainWindow
             : Math.Max(startHour, (real.FirstOrDefault(t => !t.Completed) ?? real.FirstOrDefault())?.ScheduledAt.LocalDateTime.Hour - 1 ?? settings.WorkStartHour);
         var scroller = new ScrollViewer
         {
-            Height = Math.Min(height + 12, 480),
+            Height = Math.Min(height + 34, 480),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Content = surface

@@ -136,7 +136,9 @@ public partial class MainWindow
         var games = new UniformGrid { Columns = 4, Margin = new Thickness(0, 0, -12, 10) };
         foreach (var game in GameCatalog.All)
         {
-            var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.Children.Add(IconTile("", false, 34));
             var text = new StackPanel { Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
             text.Children.Add(new TextBlock { Text = game.Name, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = BrushHex("#EDF2F5"), TextWrapping = TextWrapping.Wrap });
@@ -146,9 +148,9 @@ public partial class MainWindow
                 FontSize = 13,
                 FontWeight = FontWeights.Normal,
                 Foreground = BrushHex("#99A6AD"),
-                TextWrapping = TextWrapping.Wrap,
-                MaxWidth = 170
+                TextWrapping = TextWrapping.Wrap
             });
+            Grid.SetColumn(text, 1);
             row.Children.Add(text);
             var captured = game;
             var b = new System.Windows.Controls.Button
@@ -156,7 +158,8 @@ public partial class MainWindow
                 Content = row,
                 Margin = new Thickness(0, 0, 12, 12),
                 Padding = new Thickness(14, 12, 14, 12),
-                HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left,
+                HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch,
+                VerticalContentAlignment = VerticalAlignment.Top,
                 Background = BrushHex("#161B21"),
                 BorderBrush = BrushHex("#262A30")
             };
