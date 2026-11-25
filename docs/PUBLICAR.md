@@ -69,7 +69,7 @@ y publica ambos en el Release. Si añades los secrets `APPLE_CERTIFICATE_P12`, `
 
 La fórmula está preparada en `Casks/focusdesk.rb`. Cuando publiques el `.dmg` en GitHub Releases:
 1. Actualiza `sha256` en `Casks/focusdesk.rb` con el valor impreso por `make-dmg.command`.
-2. Copia `Casks/focusdesk.rb` a tu repositorio `articdia/homebrew-tap` para que cualquiera pueda instalarla con:
+2. Copia `Casks/focusdesk.rb` a tu repositorio `Dreffty/homebrew-tap` para que cualquiera pueda instalarla con:
    ```zsh
-   brew install --cask articdia/tap/focusdesk
+   brew install --cask Dreffty/tap/focusdesk
    ```
